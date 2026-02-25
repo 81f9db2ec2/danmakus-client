@@ -1,0 +1,20 @@
+// 导出核心类
+export { DanmakuClient } from '../core/DanmakuClient';
+export { ConfigManager } from '../core/ConfigManager';
+export { CookieManager } from '../core/CookieManager';
+export { SignalRConnection } from '../core/SignalRConnection';
+export { StreamerStatusManager } from '../core/StreamerStatusManager';
+
+// 导出类型
+export * from '../types';
+
+// 导出工具函数
+import { DanmakuClient } from '../core/DanmakuClient';
+import { DanmakuConfig } from '../types';
+
+export const createDanmakuClient = (config?: Partial<DanmakuConfig>) => {
+  return new DanmakuClient(config);
+};
+
+// 版本信息
+export const version = '1.0.0';

@@ -1,0 +1,41 @@
+{
+  "name": "danmakus-core",
+  "version": "1.0.0",
+  "description": "轻量弹幕采集库，支持CLI和库引用两种使用方式",
+  "main": "dist/lib/index.js",
+  "types": "dist/lib/index.d.ts",
+  "bin": {
+    "danmakus": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "bun run clean && bun run compile",
+    "clean": "bun -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
+    "compile": "tsc",
+    "dev": "bun run src/cli/index.ts",
+    "start": "bun dist/cli/index.js",
+    "test": "bun test"
+  },
+  "keywords": [
+    "bilibili",
+    "danmaku",
+    "live",
+    "signalr",
+    "cli",
+    "library"
+  ],
+  "author": "danmakus-core",
+  "license": "MIT",
+  "dependencies": {
+    "@microsoft/signalr": "^10.0.0",
+    "bilibili-live-danmaku": "^0.7.14",
+    "commander": "^14.0.2",
+    "eventemitter3": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
