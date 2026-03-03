@@ -55,7 +55,7 @@ export const fetchImpl: FetchImpl = async (input, init) => {
   const url = toUrlString(input);
   if (isTauri() && shouldUseHttpPlugin(url)) {
     const { fetch } = await import('@tauri-apps/plugin-http');
-    return fetch(url, normalizeTauriInit(init));
+    return await fetch(url, normalizeTauriInit(init));
   }
   return fetch(input, init);
 };

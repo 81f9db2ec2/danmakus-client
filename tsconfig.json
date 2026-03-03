@@ -10,6 +10,7 @@
     "moduleResolution": "bundler",
     "baseUrl": "./",
     "paths": {
+      "@/*": ["./src/*"],
       "danmakus-core": ["./danmakus-core/src/lib"],
       "danmakus-core/*": ["./danmakus-core/src/*"]
     },

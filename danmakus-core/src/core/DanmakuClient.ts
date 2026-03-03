@@ -9,13 +9,27 @@ import {
   DanmakuMessage,
   DanmakuClientEvents,
   DanmakuConfig,
-  StreamerConfig,
+  CliOptions,
+  LiveWsConnection,
+  LiveWsRoomConfig,
   StreamerStatus,
   CoreRuntimeStateDto,
-  CoreConnectionInfoDto
+  CoreConnectionInfoDto,
+  ErrorCategory,
+  ClientErrorRecord
 } from '../types';
+import { ScopedLogger, normalizeLogLevel } from './Logger';
 
-const HEARTBEAT_INTERVAL = 8000;
+const HEARTBEAT_MIN_INTERVAL = 2000;
+const MESSAGE_QUEUE_MIN_SIZE = 100;
+const MESSAGE_RETRY_MIN_DELAY = 200;
+const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
+const MESSAGE_BATCH_MIN_SIZE = 1;
+const MESSAGE_BATCH_MAX_SIZE = 200;
+const LOCK_RETRY_MIN_COUNT = 1;
+const LOCK_RETRY_MIN_DELAY = 200;
+const ERROR_HISTORY_MIN_LIMIT = 10;
+const ROOM_CONNECT_START_INTERVAL = 10_000;
 
 function generateClientId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -26,16 +40,47 @@ function generateClientId(): string {
 }
 
 interface ConnectionInfo {
-  connection: LiveWS;
+  connection: LiveWsConnection;
   roomId: number;
   priority: 'high' | 'normal' | 'low' | 'server';
   connectedAt: number;
 }
 
+interface QueuedMessage {
+  message: DanmakuMessage;
+  retryCount: number;
+  nextRetryAt: number;
+}
+
+interface QueuedRoomConnect {
+  roomId: number;
+  priority: 'high' | 'normal' | 'low' | 'server';
+}
+
+interface ClientErrorContext {
+  category?: ErrorCategory;
+  code?: string;
+  recoverable?: boolean;
+  roomId?: number;
+}
+
+type CookieSource = 'biliLocal' | 'cookieCloud';
+type LiveWsConnectionOptions = {
+  roomId?: number;
+  address?: string;
+  key?: string;
+  uid?: number;
+  buvid?: string;
+  protover?: 1 | 2 | 3;
+};
+
 export class DanmakuClient extends EventEmitter {
+  private logger: ScopedLogger;
   private configManager: ConfigManager;
   private cookieManager?: CookieManager;
   private cookieProvider?: () => string | null | undefined;
+  private liveWsConfigProvider?: (roomId: number) => Promise<LiveWsRoomConfig | null | undefined>;
+  private liveWsConnectionFactory?: (roomId: number, options: LiveWsRoomConfig) => Promise<LiveWsConnection>;
   private signalrConnection?: SignalRConnection;
   private statusManager?: StreamerStatusManager;
   private accountClient?: AccountApiClient;
@@ -48,22 +93,46 @@ export class DanmakuClient extends EventEmitter {
   private heartbeatTimer?: ReturnType<typeof setTimeout>;
   private accountConfigRefreshTimer?: ReturnType<typeof setInterval>;
   private accountConfigRefreshing = false;
+  private isStopping = false;
   private messageCount = 0;
   private lastRoomAssigned?: number;
   private lastError?: string;
   private lastHeartbeat = 0;
+  private pendingMessages: QueuedMessage[] = [];
+  private messageDispatchTimer?: ReturnType<typeof setTimeout>;
+  private messageDispatching = false;
+  private roomConnectStartInterval = ROOM_CONNECT_START_INTERVAL;
+  private queuedRoomConnects: QueuedRoomConnect[] = [];
+  private queuedRoomIds: Set<number> = new Set();
+  private roomConnectQueueTimer?: ReturnType<typeof setTimeout>;
+  private lastRoomConnectStartAt = 0;
+  private messageQueueMaxSize = 2000;
+  private messageRetryBaseDelay = 1000;
+  private messageRetryMaxDelay = 30_000;
+  private messageRetryMaxAttempts = 6;
+  private messageBatchSize = 20;
+  private heartbeatInterval = 5000;
+  private lockAcquireRetryCount = 4;
+  private lockAcquireRetryDelay = 1200;
+  private lockAcquireForceTakeover = false;
+  private errorHistoryLimit = 50;
+  private recentErrors: ClientErrorRecord[] = [];
 
   constructor(config: Partial<DanmakuConfig> = {}) {
     super();
 
+    this.logger = new ScopedLogger('DanmakuClient', normalizeLogLevel(config.logLevel, 'info'));
     this.clientId = config.clientId || generateClientId();
     this.cookieProvider = config.cookieProvider;
+    this.liveWsConfigProvider = config.liveWsConfigProvider;
+    this.liveWsConnectionFactory = config.liveWsConnectionFactory;
 
     this.configManager = new ConfigManager({
       ...config,
       clientId: this.clientId
     });
     this.configManager.validate();
+    this.applyRuntimeTunings(this.configManager.getConfig());
 
     if (config.accountToken) {
       this.accountClient = new AccountApiClient(
@@ -76,8 +145,19 @@ export class DanmakuClient extends EventEmitter {
     this.initializeManagers();
   }
 
+  applyCliOptions(options: CliOptions): void {
+    if (this.isRunning) {
+      throw new Error('客户端运行中不可更新 CLI 配置');
+    }
+    this.configManager.updateFromCliOptions(options);
+    this.configManager.validate();
+    this.applyRuntimeTunings(this.configManager.getConfig());
+    this.initializeManagers();
+  }
+
   private initializeManagers(): void {
     const finalConfig = this.configManager.getConfig();
+    this.applyRuntimeTunings(finalConfig);
 
     if (this.cookieManager) {
       this.cookieManager.stopPeriodicUpdate();
@@ -101,7 +181,8 @@ export class DanmakuClient extends EventEmitter {
       finalConfig.signalrUrl,
       finalConfig.autoReconnect,
       finalConfig.reconnectInterval,
-      finalConfig.signalrHeaders
+      finalConfig.signalrHeaders,
+      this.logger.child('SignalR')
     );
     this.setupSignalREvents();
 
@@ -110,10 +191,10 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.statusManager = new StreamerStatusManager(
-      finalConfig.streamers,
       finalConfig.statusCheckInterval,
       finalConfig.signalrUrl,
-      finalConfig.fetchImpl
+      finalConfig.fetchImpl,
+      this.logger.child('StatusManager')
     );
     this.statusManager.updateServerRooms(this.serverAssignedRooms);
     this.setupStatusManagerEvents();
@@ -128,7 +209,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.signalrConnection.onRoomAssigned = (roomId: number) => {
-      console.log(`收到服务器分配的房间: ${roomId}`);
+      this.logger.info(`收到服务器分配的房间: ${roomId}`);
       if (!this.serverAssignedRooms.includes(roomId)) {
         this.serverAssignedRooms.push(roomId);
       }
@@ -139,6 +220,45 @@ export class DanmakuClient extends EventEmitter {
       void this.syncRuntimeState();
       this.emit('roomAssigned', roomId);
     };
+
+    this.signalrConnection.onRoomReplaced = (oldRoomId: number, newRoomId: number) => {
+      this.logger.info(`收到服务器替换指令: ${oldRoomId} -> ${newRoomId}`);
+      this.applyServerRoomReplacement(oldRoomId, newRoomId);
+    };
+
+    this.signalrConnection.onConnected = () => {
+      this.scheduleMessageDispatch(0);
+    };
+
+    this.signalrConnection.onReconnected = () => {
+      void this.reRegisterSignalRClient();
+      this.scheduleMessageDispatch(0);
+    };
+  }
+
+  private applyServerRoomReplacement(oldRoomId: number, newRoomId: number): void {
+    if (oldRoomId <= 0 || newRoomId <= 0) {
+      return;
+    }
+
+    this.serverAssignedRooms = this.serverAssignedRooms.filter(id => id !== oldRoomId);
+    if (!this.serverAssignedRooms.includes(newRoomId)) {
+      this.serverAssignedRooms.push(newRoomId);
+    }
+    this.lastRoomAssigned = newRoomId;
+
+    const statusManager = this.statusManager;
+    statusManager?.updateServerRooms(this.serverAssignedRooms);
+    statusManager?.refreshNow();
+
+    this.disconnectFromRoom(oldRoomId);
+    if (!this.connections.has(newRoomId)) {
+      this.queueRoomConnect(newRoomId, 'server');
+    }
+
+    this.updateConnections();
+    void this.syncRuntimeState();
+    this.emit('roomReplaced', { oldRoomId, newRoomId });
   }
 
   /**
@@ -150,7 +270,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.statusManager.onStatusUpdated = (statuses: StreamerStatus[]) => {
-      console.log(`更新主播状态: ${statuses.filter(s => s.isLive).length}/${statuses.length} 在线`);
+      this.logger.info(`更新主播状态: ${statuses.filter(s => s.isLive).length}/${statuses.length} 在线`);
       this.updateConnections();
       this.emit('streamerStatusUpdated', statuses);
     };
@@ -161,24 +281,25 @@ export class DanmakuClient extends EventEmitter {
    */
   async start(): Promise<void> {
     if (this.isRunning) {
-      console.warn('客户端已在运行中');
+      this.logger.warn('客户端已在运行中');
       return;
     }
 
     try {
-      console.log('正在启动弹幕客户端... (v_hot_reload)');
+      this.isStopping = false;
+      this.logger.info('正在启动弹幕客户端... (v_hot_reload)');
 
       await this.prepareAccountConfig();
-      await this.syncRuntimeState({}, { strict: true });
+      await this.acquireRuntimeLock();
 
       // 启动CookieManager
       if (this.cookieManager) {
-        console.log('启动Cookie管理器...');
+        this.logger.info('启动Cookie管理器...');
         this.cookieManager.startPeriodicUpdate();
       }
 
       // 连接SignalR
-      console.log('连接到SignalR服务器...');
+      this.logger.info('连接到SignalR服务器...');
       const signalrConnection = this.ensureSignalRConnection();
       const signalrConnected = await signalrConnection.connect();
       if (!signalrConnected) {
@@ -186,11 +307,15 @@ export class DanmakuClient extends EventEmitter {
       }
 
       // 注册客户端
-      const streamers = this.configManager.getStreamers();
-      await signalrConnection.registerClient(streamers.map(s => s.roomId));
+      const registerSuccess = await signalrConnection.registerClient([]);
+      if (!registerSuccess) {
+        throw new Error('SignalR客户端注册失败');
+      }
+      this.isRunning = true;
+      this.messageCount = 0;
 
       // 启动状态管理器
-      console.log('启动状态检查器...');
+      this.logger.info('启动状态检查器...');
       const statusManager = this.ensureStatusManager();
       statusManager.updateServerRooms(this.serverAssignedRooms);
       statusManager.start();
@@ -198,20 +323,19 @@ export class DanmakuClient extends EventEmitter {
 
       // 请求服务器分配房间（如果需要）
       const finalConfig = this.configManager.getConfig();
-      if ((finalConfig.requestServerRooms ?? true) && streamers.length === 0) {
-        console.log('没有配置主播，请求服务器分配房间...');
+      if (finalConfig.requestServerRooms ?? true) {
+        this.logger.info('请求服务器分配房间...');
         await signalrConnection.requestRoomAssignment();
       }
 
-      this.isRunning = true;
-      this.messageCount = 0;
-      console.log('弹幕客户端启动成功');
+      this.logger.info('弹幕客户端启动成功');
       await this.syncRuntimeState();
       this.ensureHeartbeat();
+      this.scheduleMessageDispatch(0);
 
     } catch (error) {
-      console.error('启动弹幕客户端失败:', error);
-      this.recordError(error);
+      this.logger.error('启动弹幕客户端失败:', error);
+      this.recordError(error, { category: 'config', code: 'CLIENT_START_FAILED' });
       await this.stop({ suppressReleaseErrors: true });
       throw error;
     }
@@ -221,9 +345,17 @@ export class DanmakuClient extends EventEmitter {
    * 停止客户端
    */
   async stop(options?: { suppressReleaseErrors?: boolean }): Promise<void> {
-    console.log('正在停止弹幕客户端...');
+    this.logger.info('正在停止弹幕客户端...');
+    this.isStopping = true;
+    this.isRunning = false;
 
     this.stopAccountConfigRefresh();
+
+    if (this.updateConnectionsTimer) {
+      clearTimeout(this.updateConnectionsTimer);
+      this.updateConnectionsTimer = undefined;
+    }
+    this.clearQueuedRoomConnects();
 
     // 停止状态管理器
     this.statusManager?.stop();
@@ -233,7 +365,7 @@ export class DanmakuClient extends EventEmitter {
       try {
         connInfo.connection.close();
       } catch (error) {
-        console.error(`关闭房间 ${roomId} 连接失败:`, error);
+        this.logger.error(`关闭房间 ${roomId} 连接失败:`, error);
       }
     }
     this.connections.clear();
@@ -245,39 +377,41 @@ export class DanmakuClient extends EventEmitter {
 
     // 断开SignalR连接
     await this.signalrConnection?.disconnect();
-
-    if (this.updateConnectionsTimer) {
-      clearTimeout(this.updateConnectionsTimer);
-      this.updateConnectionsTimer = undefined;
-    }
-
-    this.isRunning = false;
     this.serverAssignedRooms = [];
     this.statusManager?.updateServerRooms([]);
     this.messageCount = 0;
     this.lastRoomAssigned = undefined;
     this.lastError = undefined;
+    this.recentErrors = [];
+    this.clearMessageDispatch();
+    this.pendingMessages = [];
     this.clearHeartbeat();
     await this.syncRuntimeState();
     if (this.accountClient) {
       try {
         await this.accountClient.releaseRuntimeState(this.clientId);
       } catch (releaseError) {
-        this.recordError(releaseError);
+        this.recordError(releaseError, { category: 'lock', code: 'LOCK_RELEASE_FAILED', recoverable: true });
         if (options?.suppressReleaseErrors) {
-          console.warn('释放核心锁失败', releaseError);
+          this.logger.warn('释放核心锁失败', releaseError);
         } else {
+          this.isStopping = false;
           throw releaseError;
         }
       }
     }
-    console.log('弹幕客户端已停止');
+    this.isStopping = false;
+    this.logger.info('弹幕客户端已停止');
   }
 
   /**
    * 更新连接状态
    */
   private updateConnections(): void {
+    if (!this.isRunning || this.isStopping) {
+      return;
+    }
+
     if (this.updateConnectionsTimer) {
       clearTimeout(this.updateConnectionsTimer);
     }
@@ -289,13 +423,15 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private applyConnectionsUpdate(): void {
-    const streamers = this.configManager.getStreamers();
+    if (!this.isRunning || this.isStopping) {
+      return;
+    }
+
     const config = this.configManager.getConfig();
 
     // 获取应该连接的房间
     const statusManager = this.ensureStatusManager();
     const roomsToConnect = statusManager.getRoomsToConnect(
-      streamers,
       this.serverAssignedRooms,
       config.maxConnections
     );
@@ -303,6 +439,12 @@ export class DanmakuClient extends EventEmitter {
     // 当前连接的房间
     const currentConnections = Array.from(this.connections.keys());
     const targetRooms = roomsToConnect.map(r => r.roomId);
+
+    for (const queuedRoomId of Array.from(this.queuedRoomIds)) {
+      if (!targetRooms.includes(queuedRoomId)) {
+        this.removeQueuedRoomConnect(queuedRoomId);
+      }
+    }
 
     // 断开不需要的连接
     for (const roomId of currentConnections) {
@@ -314,33 +456,148 @@ export class DanmakuClient extends EventEmitter {
     // 建立新的连接
     for (const roomConfig of roomsToConnect) {
       if (!this.connections.has(roomConfig.roomId)) {
-        this.connectToRoom(roomConfig.roomId, roomConfig.priority);
+        this.queueRoomConnect(roomConfig.roomId, roomConfig.priority);
       }
     }
 
-    // 本地无直播/有空闲时：请求服务器分配补位房间
-    if ((config.requestServerRooms ?? true) && roomsToConnect.length < config.maxConnections) {
-      this.maybeRequestServerRoomAssignment(config.maxConnections);
+    // 定期向服务器请求分配/替换（由服务端根据容量与优先级决策）
+    if (config.requestServerRooms ?? true) {
+      this.maybeRequestServerRoomAssignment();
     }
 
     void this.syncRuntimeState();
+  }
+
+  private queueRoomConnect(roomId: number, priority: 'high' | 'normal' | 'low' | 'server'): void {
+    if (!this.isRunning || this.isStopping || roomId <= 0) {
+      return;
+    }
+
+    if (this.connections.has(roomId)) {
+      return;
+    }
+
+    if (this.queuedRoomIds.has(roomId)) {
+      const queued = this.queuedRoomConnects.find(item => item.roomId === roomId);
+      if (queued) {
+        queued.priority = priority;
+      }
+      return;
+    }
+
+    this.queuedRoomConnects.push({ roomId, priority });
+    this.queuedRoomIds.add(roomId);
+    this.scheduleQueuedRoomConnect();
+  }
+
+  private removeQueuedRoomConnect(roomId: number): void {
+    if (!this.queuedRoomIds.delete(roomId)) {
+      return;
+    }
+    this.queuedRoomConnects = this.queuedRoomConnects.filter(item => item.roomId !== roomId);
+  }
+
+  private clearQueuedRoomConnects(): void {
+    if (this.roomConnectQueueTimer) {
+      clearTimeout(this.roomConnectQueueTimer);
+      this.roomConnectQueueTimer = undefined;
+    }
+    this.queuedRoomConnects = [];
+    this.queuedRoomIds.clear();
+    this.lastRoomConnectStartAt = 0;
+  }
+
+  private scheduleQueuedRoomConnect(): void {
+    if (this.roomConnectQueueTimer || this.queuedRoomConnects.length === 0 || !this.isRunning || this.isStopping) {
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - this.lastRoomConnectStartAt;
+    const waitMs = this.lastRoomConnectStartAt === 0
+      ? 0
+      : Math.max(0, this.roomConnectStartInterval - elapsed);
+
+    this.roomConnectQueueTimer = setTimeout(() => {
+      this.roomConnectQueueTimer = undefined;
+      void this.processQueuedRoomConnect();
+    }, waitMs);
+  }
+
+  private async processQueuedRoomConnect(): Promise<void> {
+    if (!this.isRunning || this.isStopping) {
+      this.clearQueuedRoomConnects();
+      return;
+    }
+
+    const next = this.queuedRoomConnects.shift();
+    if (!next) {
+      return;
+    }
+    this.queuedRoomIds.delete(next.roomId);
+
+    if (!this.connections.has(next.roomId) && this.isRoomStillDesired(next.roomId)) {
+      this.lastRoomConnectStartAt = Date.now();
+      await this.connectToRoom(next.roomId, next.priority);
+    }
+
+    if (this.queuedRoomConnects.length > 0) {
+      this.scheduleQueuedRoomConnect();
+    }
+  }
+
+  private isRoomStillDesired(roomId: number): boolean {
+    if (roomId <= 0 || !this.statusManager) {
+      return false;
+    }
+
+    const config = this.configManager.getConfig();
+    const roomsToConnect = this.statusManager.getRoomsToConnect(
+      this.serverAssignedRooms,
+      config.maxConnections
+    );
+    return roomsToConnect.some(item => item.roomId === roomId);
   }
 
   /**
    * 连接到单个房间
    */
   private async connectToRoom(roomId: number, priority: 'high' | 'normal' | 'low' | 'server'): Promise<void> {
+    if (!this.isRunning || this.isStopping) {
+      return;
+    }
+
     if (this.connections.has(roomId)) {
-      console.warn(`房间 ${roomId} 已经连接`);
+      this.logger.warn(`房间 ${roomId} 已经连接`);
       return;
     }
 
     try {
-      console.log(`正在连接到房间 ${roomId} (优先级: ${priority})...`);
+      this.logger.info(`正在连接到房间 ${roomId} (优先级: ${priority})...`);
 
-      const connectionOptions = this.buildConnectionOptionsFromCookie();
-
-      const liveWS = new LiveWS(roomId, connectionOptions);
+      const connectionOptions = await this.resolveLiveWsConnectionOptions(roomId);
+      const targetRoomId = typeof connectionOptions.roomId === 'number' && connectionOptions.roomId > 0
+        ? connectionOptions.roomId
+        : roomId;
+      const { roomId: _resolvedRoomId, ...liveOptions } = connectionOptions;
+      const keyLength = typeof liveOptions.key === 'string' ? liveOptions.key.length : 0;
+      const addressHost = typeof liveOptions.address === 'string'
+        ? (liveOptions.address.replace(/^wss?:\/\//i, '').split('/')[0] || 'unknown')
+        : 'none';
+      this.logger.info(
+        `房间 ${roomId} 鉴权参数: wsRoom=${targetRoomId}, keyLen=${keyLength}, addressHost=${addressHost}, uid=${liveOptions.uid ?? 0}, buvid=${liveOptions.buvid ? 'present' : 'missing'}`
+      );
+      const roomConfig: LiveWsRoomConfig = {
+        address: liveOptions.address ?? '',
+        key: liveOptions.key ?? '',
+        uid: liveOptions.uid,
+        buvid: liveOptions.buvid,
+        protover: liveOptions.protover,
+        roomId: targetRoomId
+      };
+      const liveWS = this.liveWsConnectionFactory
+        ? await this.liveWsConnectionFactory(targetRoomId, roomConfig)
+        : new LiveWS(targetRoomId, liveOptions);
 
       // 设置事件监听
       this.setupLiveWSEvents(liveWS, roomId);
@@ -356,37 +613,100 @@ export class DanmakuClient extends EventEmitter {
       this.emit('connected', roomId);
       void this.syncRuntimeState();
 
-      console.log(`✓ 房间 ${roomId} 连接成功`);
+      this.logger.info(`房间 ${roomId} 连接已创建 (ws room=${targetRoomId})`);
 
     } catch (error) {
-      console.error(`连接到房间 ${roomId} 失败:`, error);
+      this.logger.error(`连接到房间 ${roomId} 失败:`, error);
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      this.recordError(normalizedError);
+      this.recordError(normalizedError, { category: 'livews', code: 'LIVEWS_CONNECT_FAILED', roomId, recoverable: true });
       this.emit('error', normalizedError, roomId);
     }
   }
 
-  private buildConnectionOptionsFromCookie(): Record<string, number | string> {
-    const cookie = this.cookieProvider?.()?.trim();
-    if (!cookie) {
-      return {};
-    }
+  private async resolveLiveWsConnectionOptions(roomId: number): Promise<LiveWsConnectionOptions> {
+    const preferredCookie = this.getPreferredCookie();
+    const cookie = preferredCookie?.value;
+    const uid = this.readUidFromCookie(cookie);
+    const buvid = this.readBuvidFromCookie(cookie);
+    this.logger.info(
+      `房间 ${roomId} 准备获取鉴权: cookieSource=${preferredCookie?.source ?? 'none'}, uid=${uid}, buvid=${buvid ? 'present' : 'missing'}, provider=${this.liveWsConfigProvider ? 'remote' : 'none'}`
+    );
 
-    const options: Record<string, number | string> = {};
-
-    const uidText = DanmakuClient.readCookieValue(cookie, 'DedeUserID');
-    if (uidText && /^[0-9]+$/.test(uidText)) {
-      options.uid = Number(uidText);
-    }
-
-    const buvid = DanmakuClient.readCookieValue(cookie, 'buvid3')
-      ?? DanmakuClient.readCookieValue(cookie, 'buvid4')
-      ?? DanmakuClient.readCookieValue(cookie, 'buvid_fp');
+    const options: LiveWsConnectionOptions = {
+      uid,
+      protover: 3
+    };
     if (buvid) {
       options.buvid = buvid;
     }
 
-    return options;
+    if (!this.liveWsConfigProvider) {
+      return options;
+    }
+
+    const remote = await this.liveWsConfigProvider(roomId);
+    if (!remote) {
+      this.logger.warn(`房间 ${roomId} 鉴权提供器返回空配置，将使用本地默认参数`);
+      return options;
+    }
+    if (!remote.address || !remote.key) {
+      throw new Error(`房间 ${roomId} 鉴权信息不完整`);
+    }
+
+    const remoteUid = typeof remote.uid === 'number' && Number.isFinite(remote.uid) ? Math.floor(remote.uid) : 0;
+    const localUid = typeof options.uid === 'number' && Number.isFinite(options.uid) ? Math.floor(options.uid) : 0;
+    const mergedUid = remoteUid > 0 ? remoteUid : localUid;
+    if (remoteUid <= 0 && localUid > 0) {
+      this.logger.warn(
+        `房间 ${roomId} 鉴权配置返回 uid=${remoteUid}，回退使用本地 cookie uid=${localUid}`
+      );
+    }
+
+    return {
+      ...options,
+      ...remote,
+      uid: mergedUid,
+      buvid: remote.buvid ?? options.buvid,
+      protover: remote.protover ?? options.protover
+    };
+  }
+
+  private readUidFromCookie(cookie?: string): number {
+    if (!cookie) {
+      return 0;
+    }
+    const uidText = DanmakuClient.readCookieValue(cookie, 'DedeUserID');
+    if (uidText && /^[0-9]+$/.test(uidText)) {
+      return Number(uidText);
+    }
+    return 0;
+  }
+
+  private readBuvidFromCookie(cookie?: string): string | undefined {
+    if (!cookie) {
+      return undefined;
+    }
+    return DanmakuClient.readCookieValue(cookie, 'buvid3')
+      ?? DanmakuClient.readCookieValue(cookie, 'buvid4')
+      ?? DanmakuClient.readCookieValue(cookie, 'buvid_fp');
+  }
+
+  private getPreferredCookie(): { source: CookieSource; value: string } | null {
+    const localCookie = this.cookieProvider?.()?.trim();
+    if (localCookie) {
+      return { source: 'biliLocal', value: localCookie };
+    }
+
+    const cloudCookie = this.cookieManager?.getCookies().trim();
+    if (cloudCookie) {
+      return { source: 'cookieCloud', value: cloudCookie };
+    }
+
+    return null;
+  }
+
+  private hasAvailableCookie(): boolean {
+    return this.getPreferredCookie() !== null;
   }
 
   private static readCookieValue(cookie: string, key: string): string | undefined {
@@ -410,17 +730,39 @@ export class DanmakuClient extends EventEmitter {
     return undefined;
   }
 
+  private static waitMs(delayMs: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+
   /**
    * 设置LiveWS事件监听
    */
-  private setupLiveWSEvents(liveWS: LiveWS, roomId: number): void {
+  private setupLiveWSEvents(liveWS: LiveWsConnection, roomId: number): void {
     liveWS.addEventListener('open', () => {
-      console.log(`房间 ${roomId} WebSocket连接已建立`);
+      this.logger.info(`房间 ${roomId} WebSocket连接已建立`);
     });
 
-    liveWS.addEventListener('close', () => {
+    liveWS.addEventListener('CONNECT_SUCCESS', ({ data }: any) => {
+      this.logger.debug(`房间 ${roomId} CONNECT_SUCCESS`, data);
+    });
+
+    liveWS.addEventListener('HEARTBEAT_REPLY', ({ data }: any) => {
+      this.logger.debug(`房间 ${roomId} HEARTBEAT_REPLY`, data);
+    });
+
+    liveWS.addEventListener('error:decode', (event: any) => {
+      const reason = event?.error instanceof Error ? event.error.message : String(event?.error ?? 'unknown');
+      const decodeError = new Error(`房间 ${roomId} 消息解码失败: ${reason}`);
+      this.logger.error(decodeError.message, event?.error ?? event);
+      this.recordError(decodeError, { category: 'livews', code: 'MESSAGE_DECODE_FAILED', roomId, recoverable: true });
+      this.emit('error', decodeError, roomId);
+    });
+
+    liveWS.addEventListener('close', (event: any) => {
       const connectionInfo = this.connections.get(roomId);
-      console.log(`房间 ${roomId} WebSocket连接已关闭`);
+      const code = typeof event?.code === 'number' ? event.code : -1;
+      const reason = typeof event?.reason === 'string' ? event.reason : '';
+      this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
       this.connections.delete(roomId);
       this.emit('disconnected', roomId);
       void this.syncRuntimeState();
@@ -431,26 +773,30 @@ export class DanmakuClient extends EventEmitter {
         if (lifetimeMs < 10_000) {
           this.serverAssignedRooms = this.serverAssignedRooms.filter(id => id !== roomId);
           this.statusManager?.updateServerRooms(this.serverAssignedRooms);
-          this.maybeRequestServerRoomAssignment(this.configManager.getConfig().maxConnections);
-          this.updateConnections();
+          this.maybeRequestServerRoomAssignment();
         }
+      }
+
+      if (!this.isStopping && this.isRunning) {
+        this.updateConnections();
       }
     });
 
     liveWS.addEventListener('error', (event: any) => {
-      console.error(`房间 ${roomId} WebSocket错误:`, event);
+      this.logger.error(`房间 ${roomId} WebSocket错误:`, event);
       const error = new Error(`房间 ${roomId} WebSocket错误`);
-      this.recordError(error);
+      this.recordError(error, { category: 'livews', code: 'LIVEWS_RUNTIME_ERROR', roomId, recoverable: true });
       this.emit('error', error, roomId);
     });
 
     // 监听所有消息，统一处理
     liveWS.addEventListener('MESSAGE', ({ data }: any) => {
       const message = this.parseMessage(data, roomId);
+      this.logger.debug(`房间 ${roomId} 收到消息 cmd=${message.cmd}`);
       this.handleMessage(message).catch(error => {
-        console.error(`处理房间 ${roomId} 消息时发生错误:`, error);
+        this.logger.error(`处理房间 ${roomId} 消息时发生错误:`, error);
         const normalizedError = error instanceof Error ? error : new Error(String(error));
-        this.recordError(normalizedError);
+        this.recordError(normalizedError, { category: 'livews', code: 'MESSAGE_HANDLE_FAILED', roomId, recoverable: true });
         this.emit('error', normalizedError, roomId);
       });
     });
@@ -460,15 +806,35 @@ export class DanmakuClient extends EventEmitter {
    * 解析消息为统一格式
    */
   private parseMessage(data: any, roomId: number, cmd?: string): DanmakuMessage {
-    const actualCmd = cmd || data.cmd || 'UNKNOWN';
+    const actualCmd = cmd || data?.cmd || data?.msg?.cmd || 'UNKNOWN';
 
     return {
       roomId,
       cmd: actualCmd,
       data: data,
-      raw: JSON.stringify(data),
+      raw: this.safeStringify(data),
       timestamp: Date.now()
     };
+  }
+
+  private safeStringify(value: unknown): string {
+    const seen = new WeakSet<object>();
+    try {
+      return JSON.stringify(value, (_key, item) => {
+        if (typeof item === 'bigint') {
+          return item.toString();
+        }
+        if (item && typeof item === 'object') {
+          if (seen.has(item)) {
+            return '[Circular]';
+          }
+          seen.add(item);
+        }
+        return item;
+      });
+    } catch {
+      return '[Unserializable Message]';
+    }
   }
 
   /**
@@ -482,20 +848,19 @@ export class DanmakuClient extends EventEmitter {
     // 发射特定cmd的事件
     this.emit(message.cmd, message);
 
-    // 发送到SignalR服务器
-    const connection = this.ensureSignalRConnection();
-    await connection.sendMessage(message);
+    this.enqueueMessage(message);
   }
 
   /**
    * 断开房间连接
    */
   private disconnectFromRoom(roomId: number): void {
+    this.removeQueuedRoomConnect(roomId);
     const connectionInfo = this.connections.get(roomId);
     if (connectionInfo) {
       connectionInfo.connection.close();
       this.connections.delete(roomId);
-      console.log(`✗ 房间 ${roomId} 连接已断开`);
+      this.logger.info(`房间 ${roomId} 连接已断开`);
       void this.syncRuntimeState();
     }
   }
@@ -531,10 +896,12 @@ export class DanmakuClient extends EventEmitter {
       connectedRooms: this.getConnectedRooms(),
       connectionInfo,
       signalrConnected: this.signalrConnection?.getConnectionState() ?? false,
-      cookieValid: this.cookieManager?.isValid() || !!this.cookieProvider?.()?.trim(),
+      cookieValid: this.hasAvailableCookie(),
       streamerStatuses,
       serverAssignedRooms: [...this.serverAssignedRooms],
       messageCount: this.messageCount,
+      pendingMessageCount: this.pendingMessages.length,
+      recentErrors: this.recentErrors.map(item => ({ ...item })),
       lastRoomAssigned: this.lastRoomAssigned,
       lastError: this.lastError,
       lastHeartbeat: this.lastHeartbeat,
@@ -561,10 +928,55 @@ export class DanmakuClient extends EventEmitter {
       return;
     }
 
-    console.log('正在从账号中心加载核心配置...');
+    this.logger.info('正在从账号中心加载核心配置...');
     const remoteConfig = await this.accountClient.getCoreConfig();
     this.configManager.applyAccountConfig(remoteConfig);
+    this.applyRuntimeTunings(this.configManager.getConfig());
     this.initializeManagers();
+  }
+
+  private async acquireRuntimeLock(): Promise<void> {
+    if (!this.accountClient) {
+      return;
+    }
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.lockAcquireRetryCount; attempt++) {
+      try {
+        await this.syncRuntimeState({}, { strict: true });
+        if (attempt > 1) {
+          this.logger.info(`核心锁获取成功 (attempt=${attempt})`);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!this.isLockConflictError(error)) {
+          throw error;
+        }
+
+        this.recordError(error, {
+          category: 'lock',
+          code: 'LOCK_CONFLICT',
+          recoverable: true
+        });
+
+        if (attempt >= this.lockAcquireRetryCount) {
+          break;
+        }
+
+        const delay = this.lockAcquireRetryDelay * attempt + Math.floor(Math.random() * 300);
+        this.logger.warn(`核心锁冲突，${delay}ms 后重试 (attempt=${attempt}/${this.lockAcquireRetryCount})`);
+        await DanmakuClient.waitMs(delay);
+      }
+    }
+
+    if (this.lockAcquireForceTakeover && this.isLockConflictError(lastError)) {
+      this.logger.warn('核心锁冲突持续存在，执行 force 接管');
+      await this.syncRuntimeState({}, { strict: true, force: true });
+      return;
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? '核心锁获取失败'));
   }
 
   private ensureHeartbeat(): void {
@@ -578,7 +990,14 @@ export class DanmakuClient extends EventEmitter {
       this.ensureHeartbeat();
     };
 
-    this.heartbeatTimer = setTimeout(beat, HEARTBEAT_INTERVAL);
+    this.heartbeatTimer = setTimeout(beat, this.heartbeatInterval);
+  }
+
+  private isLockConflictError(error: unknown): boolean {
+    const message = this.getErrorMessage(error);
+    return message.includes('同一 IP 已存在其他客户端连接')
+      || message.includes('客户端未持有锁')
+      || message.includes('423');
   }
 
   private clearHeartbeat(): void {
@@ -634,22 +1053,17 @@ export class DanmakuClient extends EventEmitter {
       await this.accountClient.syncRuntimeState(payload as any, { force: options?.force });
       this.lastHeartbeat = Date.now();
     } catch (error) {
-      this.recordError(error);
-      console.warn('同步核心运行状态失败', error);
+      this.recordError(error, { category: 'runtime-sync', code: 'RUNTIME_SYNC_FAILED', recoverable: true });
+      this.logger.warn('同步核心运行状态失败', error);
       if (options?.strict) {
         throw error;
       }
     }
   }
 
-  private maybeRequestServerRoomAssignment(maxConnections: number): void {
+  private maybeRequestServerRoomAssignment(): void {
     const signalrConnection = this.signalrConnection;
     if (!signalrConnection?.getConnectionState()) {
-      return;
-    }
-
-    // 避免 serverAssignedRooms 失控增长：超过上限时不再继续申请
-    if (this.serverAssignedRooms.length >= maxConnections) {
       return;
     }
 
@@ -668,7 +1082,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.accountConfigRefreshTimer = setInterval(() => {
-      void this.refreshAccountStreamers();
+      void this.refreshAccountConfig();
     }, 30_000);
   }
 
@@ -680,77 +1094,434 @@ export class DanmakuClient extends EventEmitter {
     this.accountConfigRefreshing = false;
   }
 
-  private async refreshAccountStreamers(): Promise<void> {
-    if (!this.accountClient || this.accountConfigRefreshing) {
+  private enqueueMessage(message: DanmakuMessage): void {
+    if (!this.isRunning || this.isStopping) {
       return;
     }
 
+    if (this.pendingMessages.length >= this.messageQueueMaxSize) {
+      const dropped = this.pendingMessages.shift();
+      const queueError = new Error(`消息队列已满(${this.messageQueueMaxSize})，最早消息已丢弃`);
+      this.recordError(queueError, { category: 'queue', code: 'QUEUE_OVERFLOW', recoverable: true, roomId: dropped?.message.roomId });
+      this.logger.error(queueError.message, {
+        roomId: dropped?.message.roomId,
+        cmd: dropped?.message.cmd
+      });
+      this.emit('error', queueError, dropped?.message.roomId);
+    }
+
+    this.pendingMessages.push({
+      message,
+      retryCount: 0,
+      nextRetryAt: Date.now()
+    });
+    this.scheduleMessageDispatch(0);
+  }
+
+  private scheduleMessageDispatch(delayMs: number): void {
+    const delay = Math.max(0, Math.floor(delayMs));
+    if (this.messageDispatchTimer) {
+      if (delay > 0) {
+        return;
+      }
+      clearTimeout(this.messageDispatchTimer);
+      this.messageDispatchTimer = undefined;
+    }
+
+    this.messageDispatchTimer = setTimeout(() => {
+      this.messageDispatchTimer = undefined;
+      void this.flushPendingMessages();
+    }, delay);
+  }
+
+  private clearMessageDispatch(): void {
+    if (this.messageDispatchTimer) {
+      clearTimeout(this.messageDispatchTimer);
+      this.messageDispatchTimer = undefined;
+    }
+    this.messageDispatching = false;
+  }
+
+  private async flushPendingMessages(): Promise<void> {
+    if (this.messageDispatching || this.isStopping || !this.isRunning) {
+      return;
+    }
+
+    this.messageDispatching = true;
+    try {
+      while (this.pendingMessages.length > 0) {
+        const now = Date.now();
+        const queued = this.pendingMessages[0];
+
+        if (queued.nextRetryAt > now) {
+          this.scheduleMessageDispatch(queued.nextRetryAt - now);
+          return;
+        }
+
+        const signalrConnection = this.signalrConnection;
+        if (!signalrConnection?.getConnectionState()) {
+          this.scheduleMessageDispatch(this.messageRetryBaseDelay);
+          return;
+        }
+
+        const batch = this.pendingMessages
+          .slice(0, this.messageBatchSize)
+          .filter(item => item.nextRetryAt <= now);
+        if (batch.length === 0) {
+          this.scheduleMessageDispatch(this.messageRetryBaseDelay);
+          return;
+        }
+
+        const sentCount = await signalrConnection.sendMessages(batch.map(item => item.message));
+        if (sentCount > 0) {
+          this.pendingMessages.splice(0, sentCount);
+          continue;
+        }
+
+        const failed = this.pendingMessages[0];
+        failed.retryCount += 1;
+        if (failed.retryCount >= this.messageRetryMaxAttempts) {
+          this.pendingMessages.shift();
+          const sendError = new Error(
+            `消息上行失败: room=${failed.message.roomId}, cmd=${failed.message.cmd}, retry=${failed.retryCount}`
+          );
+          this.recordError(sendError, {
+            category: 'signalr',
+            code: 'MESSAGE_UPLOAD_FAILED',
+            roomId: failed.message.roomId,
+            recoverable: false
+          });
+          this.emit('error', sendError, failed.message.roomId);
+          continue;
+        }
+
+        const delay = this.calculateMessageRetryDelay(failed.retryCount);
+        failed.nextRetryAt = now + delay;
+        this.logger.warn(
+          `消息上行失败，${delay}ms 后重试 (room=${failed.message.roomId}, cmd=${failed.message.cmd}, retry=${failed.retryCount})`
+        );
+        this.scheduleMessageDispatch(delay);
+        return;
+      }
+    } finally {
+      this.messageDispatching = false;
+      if (this.pendingMessages.length > 0 && !this.messageDispatchTimer && this.isRunning && !this.isStopping) {
+        this.scheduleMessageDispatch(0);
+      }
+    }
+  }
+
+  private calculateMessageRetryDelay(retryCount: number): number {
+    const exponential = this.messageRetryBaseDelay * (2 ** Math.max(0, retryCount - 1));
+    return Math.min(exponential, this.messageRetryMaxDelay);
+  }
+
+  private applyRuntimeTunings(config: DanmakuConfig): void {
+    this.logger.setLevel(normalizeLogLevel(config.logLevel, this.logger.getLevel()));
+
+    const queueSize = Math.floor(config.messageQueueMaxSize ?? 2000);
+    this.messageQueueMaxSize = Math.max(MESSAGE_QUEUE_MIN_SIZE, queueSize);
+
+    const retryBaseDelay = Math.floor(config.messageRetryBaseDelay ?? 1000);
+    this.messageRetryBaseDelay = Math.max(MESSAGE_RETRY_MIN_DELAY, retryBaseDelay);
+
+    const retryMaxDelay = Math.floor(config.messageRetryMaxDelay ?? 30_000);
+    this.messageRetryMaxDelay = Math.max(this.messageRetryBaseDelay, retryMaxDelay);
+
+    const retryMaxAttempts = Math.floor(config.messageRetryMaxAttempts ?? 6);
+    this.messageRetryMaxAttempts = Math.max(MESSAGE_RETRY_MIN_ATTEMPTS, retryMaxAttempts);
+
+    const batchSize = Math.floor(config.batchUploadSize ?? 20);
+    this.messageBatchSize = Math.min(MESSAGE_BATCH_MAX_SIZE, Math.max(MESSAGE_BATCH_MIN_SIZE, batchSize));
+
+    const heartbeat = Math.floor(config.heartbeatInterval ?? 5000);
+    this.heartbeatInterval = Math.max(HEARTBEAT_MIN_INTERVAL, heartbeat);
+
+    const lockRetryCount = Math.floor(config.lockAcquireRetryCount ?? 4);
+    this.lockAcquireRetryCount = Math.max(LOCK_RETRY_MIN_COUNT, lockRetryCount);
+
+    const lockRetryDelay = Math.floor(config.lockAcquireRetryDelay ?? 1200);
+    this.lockAcquireRetryDelay = Math.max(LOCK_RETRY_MIN_DELAY, lockRetryDelay);
+
+    this.lockAcquireForceTakeover = config.lockAcquireForceTakeover ?? false;
+
+    const errorLimit = Math.floor(config.errorHistoryLimit ?? 50);
+    this.errorHistoryLimit = Math.max(ERROR_HISTORY_MIN_LIMIT, errorLimit);
+    if (this.recentErrors.length > this.errorHistoryLimit) {
+      this.recentErrors.splice(0, this.recentErrors.length - this.errorHistoryLimit);
+    }
+  }
+
+  private async refreshAccountConfig(): Promise<void> {
+    if (!this.accountClient || this.accountConfigRefreshing || this.isStopping || !this.isRunning) {
+      return;
+    }
+
+    const previousConfig = this.configManager.getConfig();
     this.accountConfigRefreshing = true;
     try {
       const remoteConfig = await this.accountClient.getCoreConfig();
+      this.configManager.applyAccountConfig(remoteConfig);
+      this.configManager.validate();
+      const nextConfig = this.configManager.getConfig();
 
-      const toPriority = (value: unknown): StreamerConfig['priority'] =>
-        value === 'high' || value === 'normal' || value === 'low'
-          ? value
-          : 'normal';
-
-      const normalize = (items: StreamerConfig[]) =>
-        items
-          .map(item => ({
-            roomId: Number(item.roomId),
-            priority: toPriority(item.priority),
-            name: item.name || undefined
-          }))
-          .filter(item => Number.isFinite(item.roomId) && item.roomId > 0)
-          .sort((a, b) =>
-            a.roomId - b.roomId
-            || a.priority.localeCompare(b.priority)
-            || (a.name ?? '').localeCompare(b.name ?? '')
-          );
-
-      const current = normalize(this.configManager.getStreamers());
-
-      const next = normalize(remoteConfig.streamers.map(s => ({
-        roomId: Number(s.roomId),
-        priority: toPriority(s.priority),
-        name: s.name || undefined
-      })));
-
-      const isSame = current.length === next.length
-        && current.every((item, index) => {
-          const other = next[index];
-          return other.roomId === item.roomId
-            && other.priority === item.priority
-            && (other.name ?? undefined) === (item.name ?? undefined);
-        });
-
-      if (isSame) {
+      if (!this.hasHotConfigChanges(previousConfig, nextConfig)) {
         return;
       }
 
-      this.configManager.updateConfig({ streamers: next });
-      this.statusManager?.updateStreamers(next);
-
-      if (this.signalrConnection?.getConnectionState()) {
-        await this.signalrConnection.registerClient(next.map(s => s.roomId));
-      }
-
-      this.updateConnections();
+      await this.applyHotConfigChanges(previousConfig, nextConfig);
     } catch (error) {
-      this.recordError(error);
+      const failedConfig = this.configManager.getConfig();
+      this.configManager.updateConfig(previousConfig);
+      this.applyRuntimeTunings(previousConfig);
+      try {
+        if (this.hasHotConfigChanges(failedConfig, previousConfig)) {
+          await this.applyHotConfigChanges(failedConfig, previousConfig);
+        }
+      } catch (rollbackError) {
+        this.recordError(rollbackError, { category: 'config', code: 'HOT_RELOAD_ROLLBACK_FAILED' });
+        this.logger.error('配置热更新回滚失败', rollbackError);
+      }
+      this.recordError(error, { category: 'config', code: 'HOT_RELOAD_FAILED', recoverable: true });
       this.emit('error', error instanceof Error ? error : new Error(String(error)));
     } finally {
       this.accountConfigRefreshing = false;
     }
   }
 
-  private recordError(error: unknown): void {
+  private hasHotConfigChanges(previous: DanmakuConfig, next: DanmakuConfig): boolean {
+    return previous.maxConnections !== next.maxConnections
+      || previous.signalrUrl !== next.signalrUrl
+      || previous.autoReconnect !== next.autoReconnect
+      || previous.reconnectInterval !== next.reconnectInterval
+      || previous.statusCheckInterval !== next.statusCheckInterval
+      || previous.cookieCloudKey !== next.cookieCloudKey
+      || previous.cookieCloudPassword !== next.cookieCloudPassword
+      || previous.cookieCloudHost !== next.cookieCloudHost
+      || previous.cookieRefreshInterval !== next.cookieRefreshInterval
+      || previous.requestServerRooms !== next.requestServerRooms
+      || normalizeLogLevel(previous.logLevel, 'info') !== normalizeLogLevel(next.logLevel, 'info')
+      || (previous.messageQueueMaxSize ?? 2000) !== (next.messageQueueMaxSize ?? 2000)
+      || (previous.messageRetryBaseDelay ?? 1000) !== (next.messageRetryBaseDelay ?? 1000)
+      || (previous.messageRetryMaxDelay ?? 30000) !== (next.messageRetryMaxDelay ?? 30000)
+      || (previous.messageRetryMaxAttempts ?? 6) !== (next.messageRetryMaxAttempts ?? 6)
+      || (previous.batchUploadSize ?? 20) !== (next.batchUploadSize ?? 20)
+      || (previous.heartbeatInterval ?? 5000) !== (next.heartbeatInterval ?? 5000)
+      || (previous.lockAcquireRetryCount ?? 4) !== (next.lockAcquireRetryCount ?? 4)
+      || (previous.lockAcquireRetryDelay ?? 1200) !== (next.lockAcquireRetryDelay ?? 1200)
+      || (previous.lockAcquireForceTakeover ?? false) !== (next.lockAcquireForceTakeover ?? false)
+      || (previous.errorHistoryLimit ?? 50) !== (next.errorHistoryLimit ?? 50)
+      || !this.areHeadersEqual(previous.signalrHeaders, next.signalrHeaders);
+  }
+
+  private async applyHotConfigChanges(previous: DanmakuConfig, next: DanmakuConfig): Promise<void> {
+    this.applyRuntimeTunings(next);
+
+    const statusManagerChanged = previous.statusCheckInterval !== next.statusCheckInterval
+      || previous.signalrUrl !== next.signalrUrl;
+    const signalrChanged = previous.signalrUrl !== next.signalrUrl
+      || previous.autoReconnect !== next.autoReconnect
+      || previous.reconnectInterval !== next.reconnectInterval
+      || !this.areHeadersEqual(previous.signalrHeaders, next.signalrHeaders);
+    const cookieChanged = previous.cookieCloudKey !== next.cookieCloudKey
+      || previous.cookieCloudPassword !== next.cookieCloudPassword
+      || previous.cookieCloudHost !== next.cookieCloudHost
+      || previous.cookieRefreshInterval !== next.cookieRefreshInterval;
+
+    if (cookieChanged) {
+      this.rebuildCookieManager(next);
+    }
+
+    if (statusManagerChanged) {
+      this.rebuildStatusManager(next);
+    }
+
+    if (signalrChanged) {
+      await this.rebuildSignalRConnection(next);
+    }
+
+    if (
+      statusManagerChanged
+      || signalrChanged
+      || previous.maxConnections !== next.maxConnections
+      || previous.requestServerRooms !== next.requestServerRooms
+    ) {
+      this.updateConnections();
+    }
+
+    this.logger.info('账号配置热更新已应用', {
+      signalrChanged,
+      statusManagerChanged,
+      cookieChanged,
+      maxConnections: next.maxConnections,
+      reconnectInterval: next.reconnectInterval,
+      statusCheckInterval: next.statusCheckInterval
+    });
+  }
+
+  private rebuildCookieManager(config: DanmakuConfig): void {
+    this.cookieManager?.stopPeriodicUpdate();
+    this.cookieManager = this.configManager.hasCookieCloudConfig()
+      ? new CookieManager(
+        config.cookieCloudKey!,
+        config.cookieCloudPassword!,
+        config.cookieCloudHost,
+        config.cookieRefreshInterval,
+        config.fetchImpl
+      )
+      : undefined;
+
+    if (this.isRunning && this.cookieManager) {
+      this.cookieManager.startPeriodicUpdate();
+    }
+  }
+
+  private rebuildStatusManager(config: DanmakuConfig): void {
+    this.statusManager?.stop();
+    this.statusManager = new StreamerStatusManager(
+      config.statusCheckInterval,
+      config.signalrUrl,
+      config.fetchImpl,
+      this.logger.child('StatusManager')
+    );
+    this.statusManager.updateServerRooms(this.serverAssignedRooms);
+    this.setupStatusManagerEvents();
+    if (this.isRunning && !this.isStopping) {
+      this.statusManager.start();
+    }
+  }
+
+  private async rebuildSignalRConnection(config: DanmakuConfig): Promise<void> {
+    if (this.signalrConnection) {
+      this.signalrConnection.onRoomAssigned = undefined;
+      this.signalrConnection.onRoomReplaced = undefined;
+      this.signalrConnection.onServerDisconnect = undefined;
+      this.signalrConnection.onConnected = undefined;
+      this.signalrConnection.onDisconnected = undefined;
+      this.signalrConnection.onReconnected = undefined;
+      await this.signalrConnection.disconnect();
+    }
+
+    this.signalrConnection = new SignalRConnection(
+      config.signalrUrl,
+      config.autoReconnect,
+      config.reconnectInterval,
+      config.signalrHeaders,
+      this.logger.child('SignalR')
+    );
+    this.setupSignalREvents();
+
+    if (!this.isRunning || this.isStopping) {
+      return;
+    }
+
+    const connected = await this.signalrConnection.connect();
+    if (!connected) {
+      throw new Error('配置热更新后无法连接SignalR');
+    }
+
+    const registered = await this.signalrConnection.registerClient([]);
+    if (!registered) {
+      throw new Error('配置热更新后客户端注册失败');
+    }
+
+    if (config.requestServerRooms ?? true) {
+      await this.signalrConnection.requestRoomAssignment();
+    }
+    this.scheduleMessageDispatch(0);
+  }
+
+  private async reRegisterSignalRClient(): Promise<void> {
+    const signalrConnection = this.signalrConnection;
+    if (!signalrConnection?.getConnectionState()) {
+      return;
+    }
+
+    const registered = await signalrConnection.registerClient([]);
+    if (!registered) {
+      const error = new Error('SignalR重连后重新注册客户端失败');
+      this.recordError(error, { category: 'signalr', code: 'SIGNALR_REREGISTER_FAILED', recoverable: true });
+      this.emit('error', error);
+      return;
+    }
+
+    const config = this.configManager.getConfig();
+    if (config.requestServerRooms ?? true) {
+      await signalrConnection.requestRoomAssignment();
+    }
+  }
+
+  private areHeadersEqual(
+    left?: Record<string, string>,
+    right?: Record<string, string>
+  ): boolean {
+    if (!left && !right) {
+      return true;
+    }
+    if (!left || !right) {
+      return false;
+    }
+
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    if (leftKeys.length !== rightKeys.length) {
+      return false;
+    }
+
+    return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+  }
+
+  private recordError(error: unknown, context?: ClientErrorContext): void {
+    const message = this.getErrorMessage(error);
+    const category = context?.category ?? 'unknown';
+    const code = context?.code ?? this.defaultErrorCodeByCategory(category);
+    const recoverable = context?.recoverable ?? false;
+    const roomId = context?.roomId;
+
+    this.lastError = `[${code}] ${message}`;
+    const record: ClientErrorRecord = {
+      timestamp: Date.now(),
+      category,
+      code,
+      message,
+      recoverable,
+      ...(typeof roomId === 'number' ? { roomId } : {})
+    };
+
+    this.recentErrors.push(record);
+    if (this.recentErrors.length > this.errorHistoryLimit) {
+      this.recentErrors.splice(0, this.recentErrors.length - this.errorHistoryLimit);
+    }
+  }
+
+  private getErrorMessage(error: unknown): string {
     if (error instanceof Error) {
-      this.lastError = error.message;
-    } else if (typeof error === 'string') {
-      this.lastError = error;
-    } else {
-      this.lastError = JSON.stringify(error);
+      return error.message;
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    return JSON.stringify(error);
+  }
+
+  private defaultErrorCodeByCategory(category: ErrorCategory): string {
+    switch (category) {
+      case 'network':
+        return 'NETWORK_ERROR';
+      case 'signalr':
+        return 'SIGNALR_ERROR';
+      case 'runtime-sync':
+        return 'RUNTIME_SYNC_ERROR';
+      case 'livews':
+        return 'LIVEWS_ERROR';
+      case 'config':
+        return 'CONFIG_ERROR';
+      case 'queue':
+        return 'QUEUE_ERROR';
+      case 'lock':
+        return 'LOCK_ERROR';
+      default:
+        return 'UNKNOWN_ERROR';
     }
   }
 

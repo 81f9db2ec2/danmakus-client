@@ -1,81 +1,135 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue';
+import { Github, LogOut, MessageSquare, Shield } from 'lucide-vue-next';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
-  NButton,
-  NCard,
-  NDescriptions,
-  NDescriptionsItem,
-  NDivider,
-  NIcon,
-  NPopconfirm,
-  NSpace,
-  NTag
-} from 'naive-ui';
-import { GithubSquare, SignOutAlt, UserCircle } from '@vicons/fa';
-import type { UserInfo } from '../../types/api';
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
+import { Separator } from '@/components/ui/separator';
+import type { RecordingInfoDto, UserInfo } from '../../types/api';
 
-defineProps<{
+const props = defineProps<{
   userInfo: UserInfo | null;
+  recordings: RecordingInfoDto[];
 }>();
 
 const emit = defineEmits<{
   (e: 'logout'): void;
 }>();
 
-const getOAuthIcon = (provider: string) => {
-  switch (provider.toLowerCase()) {
-    case 'github':
-      return GithubSquare;
-    default:
-      return null;
-  }
+const showLogoutDialog = ref(false);
+
+const isGithubOAuth = (provider: string) => provider.toLowerCase() === 'github';
+
+const totalProvidedDataCount = computed(() =>
+  props.recordings.reduce((sum, item) => sum + Number(item.providedDanmakuDataCount ?? 0), 0)
+);
+
+const totalProvidedMessageCount = computed(() =>
+  props.recordings.reduce((sum, item) => sum + Number(item.providedMessageCount ?? 0), 0)
+);
+
+const confirmLogout = () => {
+  showLogoutDialog.value = false;
+  emit('logout');
 };
 </script>
 
 <template>
-  <div class="account-tab">
-    <n-card>
-      <n-space align="center" style="margin-bottom: 20px">
-        <n-icon size="48" color="#ccc"><UserCircle /></n-icon>
-        <div>
-          <div style="font-size: 18px; font-weight: bold">{{ userInfo?.name || 'Unknown' }}</div>
-          <div style="color: #666; font-size: 12px">ID: {{ userInfo?.id }}</div>
+  <div class="space-y-5">
+    <div>
+      <h2 class="text-xl font-semibold tracking-tight">账户信息</h2>
+      <p class="mt-0.5 text-sm text-muted-foreground">用户档案与登录管理</p>
+    </div>
+
+    <!-- Profile card -->
+    <Card class="bg-card/60">
+      <CardHeader>
+        <div class="flex items-center gap-4">
+          <Avatar class="h-14 w-14 border-2 border-border">
+            <AvatarFallback class="bg-gradient-to-br from-primary/20 to-primary/5 text-lg">
+              {{ userInfo?.name?.charAt(0) || '?' }}
+            </AvatarFallback>
+          </Avatar>
+          <div class="min-w-0 flex-1">
+            <CardTitle class="truncate text-xl">{{ userInfo?.name || 'Unknown' }}</CardTitle>
+            <CardDescription>ID: {{ userInfo?.id }}</CardDescription>
+          </div>
         </div>
-      </n-space>
+      </CardHeader>
+    </Card>
 
-      <n-descriptions bordered>
-        <n-descriptions-item label="OAuth 绑定">
-          <n-space>
-            <n-tag v-for="provider in userInfo?.bindedOAuth" :key="provider" type="info" size="small">
-              <template #icon>
-                <n-icon v-if="getOAuthIcon(provider)" :component="getOAuthIcon(provider)!" />
-              </template>
-              {{ provider }}
-            </n-tag>
-            <span v-if="!userInfo?.bindedOAuth.length">无</span>
-          </n-space>
-        </n-descriptions-item>
-        <n-descriptions-item label="收到弹幕">
-          {{ userInfo?.recievedDanmakusCount }}
-        </n-descriptions-item>
-      </n-descriptions>
+    <!-- Stats grid -->
+    <div class="grid gap-3 sm:grid-cols-2">
+      <Card class="bg-card/60">
+        <CardContent class="p-4">
+          <div class="flex items-center gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+              <Shield class="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">OAuth 绑定</p>
+              <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                <Badge v-for="provider in userInfo?.bindedOAuth" :key="provider" variant="secondary" class="gap-1 text-xs">
+                  <Github v-if="isGithubOAuth(provider)" class="h-3 w-3" />
+                  {{ provider }}
+                </Badge>
+                <span v-if="!userInfo?.bindedOAuth.length" class="text-sm text-muted-foreground">无</span>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <n-divider />
+      <Card class="bg-card/60">
+        <CardContent class="p-4">
+          <div class="flex items-center gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-chart-2/10">
+              <MessageSquare class="h-5 w-5 text-chart-2" />
+            </div>
+            <div>
+              <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">房间贡献</p>
+              <p class="mt-0.5 text-xl font-bold tabular-nums">{{ totalProvidedDataCount.toLocaleString() }}</p>
+              <p class="text-[11px] text-muted-foreground">消息: {{ totalProvidedMessageCount.toLocaleString() }}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
 
-      <n-popconfirm @positive-click="emit('logout')">
-        <template #trigger>
-          <n-button type="error" block ghost>
-            <template #icon><n-icon><SignOutAlt /></n-icon></template>
-            退出登录
-          </n-button>
-        </template>
-        确定要清除 Token 并退出吗？
-      </n-popconfirm>
-    </n-card>
+    <Separator />
+
+    <!-- Logout -->
+    <Button variant="destructive" class="w-full" @click="showLogoutDialog = true">
+      <LogOut class="h-4 w-4" />
+      退出登录
+    </Button>
+
+    <!-- Logout confirmation dialog -->
+    <Dialog v-model:open="showLogoutDialog">
+      <DialogContent class="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>确认退出</DialogTitle>
+          <DialogDescription>退出将清除 Token 并停止正在运行的核心服务。</DialogDescription>
+        </DialogHeader>
+        <div class="flex justify-end gap-2 pt-2">
+          <Button variant="outline" size="sm" @click="showLogoutDialog = false">取消</Button>
+          <Button variant="destructive" size="sm" @click="confirmLogout">确认退出</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
-
-<style scoped>
-.account-tab {
-  padding-top: 12px;
-}
-</style>

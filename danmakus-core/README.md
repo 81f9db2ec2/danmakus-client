@@ -1,255 +1,131 @@
 # Danmakus Core
 
-一个轻量级的 Bilibili 弹幕采集库，支持 CLI 和库引用两种使用方式。
+`danmakus-core` 是 `danmakus-client` 的采集内核，负责：
 
-## 功能特性
+- 连接 Bilibili 直播间并解析消息
+- 通过 UserHub 上行消息
+- 轮询主播状态并维护连接池
+- 与账号中心同步核心运行态
 
-- 🚀 **轻量高效**: 基于 TypeScript 开发，体积小、性能优
-- 🔌 **多平台支持**: 支持 CLI（Docker + Bun）和库引用（Tauri 浏览器环境）
-- 📡 **SignalR 集成**: 通过 SignalR 实时上传弹幕数据到服务器
-- 🍪 **CookieCloud 集成**: 定期从 CookieCloud 获取用户认证信息
-- 🎯 **智能分配**: 服务器可动态分配监听直播间
-- ⚙️ **灵活配置**: 支持命令行参数和编程配置
+## 当前行为说明
 
-## 快速开始
+- CLI 以账号中心配置为主（需要 `Token`）。
+- 主播列表、连接参数默认从 `/api/v2/account/core-config` 拉取。
+- Cookie 策略固定为 `BiliLocal > CookieCloud`（本地扫码 Cookie 优先）。
+- SignalR 默认地址：`https://ukamnads.icu/api/v2/user-hub`，可通过参数覆盖。
 
-### CLI 使用
+## CLI 使用
 
-#### 安装
-
-```bash
-# 使用npm
-npm install -g danmakus-core
-
-# 使用bun
-bun install -g danmakus-core
-```
-
-#### 基本使用
+### 安装与运行
 
 ```bash
-# 监听指定房间
-danmakus -r "123456,789012" -s "http://localhost:5000/danmakuHub"
-
-# 使用CookieCloud
-danmakus -k "your-key" -p "your-password" -s "http://localhost:5000/danmakuHub"
-
-# 详细输出模式
-danmakus -v -m 3 -s "http://localhost:5000/danmakuHub"
-```
-
-#### Docker 使用
-
-```bash
-# 构建镜像
-docker build -t danmakus-core .
-
-# 运行容器
-docker run -it danmakus-core \
-  -s "http://host.docker.internal:5000/danmakuHub" \
-  -r "123456,789012" \
-  -v
-```
-
-### 库引用
-
-```typescript
-import { DanmakuClient, createDanmakuClient } from 'danmakus-core';
-
-// 方式1：直接实例化
-const client = new DanmakuClient({
-  maxConnections: 5,
-  roomIds: [123456, 789012],
-  signalrUrl: 'http://localhost:5000/danmakuHub',
-  cookieCloudKey: 'your-key',
-  cookieCloudPassword: 'your-password',
-});
-
-// 方式2：使用工厂函数
-const client = createDanmakuClient({
-  maxConnections: 3,
-  signalrUrl: 'http://localhost:5000/danmakuHub',
-});
-
-// 事件监听
-client.on('danmaku', (message) => {
-  console.log(`[${message.roomId}] ${message.username}: ${message.message}`);
-});
-
-client.on('gift', (gift) => {
-  console.log(`礼物: ${gift.username} 送出 ${gift.num}个 ${gift.giftName}`);
-});
-
-// 启动客户端
-await client.start();
-```
-
-## 配置选项
-
-### CLI 参数
-
-| 参数                | 简写 | 描述                      | 默认值                |
-| ------------------- | ---- | ------------------------- | --------------------- |
-| `--max-connections` | `-m` | 最大连接数 (1-10)         | 5                     |
-| `--rooms`           | `-r` | 要监听的房间 ID，逗号分隔 | -                     |
-| `--cookie-key`      | `-k` | CookieCloud 密钥          | -                     |
-| `--cookie-password` | `-p` | CookieCloud 密码          | -                     |
-| `--cookie-host`     | `-h` | CookieCloud 服务器地址    | http://localhost:8088 |
-| `--signalr-url`     | `-s` | SignalR 服务器地址        | 必需                  |
-| `--verbose`         | `-v` | 详细输出                  | false                 |
-
-### 编程配置
-
-```typescript
-interface DanmakuConfig {
-  maxConnections: number; // 最大连接数
-  roomIds: number[]; // 房间ID列表
-  cookieCloudKey?: string; // CookieCloud密钥
-  cookieCloudPassword?: string; // CookieCloud密码
-  cookieCloudHost?: string; // CookieCloud服务器
-  signalrUrl: string; // SignalR服务器地址
-  cookieRefreshInterval: number; // Cookie刷新间隔（秒）
-  autoReconnect: boolean; // 自动重连
-  reconnectInterval: number; // 重连间隔（毫秒）
-}
-```
-
-## 事件系统
-
-```typescript
-client.on('danmaku', (message: DanmakuMessage) => {
-  // 收到弹幕消息
-});
-
-client.on('gift', (gift: GiftMessage) => {
-  // 收到礼物消息
-});
-
-client.on('connected', (roomId: number) => {
-  // 房间连接成功
-});
-
-client.on('disconnected', (roomId: number) => {
-  // 房间连接断开
-});
-
-client.on('error', (error: Error, roomId?: number) => {
-  // 发生错误
-});
-
-client.on('roomAssigned', (roomId: number) => {
-  // 服务器分配新房间
-});
-```
-
-## Docker Compose 示例
-
-```yaml
-version: '3.8'
-
-services:
-  danmakus-client:
-    build: .
-    environment:
-      - NODE_ENV=production
-    command: ['-s', 'http://signalr-server:5000/danmakuHub', '-r', '123456,789012', '-v']
-    restart: unless-stopped
-
-  # 如果需要CookieCloud
-  danmakus-with-cookies:
-    build: .
-    environment:
-      - NODE_ENV=production
-    command:
-      [
-        '-s',
-        'http://signalr-server:5000/danmakuHub',
-        '-k',
-        '${COOKIE_KEY}',
-        '-p',
-        '${COOKIE_PASSWORD}',
-        '-h',
-        'http://cookiecloud:8088',
-        '-m',
-        '3',
-        '-v',
-      ]
-    restart: unless-stopped
-```
-
-## API 文档
-
-### DanmakuClient
-
-主要的弹幕客户端类。
-
-#### 方法
-
-- `start(): Promise<void>` - 启动客户端
-- `stop(): Promise<void>` - 停止客户端
-- `connectToRoom(roomId: number): Promise<void>` - 连接到指定房间
-- `disconnectFromRoom(roomId: number): void` - 断开房间连接
-- `getConnectedRooms(): number[]` - 获取已连接的房间列表
-- `getStatus()` - 获取客户端状态
-
-### 类型定义
-
-详细的类型定义请参考 `src/types/index.ts` 文件。
-
-## 开发
-
-### 环境要求
-
-- Node.js >= 18
-- Bun >= 1.0 (推荐)
-
-### 开发流程
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd danmakus-core
-
-# 安装依赖
 bun install
-
-# 开发模式运行
-bun run dev --help
-
-# 构建项目
 bun run build
-
-# 运行CLI
 bun run start --help
 ```
 
-### 目录结构
+### 常用命令
 
-```
-danmakus-core/
-├── src/
-│   ├── core/           # 核心功能模块
-│   │   ├── DanmakuClient.ts
-│   │   ├── SignalRConnection.ts
-│   │   ├── CookieManager.ts
-│   │   └── ConfigManager.ts
-│   ├── cli/            # CLI入口
-│   │   └── index.ts
-│   ├── lib/            # 库导出
-│   │   └── index.ts
-│   └── types/          # 类型定义
-│       └── index.ts
-├── dist/               # 编译输出
-├── Dockerfile
-├── package.json
-├── tsconfig.json
-└── README.md
+```bash
+# 最小启动
+danmakus --token "your-account-token"
+
+# 使用 CookieCloud
+danmakus --token "your-account-token" -k "cookie-key" -p "cookie-password"
+
+# 本地联调：覆盖 UserHub 地址
+danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/user-hub"
 ```
 
-## 许可证
+### CLI 参数
 
-MIT License
+| 参数 | 简写 | 说明 | 默认值 |
+| --- | --- | --- | --- |
+| `--max-connections <number>` | `-m` | 最大连接数，范围 `1-10` | `5` |
+| `--token <token>` | `-t` | 账号 Token（必填） | - |
+| `--account-api <url>` | - | 账号 API 地址 | `https://ukamnads.icu/api/v2/account` |
+| `--signalr-url <url>` | `-s` | UserHub 地址 | `https://ukamnads.icu/api/v2/user-hub` |
+| `--cookie-key <key>` | `-k` | CookieCloud Key | - |
+| `--cookie-password <password>` | `-p` | CookieCloud Password | - |
+| `--cookie-host <host>` | - | CookieCloud 服务地址 | `http://localhost:8088` |
+| `--status-check-interval <seconds>` | - | 主播状态检查间隔（秒） | `30` |
+| `--log-level <level>` | - | 日志级别：`debug/info/warn/error/silent` | `info` |
+| `--verbose` | `-v` | 详细日志 | `false` |
 
-## 贡献
+### CLI 环境变量
 
-欢迎提交 Issue 和 Pull Request！
+| 变量 | 说明 |
+| --- | --- |
+| `DANMAKUS_TOKEN` | 等价于 `--token` |
+| `DANMAKUS_ACCOUNT_API` | 等价于 `--account-api` 默认值 |
+| `DANMAKUS_SIGNALR_URL` | 等价于 `--signalr-url` 默认值 |
+
+## 作为库使用
+
+```ts
+import { DanmakuClient } from 'danmakus-core';
+
+const client = new DanmakuClient({
+  maxConnections: 5,
+  signalrUrl: 'https://ukamnads.icu/api/v2/user-hub',
+  accountToken: process.env.DANMAKUS_TOKEN,
+  accountApiBase: 'https://ukamnads.icu/api/v2/account',
+  streamers: [
+    { roomId: 123456, priority: 'high', name: '主播A' }
+  ]
+});
+
+client.on('msg', (message) => {
+  console.log(`[${message.roomId}] ${message.cmd}`);
+});
+
+client.on('roomAssigned', (roomId) => {
+  console.log('server assigned room:', roomId);
+});
+
+await client.start();
+```
+
+## 关键类型（节选）
+
+```ts
+interface StreamerConfig {
+  roomId: number;
+  priority: 'high' | 'normal' | 'low';
+  name?: string;
+}
+
+interface DanmakuConfig {
+  maxConnections: number;
+  streamers: StreamerConfig[];
+  signalrUrl: string;
+  accountToken?: string;
+  accountApiBase?: string;
+  cookieProvider?: () => string | null | undefined;
+  cookieCloudKey?: string;
+  cookieCloudPassword?: string;
+}
+```
+
+## 事件
+
+- `msg`: 所有消息（统一结构）
+- `<CMD>`: 按原始 `cmd` 动态派发（如 `DANMU_MSG`、`SEND_GIFT`）
+- `connected`: 房间连接成功
+- `disconnected`: 房间断开
+- `error`: 客户端或房间错误
+- `roomAssigned`: 服务端分配新房间
+- `streamerStatusUpdated`: 主播状态刷新
+
+## 开发说明
+
+```bash
+# 运行 CLI
+bun run dev -- --token "your-account-token"
+
+# 构建
+bun run build
+
+# 类型检查
+bun run compile
+```

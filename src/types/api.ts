@@ -18,6 +18,8 @@ export interface CoreControlConfigDto {
   cookieRefreshInterval: number;
   streamers: CoreStreamerConfigDto[];
   requestServerRooms: boolean;
+  allowedAreas: string[];
+  allowedParentAreas: string[];
 }
 
 export interface UserInfo {
@@ -25,6 +27,26 @@ export interface UserInfo {
   name: string;
   bindedOAuth: string[];
   recievedDanmakusCount: number;
+}
+
+export interface RecordingChannelDto {
+  uId: number;
+  uName: string;
+  roomId: number;
+  faceUrl: string;
+  isLiving: boolean;
+}
+
+export interface RecordingSettingDto {
+  isPublic: boolean;
+}
+
+export interface RecordingInfoDto {
+  channel: RecordingChannelDto;
+  setting: RecordingSettingDto;
+  todayDanmakusCount: number;
+  providedDanmakuDataCount?: number;
+  providedMessageCount?: number;
 }
 
 export type CoreConnectionPriority = 'high' | 'normal' | 'low' | 'server';

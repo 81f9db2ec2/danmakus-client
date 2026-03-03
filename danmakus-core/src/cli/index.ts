@@ -5,7 +5,8 @@ import { DanmakuClient } from '../core/DanmakuClient';
 import { CliOptions } from '../types';
 
 const program = new Command();
-const SIGNALR_HUB_URL = 'https://ukamnads.icu/api/v2/user-hub';
+const DEFAULT_SIGNALR_HUB_URL = process.env.DANMAKUS_SIGNALR_URL || 'https://ukamnads.icu/api/v2/user-hub';
+const DEFAULT_ACCOUNT_API_BASE = process.env.DANMAKUS_ACCOUNT_API || 'https://ukamnads.icu/api/v2/account';
 
 program
   .name('danmakus')
@@ -15,12 +16,14 @@ program
 program
   .option('-m, --max-connections <number>', '最大连接数 (1-10)', '5')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
-  .option('--account-api <url>', '账号 API 地址', 'https://ukamnads.icu/api/v2/account')
+  .option('--account-api <url>', '账号 API 地址', DEFAULT_ACCOUNT_API_BASE)
+  .option('-s, --signalr-url <url>', 'SignalR Hub 地址（本地调试可覆盖）', DEFAULT_SIGNALR_HUB_URL)
   .option('-k, --cookie-key <key>', 'CookieCloud密钥')
   .option('-p, --cookie-password <password>', 'CookieCloud密码')
   .option('--cookie-host <host>', 'CookieCloud服务器地址', 'http://localhost:8088')
   .option('--status-check-interval <seconds>', '主播状态检查间隔（秒）', '30')
   .option('-v, --verbose', '详细输出')
+  .option('--log-level <level>', '日志级别 (debug|info|warn|error|silent)')
 
   .action(async (options: CliOptions) => {
 
@@ -34,7 +37,9 @@ program
 
       const statusCheckInterval = parseInt(String(options.statusCheckInterval || '30'));
       const accountToken = options.token || process.env.DANMAKUS_TOKEN;
-      const accountApiBase = options.accountApi || process.env.DANMAKUS_ACCOUNT_API || 'https://ukamnads.icu/api/v2/account';
+      const accountApiBase = options.accountApi || DEFAULT_ACCOUNT_API_BASE;
+      const signalrUrl = options.signalrUrl || DEFAULT_SIGNALR_HUB_URL;
+      const logLevel = options.logLevel || (options.verbose ? 'debug' : 'info');
 
       if (!accountToken) {
         console.error('错误: 必须提供账号 Token (--token)');
@@ -44,8 +49,10 @@ program
       // 显示启动信息
       console.log('=== 弹幕采集客户端 ===');
       console.log(`最大连接数: ${maxConnections}`);
-      console.log(`SignalR服务器: ${SIGNALR_HUB_URL}`);
+      console.log(`SignalR服务器: ${signalrUrl}`);
+      console.log(`账号 API: ${accountApiBase}`);
       console.log(`状态检查间隔: ${statusCheckInterval}秒`);
+      console.log(`日志级别: ${logLevel}`);
 
       console.log('账号配置: 自动从远端账号中心加载');
 
@@ -63,18 +70,19 @@ program
         cookieCloudKey: options.cookieKey,
         cookieCloudPassword: options.cookiePassword,
         cookieCloudHost: options.cookieHost,
-        signalrUrl: SIGNALR_HUB_URL,
+        signalrUrl,
         statusCheckInterval,
         cookieRefreshInterval: 3600,
         autoReconnect: true,
         reconnectInterval: 5000,
         accountToken,
         accountApiBase,
-        clientVersion: 'cli'
+        clientVersion: 'cli',
+        logLevel
       });
 
       // 从CLI选项更新配置
-      client['configManager'].updateFromCliOptions(options);
+      client.applyCliOptions(options);
 
       // 设置事件监听
       client.on('DANMU_MSG', (message) => {
@@ -223,26 +231,26 @@ program
   .action(() => {
     console.log('使用示例:');
     console.log('');
-    console.log('1. 基本使用（监听普通优先级房间）:');
-    console.log('   danmakus -r "123456,789012"');
+    console.log('1. 基本使用（账号中心远端配置）:');
+    console.log('   danmakus --token "your-account-token"');
 
     console.log('');
-    console.log('2. 使用优先级系统:');
-    console.log('   danmakus --high-priority-rooms "123456" -r "789012" --low-priority-rooms "345678"');
+    console.log('2. 使用环境变量传 Token:');
+    console.log('   DANMAKUS_TOKEN="your-account-token" danmakus');
 
     console.log('');
-    console.log('3. 使用CookieCloud:');
-    console.log('   danmakus -k "your-key" -p "your-password"');
+    console.log('3. 使用 CookieCloud:');
+    console.log('   danmakus --token "your-account-token" -k "your-key" -p "your-password"');
 
     console.log('');
-    console.log('4. 详细输出和自定义检查间隔:');
-    console.log('   danmakus -v -m 3 --status-check-interval 60');
+    console.log('4. 本地联调覆盖 SignalR 地址:');
+    console.log('   danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/user-hub"');
 
     console.log('');
-    console.log('5. 完整配置示例:');
-    console.log('   danmakus --high-priority-rooms "123456" -r "789012" --low-priority-rooms "345678" \\');
-    console.log('     -k "your-key" -p "your-password" --cookie-host "http://192.168.1.100:8088" \\');
-    console.log('     --status-check-interval 30 -v');
+    console.log('5. 完整示例:');
+    console.log('   danmakus --token "your-account-token" --account-api "https://api.example.com/api/v2/account" \\');
+    console.log('     -s "https://api.example.com/api/v2/user-hub" -k "your-key" -p "your-password" \\');
+    console.log('     --cookie-host "http://192.168.1.100:8088" --status-check-interval 30 -m 3 -v');
 
   });
 

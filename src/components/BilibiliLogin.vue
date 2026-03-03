@@ -1,210 +1,223 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { 
-  NCard, NButton, NQrCode, NSpace, NSpin, NResult, NModal, 
-  NText, NIcon, NAvatar, useMessage 
-} from 'naive-ui'
-import { 
-  checkLoginStatusAsync, getLoginUrlDataAsync, getLoginInfoAsync, 
-  biliCookie, getUidAsync 
-} from '../services/bilibili'
-import { UserCircle, Qrcode, CheckCircle } from '@vicons/fa'
+import { onBeforeUnmount, onMounted, ref } from 'vue';
+import QRCode from 'qrcode';
+import { toast } from 'vue-sonner';
+import { CheckCircle2, Loader2, QrCode, UserRound } from 'lucide-vue-next';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
+import { Separator } from '@/components/ui/separator';
+import {
+  biliCookie,
+  getLoginInfoAsync,
+  getLoginUrlDataAsync,
+  getNavProfileAsync
+} from '../services/bilibili';
+import type { BiliNavProfile } from '../services/bilibili';
 
-const message = useMessage()
+const isLoggedIn = ref(false);
+const navProfile = ref<BiliNavProfile | null>(null);
+const showLoginModal = ref(false);
 
-const isLoggedIn = ref(false)
-const uid = ref<number>(0)
-const showLoginModal = ref(false)
+const isQRCodeLogining = ref(false);
+const loginUrl = ref('');
+const loginKey = ref('');
+const loginStatus = ref<'expired' | 'unknown' | 'scanned' | 'waiting' | 'confirmed' | undefined>(undefined);
+const loginQrDataUrl = ref('');
+const expiredTimer = ref<number>();
+const timer = ref<number>();
 
-// Login State
-const isQRCodeLogining = ref(false)
-const loginUrl = ref('')
-const loginKey = ref('')
-const loginStatus = ref<'expired' | 'unknown' | 'scanned' | 'waiting' | 'confirmed' | undefined>(undefined)
-const expiredTimer = ref<number>()
-const timer = ref<number>()
-
-async function checkStatus() {
-  const valid = await checkLoginStatusAsync()
-  isLoggedIn.value = valid
-  if (valid) {
-    uid.value = await getUidAsync()
-  } else {
-      uid.value = 0
-  }
-}
-
-async function startLogin() {
-  if (isQRCodeLogining.value) return
-  
+const checkStatus = async () => {
   try {
-    isQRCodeLogining.value = true
-    loginStatus.value = 'waiting'
-    showLoginModal.value = true
-    
-    const data = await getLoginUrlDataAsync()
-    loginUrl.value = data.url
-    loginKey.value = data.qrcode_key
-    
-    // Expire after 3 minutes
-    expiredTimer.value = window.setTimeout(() => {
-      loginStatus.value = 'expired'
-      if (timer.value) clearInterval(timer.value)
-      isQRCodeLogining.value = false
-    }, 3 * 60 * 1000)
+    navProfile.value = await getNavProfileAsync();
+    isLoggedIn.value = navProfile.value !== null;
+  } catch (error) {
+    console.error(error);
+    navProfile.value = null;
+    isLoggedIn.value = false;
+  }
+};
 
-    // Poll every 2 seconds
+const buildQrCodeDataUrl = async (url: string) => {
+  loginQrDataUrl.value = await QRCode.toDataURL(url, {
+    width: 220,
+    margin: 1
+  });
+};
+
+const finishLogin = () => {
+  if (timer.value) clearInterval(timer.value);
+  if (expiredTimer.value) clearTimeout(expiredTimer.value);
+  isQRCodeLogining.value = false;
+  loginStatus.value = undefined;
+  loginUrl.value = '';
+  loginKey.value = '';
+  loginQrDataUrl.value = '';
+};
+
+const startLogin = async () => {
+  if (isQRCodeLogining.value) return;
+
+  try {
+    isQRCodeLogining.value = true;
+    loginStatus.value = 'waiting';
+    showLoginModal.value = true;
+
+    const data = await getLoginUrlDataAsync();
+    loginUrl.value = data.url;
+    loginKey.value = data.qrcode_key;
+    await buildQrCodeDataUrl(data.url);
+
+    expiredTimer.value = window.setTimeout(() => {
+      loginStatus.value = 'expired';
+      if (timer.value) clearInterval(timer.value);
+      isQRCodeLogining.value = false;
+    }, 3 * 60 * 1000);
+
     timer.value = window.setInterval(async () => {
       try {
-        const login = await getLoginInfoAsync(loginKey.value)
-        loginStatus.value = login.status
-        
+        const login = await getLoginInfoAsync(loginKey.value);
+        loginStatus.value = login.status;
+
         if (login.status === 'confirmed') {
-          biliCookie.setBiliCookie(login.cookie, login.refresh_token)
-          message.success('登录成功')
-          finishLogin()
-          await checkStatus()
-          showLoginModal.value = false
+          biliCookie.setBiliCookie(login.cookie, login.refresh_token);
+          toast.success('登录成功');
+          finishLogin();
+          await checkStatus();
+          showLoginModal.value = false;
         } else if (login.status === 'expired') {
-          loginStatus.value = 'expired'
-          clearInterval(timer.value)
-          isQRCodeLogining.value = false
+          loginStatus.value = 'expired';
+          if (timer.value) clearInterval(timer.value);
+          isQRCodeLogining.value = false;
         }
-      } catch (e) {
-          console.error(e)
+      } catch (error) {
+        console.error(error);
       }
-    }, 2000)
-    
-  } catch (err: any) {
-    console.error(err)
-    message.error(err instanceof Error ? err.message : '获取登录二维码失败')
-    isQRCodeLogining.value = false
-    showLoginModal.value = false
+    }, 2000);
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '获取登录二维码失败');
+    isQRCodeLogining.value = false;
+    showLoginModal.value = false;
   }
-}
+};
 
-function finishLogin() {
-  if (timer.value) clearInterval(timer.value)
-  if (expiredTimer.value) clearTimeout(expiredTimer.value)
-  isQRCodeLogining.value = false
-  loginStatus.value = undefined
-  loginUrl.value = ''
-  loginKey.value = ''
-}
+const handleLogout = () => {
+  biliCookie.clear();
+  isLoggedIn.value = false;
+  navProfile.value = null;
+  toast.success('已登出 Bilibili');
+};
 
-function handleLogout() {
-  biliCookie.clear()
-  isLoggedIn.value = false
-  uid.value = 0
-  message.success('已登出 Bilibili')
-}
-
-function handleModalClose() {
-    showLoginModal.value = false
-    finishLogin()
-}
+const handleDialogOpenChange = (open: boolean) => {
+  showLoginModal.value = open;
+  if (!open) finishLogin();
+};
 
 onMounted(() => {
-  checkStatus()
-})
+  void checkStatus();
+});
 
 onBeforeUnmount(() => {
-  finishLogin()
-})
+  finishLogin();
+});
 </script>
 
 <template>
-  <div class="bilibili-login-card">
-      <n-card size="small" title="Bilibili 账号状态">
-        <template #header-extra>
-           <n-icon size="20" color="#fb7299"><UserCircle /></n-icon>
-        </template>
-        
-        <div v-if="isLoggedIn" class="logged-in-state">
-            <n-space align="center" justify="space-between">
-                <n-space align="center">
-                    <n-avatar round size="medium" src="https://static.hdslb.com/images/member/noface.gif" />
-                    <div>
-                        <div class="uid-text">UID: {{ uid }}</div>
-                        <n-text type="success" depth="3" style="font-size: 12px">Cookie 有效</n-text>
-                    </div>
-                </n-space>
-                <n-button size="small" type="error" ghost @click="handleLogout">
-                    登出
-                </n-button>
-            </n-space>
+  <div class="w-full">
+    <Card class="bg-background/60">
+      <CardHeader class="pb-3">
+        <CardTitle class="text-base">Bilibili 账号状态</CardTitle>
+        <CardDescription>用于连接弹幕服务的 Cookie 凭据</CardDescription>
+      </CardHeader>
+
+      <CardContent class="space-y-4">
+        <div v-if="isLoggedIn" class="space-y-4">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-3">
+              <Avatar class="h-10 w-10 border border-border">
+                <AvatarImage
+                  :src="navProfile?.face || 'https://static.hdslb.com/images/member/noface.gif'"
+                  referrerpolicy="no-referrer"
+                />
+                <AvatarFallback>
+                  <UserRound class="h-4 w-4 text-muted-foreground" />
+                </AvatarFallback>
+              </Avatar>
+
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold">{{ navProfile?.uname || '已登录用户' }}</p>
+                <p class="text-xs text-muted-foreground">UID: {{ navProfile?.uid }}</p>
+              </div>
+            </div>
+
+            <Button variant="outline" size="sm" @click="handleLogout">登出</Button>
+          </div>
+
+          <Separator />
+
+          <div class="flex flex-wrap gap-2 text-xs">
+            <Badge variant="outline">Lv.{{ navProfile?.level ?? 0 }}</Badge>
+            <Badge variant="outline">硬币: {{ navProfile?.money ?? 0 }}</Badge>
+            <Badge v-if="(navProfile?.vipStatus ?? 0) > 0" variant="secondary">{{ navProfile?.vipLabel || '大会员' }}</Badge>
+            <Badge class="border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" variant="outline">
+              Cookie 有效
+            </Badge>
+          </div>
         </div>
 
-        <div v-else class="logged-out-state">
-             <n-result status="info" title="未登录" description="需要登录 Bilibili 账号以连接弹幕" size="small" style="margin-top: 0; margin-bottom: 12px; padding: 0">
-             </n-result>
-             <n-button type="primary" block color="#fb7299" @click="startLogin">
-                 <template #icon><n-icon><Qrcode /></n-icon></template>
-                 扫码登录
-             </n-button>
+        <div v-else class="space-y-3">
+          <p class="text-sm text-muted-foreground">未登录，需要登录 Bilibili 账号以连接弹幕。</p>
+          <Button class="w-full" @click="startLogin">
+            <QrCode class="h-4 w-4" />
+            扫码登录
+          </Button>
         </div>
-      </n-card>
+      </CardContent>
+    </Card>
 
-      <n-modal
-        v-model:show="showLoginModal"
-        preset="card"
-        title="Bilibili 扫码登录"
-        style="width: 400px"
-        :on-close="handleModalClose"
-        :mask-closable="false"
-      >
-        <div class="qr-container">
-             <template v-if="loginStatus === 'expired'">
-                 <n-result status="error" title="二维码已过期" description="请重新获取">
-                     <template #footer>
-                         <n-button @click="startLogin">刷新二维码</n-button>
-                     </template>
-                 </n-result>
-             </template>
-             
-             <template v-else-if="loginUrl">
-                 <n-space vertical align="center">
-                     <n-qr-code :value="loginUrl" :size="200" error-correction-level="L" />
-                     
-                     <div class="status-text">
-                         <n-text v-if="loginStatus === 'scanned'" type="success" strong>
-                             <n-icon><CheckCircle /></n-icon> 扫码成功，请在手机上确认
-                         </n-text>
-                         <n-text v-else-if="loginStatus === 'waiting'" depth="3">
-                             请使用 哔哩哔哩客户端 扫码
-                         </n-text>
-                         <n-spin v-else size="small" />
-                     </div>
-                 </n-space>
-             </template>
-             
-             <template v-else>
-                 <n-space justify="center" style="padding: 40px">
-                     <n-spin size="large" />
-                 </n-space>
-             </template>
+    <Dialog :open="showLoginModal" @update:open="handleDialogOpenChange">
+      <DialogContent :show-close-button="false" class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Bilibili 扫码登录</DialogTitle>
+          <DialogDescription>请使用哔哩哔哩手机客户端扫码完成授权。</DialogDescription>
+        </DialogHeader>
+
+        <div class="flex min-h-[280px] flex-col items-center justify-center gap-4 py-2">
+          <template v-if="loginStatus === 'expired'">
+            <p class="text-sm text-destructive">二维码已过期，请重新获取。</p>
+            <Button variant="outline" @click="startLogin">刷新二维码</Button>
+          </template>
+
+          <template v-else-if="loginQrDataUrl">
+            <img :src="loginQrDataUrl" alt="Bilibili Login QRCode" class="h-[220px] w-[220px] rounded-md border bg-white p-2" />
+            <p v-if="loginStatus === 'scanned'" class="flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 class="h-4 w-4" />
+              扫码成功，请在手机上确认
+            </p>
+            <p v-else-if="loginStatus === 'waiting'" class="text-sm text-muted-foreground">
+              请使用哔哩哔哩客户端扫码
+            </p>
+            <Loader2 v-else class="h-4 w-4 animate-spin text-muted-foreground" />
+          </template>
+
+          <Loader2 v-else class="h-5 w-5 animate-spin text-muted-foreground" />
         </div>
-      </n-modal>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
-
-<style scoped>
-.logged-in-state {
-    padding: 4px 0;
-}
-.uid-text {
-    font-weight: bold;
-    font-size: 14px;
-}
-.qr-container {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 250px;
-    flex-direction: column;
-}
-.status-text {
-    margin-top: 16px;
-    text-align: center;
-}
-</style>

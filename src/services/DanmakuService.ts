@@ -1,8 +1,8 @@
 import { DanmakuClient } from 'danmakus-core';
-import type { StreamerStatus } from 'danmakus-core';
+import type { DanmakuMessage, StreamerStatus } from 'danmakus-core';
 import { reactive } from 'vue';
 import { getCoreClients } from './account';
-import { biliCookie } from './bilibili';
+import { biliCookie, getLiveWsRoomConfigAsync, getNavProfileAsync } from './bilibili';
 import { ACCOUNT_API_BASE, SIGNALR_URL } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
@@ -135,6 +135,8 @@ class DanmakuService {
   private static instance: DanmakuService;
   private client: DanmakuClient | null = null;
   private localClientId: string;
+  private readonly debugMessageConsoleEnabled: boolean;
+  private debugMessageCounter = 0;
 
   public state = reactive({
     isRunning: false,
@@ -142,6 +144,7 @@ class DanmakuService {
     connectedRooms: [] as number[],
     connectionInfo: [] as ConnectionInfoSnapshot[],
     messageCount: 0,
+    messageCmdCountMap: {} as Record<string, number>,
     streamerStatuses: [] as StreamerStatus[],
     serverAssignedRooms: [] as number[],
     lastError: null as string | null,
@@ -155,6 +158,8 @@ class DanmakuService {
 
   private constructor() {
     this.localClientId = getOrCreateClientId();
+    const debugFlag = typeof localStorage !== 'undefined' && localStorage.getItem('danmakus_debug_msg') === '1';
+    this.debugMessageConsoleEnabled = Boolean(import.meta.env.DEV || debugFlag);
   }
 
   public static getInstance(): DanmakuService {
@@ -171,11 +176,13 @@ class DanmakuService {
     if (!token) {
       throw new Error('请先登录并提供 Token');
     }
+    await this.assertBiliLoginReady();
 
     this.client = new DanmakuClient({
       clientId: this.localClientId,
       fetchImpl,
       cookieProvider: () => biliCookie.getBiliCookie(),
+      liveWsConfigProvider: getLiveWsRoomConfigAsync,
       signalrHeaders: this.buildSignalRHeaders(),
       accountToken: token,
       clientVersion: 'desktop',
@@ -245,9 +252,16 @@ class DanmakuService {
     this.state.remoteClients = normalizedClients;
 
     const self = normalizedClients.find((c) => c.clientId === this.localClientId) ?? null;
-    this.state.ownerClientId = self?.clientId ?? null;
-    this.state.lastHeartbeat = self?.lastHeartbeat ?? null;
-    this.state.lockedByOther = false;
+    const activeOwner = normalizedClients
+      .filter((c) => c.clientId !== this.localClientId && (c.isRunning || c.signalrConnected))
+      .sort((a, b) => (b.lastHeartbeat ?? 0) - (a.lastHeartbeat ?? 0))[0]
+      ?? normalizedClients.find((c) => c.clientId !== this.localClientId)
+      ?? null;
+
+    const owner = self ?? activeOwner;
+    this.state.ownerClientId = owner?.clientId ?? null;
+    this.state.lastHeartbeat = owner?.lastHeartbeat ?? null;
+    this.state.lockedByOther = self === null && activeOwner !== null;
 
     if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
       this.state.isRunning = false;
@@ -257,6 +271,7 @@ class DanmakuService {
       this.state.connectionInfo = [];
       this.state.serverAssignedRooms = [];
       this.state.messageCount = 0;
+      this.state.messageCmdCountMap = {};
       this.state.lastRoomAssigned = null;
       this.state.lastError = null;
     }
@@ -266,6 +281,7 @@ class DanmakuService {
     if (!this.client) {
       throw new Error('DanmakuClient 尚未初始化');
     }
+    await this.assertBiliLoginReady();
 
     await this.client.start();
     this.applyStatusSnapshot();
@@ -315,6 +331,7 @@ class DanmakuService {
     this.state.connectedRooms = [];
     this.state.connectionInfo = [];
     this.state.messageCount = 0;
+    this.state.messageCmdCountMap = {};
     this.state.streamerStatuses = [];
     this.state.serverAssignedRooms = [];
     this.state.lastError = null;
@@ -349,8 +366,27 @@ class DanmakuService {
       this.applyStatusSnapshot();
     });
 
-    this.client.on('msg', () => {
+    this.client.on('roomReplaced', ({ oldRoomId, newRoomId }) => {
+      const nextRooms = this.state.serverAssignedRooms.filter(roomId => roomId !== oldRoomId);
+      if (!nextRooms.includes(newRoomId)) {
+        nextRooms.push(newRoomId);
+      }
+      this.state.serverAssignedRooms = nextRooms;
+      this.state.lastRoomAssigned = newRoomId;
+      this.applyStatusSnapshot();
+    });
+
+    this.client.on('msg', (message: DanmakuMessage) => {
       this.state.messageCount += 1;
+      const cmd = message.cmd;
+      this.state.messageCmdCountMap[cmd] = (this.state.messageCmdCountMap[cmd] || 0) + 1;
+      if (this.debugMessageConsoleEnabled) {
+        this.debugMessageCounter += 1;
+        console.debug(
+          `[DanmakuService][msg#${this.debugMessageCounter}] room=${message.roomId} cmd=${cmd}`,
+          message
+        );
+      }
     });
 
     this.client.on('error', (error: Error) => {
@@ -387,6 +423,14 @@ class DanmakuService {
       Token: token,
       ClientId: this.localClientId
     };
+  }
+
+  private async assertBiliLoginReady(): Promise<void> {
+    const profile = await getNavProfileAsync();
+    this.state.cookieValid = profile !== null;
+    if (!profile) {
+      throw new Error('未登录 Bilibili，无法获取直播鉴权 Token，请先完成 Bilibili 登录');
+    }
   }
 }
 

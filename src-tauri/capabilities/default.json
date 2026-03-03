@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "websocket:default",
+    "http:allow-fetch-cancel-body",
     {
       "identifier": "http:default",
       "allow": [

@@ -1,6 +1,5 @@
-import { StreamerConfig, StreamerStatus } from '../types';
-
-const STREAMER_PRIORITY_ORDER = ['high', 'normal', 'low'] as const;
+import { StreamerStatus } from '../types';
+import { ScopedLogger } from './Logger';
 
 const buildStreamerStatusApiUrl = (hubUrl: string): string => {
   try {
@@ -48,10 +47,10 @@ export class StreamerStatusManager {
   private lastManualRefreshAt = 0;
 
   constructor(
-    private streamers: StreamerConfig[],
     private checkInterval: number = 30, // 秒
     signalrUrl: string,
-    fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+    private logger: ScopedLogger = new ScopedLogger('StreamerStatusManager')
   ) {
     this.fetch = fetchImpl || globalThis.fetch.bind(globalThis);
     this.statusApiUrl = buildStreamerStatusApiUrl(signalrUrl);
@@ -98,7 +97,7 @@ export class StreamerStatusManager {
     }
 
     try {
-      console.log('正在检查主播状态...');
+      this.logger.debug('正在检查主播状态...');
 
       // 仏服务器获取状态信息
       const controller = new AbortController();
@@ -126,7 +125,7 @@ export class StreamerStatusManager {
         clearTimeout(timeoutId);
       }
     } catch (error) {
-      console.error('检查主播状态失败:', error instanceof Error ? error.message : error);
+      this.logger.error('检查主播状态失败:', error instanceof Error ? error.message : error);
     }
 
     // 使用备用方法：直接检查 Bilibili API
@@ -175,7 +174,7 @@ export class StreamerStatusManager {
           clearTimeout(timeoutId);
         }
       } catch (error) {
-        console.warn(`检查房间 ${roomId} 状态失败:`, error instanceof Error ? error.message : error);
+        this.logger.warn(`检查房间 ${roomId} 状态失败:`, error instanceof Error ? error.message : error);
       }
 
       // 创建默认状态
@@ -196,17 +195,26 @@ export class StreamerStatusManager {
   private updateStatusCache(statuses: StreamerStatus[]): void {
     for (const status of statuses) {
       const cachedStatus = this.statusCache.get(status.roomId);
+      const mergedStatus: StreamerStatus = {
+        ...cachedStatus,
+        ...status,
+        username: status.username ?? cachedStatus?.username,
+        title: status.title ?? cachedStatus?.title,
+        faceUrl: status.faceUrl ?? cachedStatus?.faceUrl,
+        viewerCount: status.viewerCount ?? cachedStatus?.viewerCount,
+        liveStartTime: status.liveStartTime ?? cachedStatus?.liveStartTime
+      };
 
       // 检查是否有状态变化
-      if (!cachedStatus || cachedStatus.isLive !== status.isLive) {
-        if (status.isLive && !cachedStatus?.isLive) {
-          console.log(`🎬 主播 ${status.username || status.roomId} 开始直播`);
-        } else if (!status.isLive && cachedStatus?.isLive) {
-          console.log(`📴 主播 ${status.username || status.roomId} 结束直播`);
+      if (!cachedStatus || cachedStatus.isLive !== mergedStatus.isLive) {
+        if (mergedStatus.isLive && !cachedStatus?.isLive) {
+          this.logger.info(`主播 ${mergedStatus.username || mergedStatus.roomId} 开始直播`);
+        } else if (!mergedStatus.isLive && cachedStatus?.isLive) {
+          this.logger.info(`主播 ${mergedStatus.username || mergedStatus.roomId} 结束直播`);
         }
       }
 
-      this.statusCache.set(status.roomId, status);
+      this.statusCache.set(status.roomId, mergedStatus);
     }
   }
 
@@ -245,51 +253,28 @@ export class StreamerStatusManager {
   }
 
   /**
-   * 根据优先级和直播状态获取应该连接的房间
+   * 根据直播状态获取应该连接的房间
    */
   getRoomsToConnect(
-    streamers: StreamerConfig[],
     serverAssignedRooms: number[],
     maxConnections: number
-  ): { roomId: number; priority: 'high' | 'normal' | 'low' | 'server' }[] {
-    const rooms: { roomId: number; priority: 'high' | 'normal' | 'low' | 'server' }[] = [];
+  ): { roomId: number; priority: 'server' }[] {
+    const rooms: { roomId: number; priority: 'server' }[] = [];
 
-    // 获取正在直播的主播
-    const liveStreamers = this.getLiveStreamers();
-
-    // 按优先级排序：高优先级 > 普通优先级 > 低优先级
-    for (const priority of STREAMER_PRIORITY_ORDER) {
-      const streamersOfPriority = streamers.filter(s => s.priority === priority);
-
-      for (const streamer of streamersOfPriority) {
-        const status = liveStreamers.find(ls => ls.roomId === streamer.roomId);
-        if (status && rooms.length < maxConnections) {
-          rooms.push({ roomId: streamer.roomId, priority });
-        }
+    for (const roomId of serverAssignedRooms) {
+      if (rooms.length >= maxConnections) {
+        break;
       }
-    }
-
-    // 如果还有空余连接数，添加服务器分配的房间
-    if (rooms.length < maxConnections) {
-      for (const roomId of serverAssignedRooms) {
-        if (rooms.length >= maxConnections) break;
-        if (!rooms.find(r => r.roomId === roomId)) {
-          const status = this.statusCache.get(roomId);
-          if (status?.isLive) {
-            rooms.push({ roomId, priority: 'server' });
-          }
-        }
+      if (rooms.some(r => r.roomId === roomId)) {
+        continue;
+      }
+      const status = this.statusCache.get(roomId);
+      if (status?.isLive) {
+        rooms.push({ roomId, priority: 'server' });
       }
     }
 
     return rooms;
-  }
-
-  /**
-   * 更新主播配置
-   */
-  updateStreamers(streamers: StreamerConfig[]): void {
-    this.streamers = streamers;
   }
 
   updateServerRooms(rooms: number[]): void {
@@ -300,8 +285,7 @@ export class StreamerStatusManager {
   }
 
   private getTrackedRoomIds(): number[] {
-    const streamerIds = this.streamers.map(s => s.roomId);
-    const all = [...streamerIds, ...this.serverRooms]
+    const all = [...this.serverRooms]
       .map(r => Number(r))
       .filter(r => Number.isFinite(r) && r > 0);
     return Array.from(new Set(all));

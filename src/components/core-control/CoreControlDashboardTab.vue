@@ -1,24 +1,40 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import {
-  NAlert,
-  NButton,
-  NCard,
-  NEmpty,
-  NGi,
-  NGrid,
-  NIcon,
-  NPopover,
-  NSpace,
-  NStatistic,
-  NTable,
-  NTag
-} from 'naive-ui';
-import { CommentDots, Play, Plug, Server, Stop, Stream } from '@vicons/fa';
+  AlertCircle,
+  Cookie,
+  Loader2,
+  MessageSquare,
+  MonitorSmartphone,
+  Play,
+  PlugZap,
+  RefreshCw,
+  Server,
+  StopCircle,
+  TvMinimal
+} from 'lucide-vue-next';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card';
 
 type ConnectionInfo = {
   roomId: number;
   priority: string;
   connectedAt: number;
+};
+
+type StreamerStatus = {
+  roomId: number;
+  isLive: boolean;
+  username?: string;
+  faceUrl?: string;
 };
 
 type RemoteClientSnapshot = {
@@ -37,13 +53,18 @@ type RuntimeStateSnapshot = {
   connectedRooms: number[];
   connectionInfo: ConnectionInfo[];
   messageCount: number;
+  messageCmdCountMap: Record<string, number>;
   serverAssignedRooms: number[];
+  streamerStatuses: StreamerStatus[];
+  lockedByOther: boolean;
+  ownerClientId: string | null;
   lastError: string | null;
   lastRoomAssigned: number | null;
 };
 
-defineProps<{
+const props = defineProps<{
   runtimeState: RuntimeStateSnapshot;
+  recordingRoomIds: number[];
   remoteClients: RemoteClientSnapshot[];
   localClientId: string;
   lastHeartbeatText: string;
@@ -55,6 +76,96 @@ defineProps<{
   stoppingCore: boolean;
 }>();
 
+const messageCmdRows = computed(() =>
+  Object.entries(props.runtimeState.messageCmdCountMap)
+    .map(([cmd, count]) => ({ cmd, count }))
+    .sort((a, b) => b.count - a.count || a.cmd.localeCompare(b.cmd))
+);
+
+const topMessageTypes = computed(() => {
+  const rows = messageCmdRows.value;
+  const total = props.runtimeState.messageCount || 1;
+  const top = rows.slice(0, 8);
+  const rest = rows.slice(8);
+  const result = top.map((r, i) => ({
+    ...r,
+    percentage: (r.count / total) * 100,
+    colorIndex: i
+  }));
+  if (rest.length > 0) {
+    const otherCount = rest.reduce((s, r) => s + r.count, 0);
+    result.push({
+      cmd: `其他 (${rest.length} 种)`,
+      count: otherCount,
+      percentage: (otherCount / total) * 100,
+      colorIndex: 8
+    });
+  }
+  return result;
+});
+
+const connectionRoomCards = computed(() => {
+  const statusMap = new Map(props.runtimeState.streamerStatuses.map(status => [status.roomId, status]));
+  const connectionMap = new Map(props.runtimeState.connectionInfo.map(info => [info.roomId, info]));
+  const connectedSet = new Set(props.runtimeState.connectedRooms);
+  const serverAssignedSet = new Set(props.runtimeState.serverAssignedRooms);
+  const recordingSet = new Set(props.recordingRoomIds.filter(id => Number.isFinite(id) && id > 0));
+
+  const roomIds = Array.from(new Set([
+    ...props.runtimeState.serverAssignedRooms,
+    ...props.runtimeState.connectedRooms
+  ]));
+
+  return roomIds
+    .map(roomId => {
+    const status = statusMap.get(roomId);
+    const connection = connectionMap.get(roomId);
+    const isConnected = connectedSet.has(roomId);
+    const priority = connection?.priority ?? '';
+    const isRecording = recordingSet.has(roomId);
+    const sourceText = isRecording || (connection && priority !== 'server')
+      ? '关注录制'
+      : serverAssignedSet.has(roomId)
+        ? '服务器分配'
+        : '未知来源';
+
+    return {
+      roomId,
+      username: status?.username || `房间 ${roomId}`,
+      faceUrl: status?.faceUrl || '',
+      isConnected,
+      stateText: isConnected ? '已连接' : '等待连接',
+      stateClass: isConnected
+        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+        : 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+      sourceText,
+      connectedAt: connection?.connectedAt ?? null
+    };
+    })
+    .sort((a, b) => {
+      if (a.isConnected !== b.isConnected) {
+        return a.isConnected ? -1 : 1;
+      }
+      const timeA = a.connectedAt ?? 0;
+      const timeB = b.connectedAt ?? 0;
+      if (timeA !== timeB) {
+        return timeB - timeA;
+      }
+      return a.roomId - b.roomId;
+    });
+});
+
+const barColors = [
+  'bg-chart-1', 'bg-chart-2', 'bg-chart-3', 'bg-chart-4', 'bg-chart-5',
+  'bg-primary/60', 'bg-primary/40', 'bg-primary/30', 'bg-muted-foreground/30'
+];
+
+const cookieBadgeClass = computed(() =>
+  props.cookieStatusType === 'success'
+    ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    : 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+);
+
 const emit = defineEmits<{
   (e: 'refresh-runtime-state'): void;
   (e: 'force-takeover'): void;
@@ -64,222 +175,259 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="dashboard-tab">
-    <n-grid :cols="4" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>
-      <n-gi span="2 s:2 m:1">
-        <n-card size="small" embedded>
-          <n-statistic label="运行状态">
-            <template #prefix>
-              <n-icon :color="runtimeState.isRunning ? '#18a058' : '#d03050'">
-                <Server />
-              </n-icon>
-            </template>
-            <n-tag :type="runtimeState.isRunning ? 'success' : 'error'" round>
-              {{ runtimeState.isRunning ? '运行中' : '已停止' }}
-            </n-tag>
-          </n-statistic>
-        </n-card>
-      </n-gi>
-      <n-gi span="2 s:2 m:1">
-        <n-card size="small" embedded>
-          <n-statistic label="SignalR">
-            <template #prefix>
-              <n-icon :color="runtimeState.signalrConnected ? '#2080f0' : '#999'">
-                <Plug />
-              </n-icon>
-            </template>
-            {{ runtimeState.signalrConnected ? '已连接' : '断开' }}
-          </n-statistic>
-        </n-card>
-      </n-gi>
-      <n-gi span="2 s:2 m:1">
-        <n-card size="small" embedded>
-          <n-statistic label="连接房间" :value="runtimeState.connectedRooms.length">
-            <template #prefix>
-              <n-icon color="#f0a020"><Stream /></n-icon>
-            </template>
-          </n-statistic>
-        </n-card>
-      </n-gi>
-      <n-gi span="2 s:2 m:1">
-        <n-card size="small" embedded>
-          <n-statistic label="累计消息" :value="runtimeState.messageCount">
-            <template #prefix>
-              <n-icon color="#2080f0"><CommentDots /></n-icon>
-            </template>
-          </n-statistic>
-        </n-card>
-      </n-gi>
-      <n-gi span="2 s:2 m:1">
-        <n-card size="small" embedded>
-          <n-statistic label="Cookie 状态">
-            <template #prefix>
-              <n-tag size="small" :type="cookieStatusType">{{ cookieStatusText }}</n-tag>
-            </template>
-            <div class="stat-extra">最近心跳：{{ lastHeartbeatText }}</div>
-          </n-statistic>
-        </n-card>
-      </n-gi>
-    </n-grid>
+  <div class="space-y-5">
+    <!-- Page header with actions -->
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">运行仪表盘</h2>
+        <p class="mt-0.5 text-sm text-muted-foreground">核心状态与运行数据概览</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <Button variant="outline" size="sm" :disabled="refreshingState" @click="emit('refresh-runtime-state')">
+          <RefreshCw :class="['h-3.5 w-3.5', refreshingState && 'animate-spin']" />
+          刷新
+        </Button>
+        <Button v-if="!runtimeState.isRunning" size="sm" :disabled="startingCore" @click="emit('start-core')">
+          <Loader2 v-if="startingCore" class="h-3.5 w-3.5 animate-spin" />
+          <Play v-else class="h-3.5 w-3.5" />
+          启动核心
+        </Button>
+        <Button v-else variant="destructive" size="sm" :disabled="stoppingCore" @click="emit('stop-core')">
+          <Loader2 v-if="stoppingCore" class="h-3.5 w-3.5 animate-spin" />
+          <StopCircle v-else class="h-3.5 w-3.5" />
+          停止
+        </Button>
+      </div>
+    </div>
 
-    <n-card size="small" style="margin-top: 16px" title="快捷操作">
-      <template #header-extra>
-        <n-space size="small">
-          <n-button size="small" secondary :loading="refreshingState" @click="emit('refresh-runtime-state')">
-            刷新状态
-          </n-button>
-          <n-button size="small" tertiary type="warning" :loading="forcingLock" @click="emit('force-takeover')">
-            强制接管(本IP)
-          </n-button>
-          <n-tag type="info" size="small" round>
-            在线客户端: {{ remoteClients.length }}
-          </n-tag>
-          <n-tag size="small" round>
-            本机ID: {{ localClientId }}
-          </n-tag>
-          <n-tag v-if="runtimeState.lastRoomAssigned" type="info" size="small">
-            最近分配: {{ runtimeState.lastRoomAssigned }}
-          </n-tag>
-        </n-space>
-      </template>
-      <n-space justify="space-between" align="center">
-        <n-space>
-          <n-button
-            v-if="!runtimeState.isRunning"
-            type="primary"
-            size="large"
-            :loading="startingCore"
-            @click="emit('start-core')"
-          >
-            <template #icon><n-icon><Play /></n-icon></template>
-            启动核心
-          </n-button>
-          <n-button
-            v-else
-            type="error"
-            size="large"
-            secondary
-            :loading="stoppingCore"
-            @click="emit('stop-core')"
-          >
-            <template #icon><n-icon><Stop /></n-icon></template>
-            停止核心
-          </n-button>
-        </n-space>
+    <!-- Alerts -->
+    <Alert v-if="runtimeState.lockedByOther" class="border-amber-300/80 bg-amber-500/10">
+      <AlertCircle class="h-4 w-4 text-amber-600 dark:text-amber-300" />
+      <AlertTitle>核心锁被占用</AlertTitle>
+      <AlertDescription class="flex items-center justify-between gap-3">
+        <span>当前核心锁由 <code class="rounded bg-muted px-1 text-xs">{{ runtimeState.ownerClientId || '未知' }}</code> 持有</span>
+        <Button variant="outline" size="sm" :disabled="forcingLock" @click="emit('force-takeover')">
+          <Loader2 v-if="forcingLock" class="h-3.5 w-3.5 animate-spin" />
+          强制接管
+        </Button>
+      </AlertDescription>
+    </Alert>
 
-        <n-space vertical size="small" style="flex: 1">
-          <n-alert v-if="runtimeState.lastError" type="error" show-icon closable>
-            {{ runtimeState.lastError }}
-          </n-alert>
-        </n-space>
-      </n-space>
-    </n-card>
+    <Alert v-if="runtimeState.lastError" variant="destructive">
+      <AlertCircle class="h-4 w-4" />
+      <AlertTitle>最近错误</AlertTitle>
+      <AlertDescription>{{ runtimeState.lastError }}</AlertDescription>
+    </Alert>
 
-    <n-card size="small" title="在线客户端" style="margin-top: 16px">
-      <n-table size="small" :bordered="false" :single-line="false">
-        <thead>
-          <tr>
-            <th>ClientId</th>
-            <th>IP</th>
-            <th>运行</th>
-            <th>SignalR</th>
-            <th>连接房间</th>
-            <th>消息</th>
-            <th>最近心跳</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="client in remoteClients" :key="client.clientId">
-            <td>
-              <n-tag
-                size="small"
-                :type="client.clientId === localClientId ? 'success' : 'default'"
-                :bordered="false"
-              >
-                {{ client.clientId }}
-              </n-tag>
-            </td>
-            <td>{{ client.ip || '—' }}</td>
-            <td>
-              <n-tag size="small" :type="client.isRunning ? 'success' : 'default'">
-                {{ client.isRunning ? '运行中' : '已停止' }}
-              </n-tag>
-            </td>
-            <td>{{ client.signalrConnected ? '已连接' : '断开' }}</td>
-            <td>{{ client.connectedRooms.length }}</td>
-            <td>{{ client.messageCount }}</td>
-            <td>{{ client.lastHeartbeat ? new Date(client.lastHeartbeat).toLocaleString() : '—' }}</td>
-          </tr>
-          <tr v-if="remoteClients.length === 0">
-            <td colspan="7" class="empty-cell">
-              <n-empty description="暂无在线客户端" size="small" />
-            </td>
-          </tr>
-        </tbody>
-      </n-table>
-    </n-card>
-
-    <n-card size="small" title="连接详情" style="margin-top: 16px">
-      <template #header-extra>
-        <n-popover trigger="hover" placement="bottom-end">
-          <template #trigger>
-            <n-tag type="info" size="small" round style="cursor: pointer">
-              服务器分配: {{ runtimeState.serverAssignedRooms.length }}
-            </n-tag>
-          </template>
-          <div style="max-width: 300px">
-            <div v-if="runtimeState.serverAssignedRooms.length > 0">
-              <n-space size="small">
-                <n-tag v-for="room in runtimeState.serverAssignedRooms" :key="room" size="small">
-                  {{ room }}
-                </n-tag>
-              </n-space>
-            </div>
-            <div v-else>暂无服务器分配的房间</div>
+    <!-- Status banner -->
+    <Card :class="[
+      'border transition-all',
+      runtimeState.isRunning
+        ? 'border-emerald-500/40 bg-gradient-to-r from-emerald-500/5 via-transparent to-transparent'
+        : 'bg-card/60'
+    ]">
+      <CardContent class="flex items-center gap-4 p-4">
+        <div :class="[
+          'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors',
+          runtimeState.isRunning ? 'bg-emerald-500/15' : 'bg-muted'
+        ]">
+          <Server :class="[
+            'h-5 w-5',
+            runtimeState.isRunning ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
+          ]" />
+        </div>
+        <div class="flex-1">
+          <p class="font-semibold">{{ runtimeState.isRunning ? '核心运行中' : '核心已停止' }}</p>
+          <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span class="flex items-center gap-1">
+              <PlugZap class="h-3 w-3" />
+              {{ runtimeState.signalrConnected ? 'SignalR 已连接' : 'SignalR 断开' }}
+            </span>
+            <span class="flex items-center gap-1">
+              <TvMinimal class="h-3 w-3" />
+              {{ runtimeState.connectedRooms.length }} 个房间
+            </span>
+            <span class="flex items-center gap-1">
+              <MessageSquare class="h-3 w-3" />
+              {{ runtimeState.messageCount.toLocaleString() }} 条消息
+            </span>
           </div>
-        </n-popover>
-      </template>
-      <n-table size="small" :bordered="false" :single-line="false">
-        <thead>
-          <tr>
-            <th>房间 ID</th>
-            <th>优先级</th>
-            <th>连接时长</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="conn in runtimeState.connectionInfo" :key="conn.roomId">
-            <td><n-tag size="small" :bordered="false">{{ conn.roomId }}</n-tag></td>
-            <td>
-              <n-tag size="small" :type="conn.priority === 'high' ? 'error' : conn.priority === 'low' ? 'default' : 'info'">
-                {{ conn.priority }}
-              </n-tag>
-            </td>
-            <td>{{ new Date(conn.connectedAt).toLocaleTimeString() }}</td>
-          </tr>
-          <tr v-if="runtimeState.connectionInfo.length === 0">
-            <td colspan="3" class="empty-cell">
-              <n-empty description="暂无活动连接" size="small" />
-            </td>
-          </tr>
-        </tbody>
-      </n-table>
-    </n-card>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- Stat cards -->
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Card class="bg-card/60">
+        <CardContent class="p-3.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-medium text-muted-foreground">Cookie 状态</p>
+            <Cookie class="h-3.5 w-3.5 text-muted-foreground/60" />
+          </div>
+          <div class="mt-2">
+            <Badge variant="outline" :class="cookieBadgeClass" class="text-xs">{{ cookieStatusText }}</Badge>
+          </div>
+          <p class="mt-1.5 text-[11px] text-muted-foreground">{{ lastHeartbeatText }}</p>
+        </CardContent>
+      </Card>
+
+      <Card class="bg-card/60">
+        <CardContent class="p-3.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-medium text-muted-foreground">在线客户端</p>
+            <MonitorSmartphone class="h-3.5 w-3.5 text-muted-foreground/60" />
+          </div>
+          <p class="mt-2 text-2xl font-bold tabular-nums animate-number-pop">{{ remoteClients.length }}</p>
+        </CardContent>
+      </Card>
+
+      <Card class="bg-card/60">
+        <CardContent class="p-3.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-medium text-muted-foreground">消息类型</p>
+            <MessageSquare class="h-3.5 w-3.5 text-muted-foreground/60" />
+          </div>
+          <p class="mt-2 text-2xl font-bold tabular-nums animate-number-pop">{{ messageCmdRows.length }}</p>
+        </CardContent>
+      </Card>
+
+      <Card class="bg-card/60">
+        <CardContent class="p-3.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-medium text-muted-foreground">服务器分配</p>
+            <Server class="h-3.5 w-3.5 text-muted-foreground/60" />
+          </div>
+          <p class="mt-2 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.serverAssignedRooms.length }}</p>
+        </CardContent>
+      </Card>
+    </div>
+
+    <!-- Two columns: Message distribution + Clients -->
+    <div class="grid gap-4 lg:grid-cols-2">
+      <!-- Message type distribution bar chart -->
+      <Card class="bg-card/60">
+        <CardHeader class="pb-3">
+          <CardTitle class="text-sm">消息类型分布</CardTitle>
+          <CardDescription>{{ messageCmdRows.length }} 种类型，共 {{ runtimeState.messageCount.toLocaleString() }} 条</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div v-if="topMessageTypes.length > 0" class="space-y-2">
+            <div
+              v-for="row in topMessageTypes"
+              :key="row.cmd"
+              class="group flex items-center gap-2"
+            >
+              <span class="w-28 truncate text-xs text-muted-foreground" :title="row.cmd">{{ row.cmd }}</span>
+              <div class="h-5 flex-1 overflow-hidden rounded-sm bg-muted/50">
+                <div
+                  class="bar-fill h-full rounded-sm"
+                  :class="barColors[row.colorIndex] || barColors[8]"
+                  :style="{ width: Math.max(row.percentage, 0.5) + '%' }"
+                />
+              </div>
+              <span class="w-14 text-right text-xs tabular-nums text-muted-foreground">
+                {{ row.count.toLocaleString() }}
+              </span>
+            </div>
+          </div>
+          <div v-else class="flex h-32 items-center justify-center">
+            <p class="text-sm text-muted-foreground">暂无消息数据</p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Online clients -->
+      <Card class="bg-card/60">
+        <CardHeader class="pb-3">
+          <div class="flex items-center justify-between">
+            <CardTitle class="text-sm">在线客户端</CardTitle>
+            <Badge variant="secondary" class="text-[10px]">{{ remoteClients.length }} 个</Badge>
+          </div>
+          <CardDescription>本机: <code class="text-[11px]">{{ localClientId.slice(0, 8) }}...</code></CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div v-if="remoteClients.length > 0" class="space-y-2">
+            <div
+              v-for="client in remoteClients"
+              :key="client.clientId"
+              class="flex items-center justify-between rounded-lg border bg-background/40 p-2.5 transition-colors hover:bg-background/70"
+            >
+              <div class="flex items-center gap-2.5">
+                <div :class="[
+                  'h-2 w-2 shrink-0 rounded-full',
+                  client.isRunning ? 'bg-emerald-500 animate-pulse-dot' : 'bg-muted-foreground/40'
+                ]" />
+                <div class="min-w-0">
+                  <div class="flex items-center gap-1.5">
+                    <span class="truncate text-xs font-medium">
+                      {{ client.clientId === localClientId ? '本机' : client.clientId.slice(0, 8) + '...' }}
+                    </span>
+                    <Badge v-if="client.clientId === localClientId" class="h-4 px-1 text-[9px]">本机</Badge>
+                    <Badge v-if="client.signalrConnected" variant="outline" class="h-4 px-1 text-[9px]">SR</Badge>
+                  </div>
+                  <p class="mt-0.5 text-[11px] text-muted-foreground">
+                    {{ client.connectedRooms.length }} 房间 · {{ client.messageCount.toLocaleString() }} 消息
+                    <span v-if="client.ip"> · {{ client.ip }}</span>
+                  </p>
+                </div>
+              </div>
+              <span v-if="client.lastHeartbeat" class="shrink-0 text-[10px] text-muted-foreground">
+                {{ new Date(client.lastHeartbeat).toLocaleTimeString() }}
+              </span>
+            </div>
+          </div>
+          <div v-else class="flex h-32 items-center justify-center rounded-lg border border-dashed">
+            <p class="text-sm text-muted-foreground">暂无在线客户端</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+
+    <!-- Connection details -->
+    <Card v-if="connectionRoomCards.length > 0" class="bg-card/60">
+      <CardHeader class="pb-3">
+        <CardTitle class="text-sm">连接详情</CardTitle>
+        <CardDescription>
+          {{ runtimeState.connectedRooms.length }} 已连接 / {{ connectionRoomCards.length }} 总房间
+          <span v-if="runtimeState.lastRoomAssigned"> · 最近分配: {{ runtimeState.lastRoomAssigned }}</span>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div
+            v-for="room in connectionRoomCards"
+            :key="room.roomId"
+            class="flex items-center justify-between rounded-lg border bg-background/40 px-3 py-2.5"
+          >
+            <div class="flex items-center gap-2">
+              <img
+                v-if="room.faceUrl"
+                :src="room.faceUrl"
+                :alt="room.username"
+                referrerpolicy="no-referrer"
+                class="h-6 w-6 rounded-full object-cover"
+              />
+              <div
+                v-else
+                class="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground"
+              >?</div>
+              <div class="min-w-0">
+                <p class="max-w-[140px] truncate text-xs font-medium" :title="room.username">{{ room.username }}</p>
+                <p class="text-[10px] text-muted-foreground">#{{ room.roomId }}</p>
+              </div>
+            </div>
+            <div class="flex flex-col items-end gap-1">
+              <span class="rounded px-1.5 py-0.5 text-[10px] font-medium" :class="room.stateClass">
+                {{ room.stateText }}
+              </span>
+              <span class="text-[10px] text-muted-foreground">{{ room.sourceText }}</span>
+              <span v-if="room.connectedAt" class="text-[10px] text-muted-foreground">
+                {{ new Date(room.connectedAt).toLocaleTimeString() }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   </div>
 </template>
-
-<style scoped>
-.dashboard-tab {
-  padding-top: 12px;
-}
-
-.stat-extra {
-  font-size: 12px;
-  color: var(--n-text-color-3);
-}
-
-.empty-cell {
-  text-align: center;
-  padding: 24px;
-}
-</style>

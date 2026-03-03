@@ -1,4 +1,4 @@
-import { DanmakuConfig, CliOptions, StreamerConfig, CoreControlConfigDto } from '../types';
+import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types';
 
 export class ConfigManager {
   private config: DanmakuConfig;
@@ -6,7 +6,6 @@ export class ConfigManager {
   constructor(options: Partial<DanmakuConfig> = {}) {
     this.config = {
       maxConnections: 10,
-      streamers: [],
       cookieCloudHost: 'http://localhost:8088',
       signalrUrl: 'https://ukamnads.icu/api/v2/user-hub',
       signalrHeaders: options.signalrHeaders,
@@ -15,7 +14,22 @@ export class ConfigManager {
       reconnectInterval: 5000, // 5秒
       statusCheckInterval: 30, // 30秒
       requestServerRooms: true,
-      ...options
+      allowedAreas: [],
+      allowedParentAreas: [],
+      logLevel: 'info',
+      messageQueueMaxSize: 2000,
+      messageRetryBaseDelay: 1000,
+      messageRetryMaxDelay: 30000,
+      messageRetryMaxAttempts: 6,
+      batchUploadSize: 20,
+      heartbeatInterval: 5000,
+      lockAcquireRetryCount: 4,
+      lockAcquireRetryDelay: 1200,
+      lockAcquireForceTakeover: false,
+      errorHistoryLimit: 50,
+      ...options,
+      // 录制主播来源统一由 account.Recording（服务端分配）管理
+      streamers: []
     };
   }
 
@@ -43,6 +57,10 @@ export class ConfigManager {
       this.config.statusCheckInterval = Math.max(10, options.statusCheckInterval);
     }
 
+    if (options.signalrUrl) {
+      this.config.signalrUrl = options.signalrUrl;
+    }
+
     if (options.token) {
       this.config.accountToken = options.token;
     }
@@ -50,15 +68,15 @@ export class ConfigManager {
     if (options.accountApi) {
       this.config.accountApiBase = options.accountApi;
     }
+
+    if (options.logLevel) {
+      this.config.logLevel = options.logLevel;
+    } else if (options.verbose) {
+      this.config.logLevel = 'debug';
+    }
   }
 
   applyAccountConfig(remote: CoreControlConfigDto): void {
-    const streamers: StreamerConfig[] = remote.streamers.map(streamer => ({
-      roomId: Number(streamer.roomId),
-      priority: streamer.priority ?? 'normal',
-      name: streamer.name || undefined
-    }));
-
     this.config = {
       ...this.config,
       maxConnections: remote.maxConnections,
@@ -74,7 +92,10 @@ export class ConfigManager {
       cookieCloudHost: remote.cookieCloudHost ?? undefined,
       cookieRefreshInterval: remote.cookieRefreshInterval,
       requestServerRooms: remote.requestServerRooms,
-      streamers
+      allowedAreas: Array.isArray(remote.allowedAreas) ? [...remote.allowedAreas] : [],
+      allowedParentAreas: Array.isArray(remote.allowedParentAreas) ? [...remote.allowedParentAreas] : [],
+      // 录制主播来源统一由 account.Recording（服务端分配）管理
+      streamers: []
     };
   }
 
@@ -88,12 +109,6 @@ export class ConfigManager {
 
     if (this.config.maxConnections < 1 || this.config.maxConnections > 10) {
       throw new Error('最大连接数必须在1-10之间');
-    }
-
-    // 验证主播配置
-    const nonLowPriorityCount = this.config.streamers.filter(s => s.priority !== 'low').length;
-    if (nonLowPriorityCount > 10) {
-      throw new Error('高优先级和普通优先级主播总数不能超过10个');
     }
 
     return true;
@@ -110,7 +125,12 @@ export class ConfigManager {
    * 更新配置
    */
   updateConfig(updates: Partial<DanmakuConfig>): void {
-    this.config = { ...this.config, ...updates };
+    this.config = {
+      ...this.config,
+      ...updates,
+      // 外部更新时也不允许写入本地主播列表
+      streamers: []
+    };
   }
 
   /**
@@ -118,38 +138,5 @@ export class ConfigManager {
    */
   hasCookieCloudConfig(): boolean {
     return !!(this.config.cookieCloudKey && this.config.cookieCloudPassword);
-  }
-
-  /**
-   * 获取主播配置列表
-   */
-  getStreamers(): StreamerConfig[] {
-    return [...this.config.streamers];
-  }
-
-  /**
-   * 添加主播配置
-   */
-  addStreamer(streamer: StreamerConfig): void {
-    const existingIndex = this.config.streamers.findIndex(s => s.roomId === streamer.roomId);
-    if (existingIndex >= 0) {
-      this.config.streamers[existingIndex] = streamer;
-    } else {
-      this.config.streamers.push(streamer);
-    }
-  }
-
-  /**
-   * 移除主播配置
-   */
-  removeStreamer(roomId: number): void {
-    this.config.streamers = this.config.streamers.filter(s => s.roomId !== roomId);
-  }
-
-  /**
-   * 获取所有房间ID
-   */
-  getAllRoomIds(): number[] {
-    return this.config.streamers.map(s => s.roomId);
   }
 }

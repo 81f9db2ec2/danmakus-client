@@ -1,43 +1,38 @@
 <script setup lang="ts">
-import { NConfigProvider, NMessageProvider, darkTheme } from 'naive-ui';
-import { onBeforeUnmount, ref, watchEffect } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import IndexPage from './pages/Index.vue';
+import 'vue-sonner/style.css';
+import { Toaster } from '@/components/ui/sonner';
 
 const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
 const prefersDark = ref(colorSchemeQuery.matches);
+
+const applyTheme = (isDark: boolean) => {
+  document.documentElement.classList.toggle('dark', isDark);
+};
+
 const handleColorSchemeChange = (event: MediaQueryListEvent) => {
   prefersDark.value = event.matches;
+  applyTheme(event.matches);
 };
-colorSchemeQuery.addEventListener('change', handleColorSchemeChange);
+
+onMounted(() => {
+  applyTheme(prefersDark.value);
+  colorSchemeQuery.addEventListener('change', handleColorSchemeChange);
+});
 
 onBeforeUnmount(() => {
   colorSchemeQuery.removeEventListener('change', handleColorSchemeChange);
 });
-
-watchEffect(() => {
-  document.body.style.backgroundColor = prefersDark.value ? '#0f0f0f' : '#f6f6f6';
-  document.body.style.color = prefersDark.value ? '#f6f6f6' : '#0f0f0f';
-});
 </script>
 
 <template>
-  <n-config-provider :theme="prefersDark ? darkTheme : null">
-    <n-message-provider>
-      <IndexPage />
-    </n-message-provider>
-  </n-config-provider>
+  <div class="h-screen bg-background text-foreground">
+    <div
+      aria-hidden="true"
+      class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.08),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(16,185,129,0.06),transparent_36%)]"
+    />
+    <IndexPage />
+    <Toaster rich-colors position="top-right" />
+  </div>
 </template>
-
-<style>
-:root,
-body {
-  background-color: var(--n-color);
-  color: var(--n-text-color);
-  transition: background-color 0.3s ease;
-}
-
-body {
-  margin: 0;
-  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-}
-</style>

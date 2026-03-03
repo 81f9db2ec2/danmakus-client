@@ -1,5 +1,7 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import tailwindcss from "@tailwindcss/vite";
+import tsconfigPaths from "vite-tsconfig-paths";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,9 +11,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [vue()],
+  plugins: [vue(), tailwindcss(), tsconfigPaths()],
   resolve: {
     alias: {
+      "@": path.resolve(__dirname, "./src"),
       'danmakus-core': path.resolve(__dirname, './danmakus-core/src/lib')
     }
   },
