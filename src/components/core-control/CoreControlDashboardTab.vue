@@ -101,6 +101,8 @@ const props = defineProps<{
   recordingStatsByRoom: Record<string, RecordingRoomStats>;
   remoteClients: RemoteClientSnapshot[];
   localClientId: string;
+  accountName: string;
+  accountId: number | null;
   biliAccountProfile: BiliAccountProfile | null;
   lastHeartbeatText: string;
   cookieStatusText: string;
@@ -197,7 +199,7 @@ const connectionRoomCards = computed(() => {
     const sourceText = isRecording || (connection && priority !== 'server')
       ? '关注录制'
       : serverAssignedSet.has(roomId)
-        ? '服务器分配'
+        ? '本站分配'
         : '未知来源';
 
     return {
@@ -498,7 +500,10 @@ onBeforeUnmount(() => {
             <CardTitle class="text-sm">在线客户端</CardTitle>
             <Badge variant="secondary" class="text-[10px]">{{ remoteClients.length }} 个</Badge>
           </div>
-          <CardDescription>本机: <code class="text-[11px]">{{ localClientId.slice(0, 8) }}...</code></CardDescription>
+          <CardDescription>
+            账户: {{ accountName }}<span v-if="accountId !== null"> #{{ accountId }}</span>
+            · 本机: <code class="text-[11px]">{{ localClientId.slice(0, 8) }}...</code>
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div v-if="remoteClients.length > 0" class="space-y-2">

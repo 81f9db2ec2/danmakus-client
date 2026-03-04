@@ -9,7 +9,8 @@ import {
   getUserInfo,
   removeRecording,
   syncCoreRuntimeState,
-  updateCoreConfig
+  updateCoreConfig,
+  updateRecordingSetting
 } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
 import { biliNavProfileState, startNavProfileAutoRefresh, stopNavProfileAutoRefresh } from '../services/bilibili';
@@ -27,6 +28,12 @@ import CoreControlSettingsTab from './core-control/CoreControlSettingsTab.vue';
 const token = ref(getAuthToken());
 const userInfo = ref<UserInfo | null>(null);
 const isLoggedIn = computed(() => !!userInfo.value);
+const accountNameForDisplay = computed(() => {
+  if (!userInfo.value) return '未知用户';
+  const name = userInfo.value.name?.trim();
+  return name ? name : `用户${userInfo.value.id}`;
+});
+const accountIdForDisplay = computed<number | null>(() => userInfo.value?.id ?? null);
 const currentPage = ref('dashboard');
 const signalrFixedUrl = SIGNALR_URL;
 const coreConfig = reactive<CoreControlConfigDto>({
@@ -57,6 +64,7 @@ const recordings = ref<RecordingInfoDto[]>([]);
 const refreshingRecordings = ref(false);
 const addingRecording = ref(false);
 const removingRecordingUid = ref<number | null>(null);
+const updatingRecordingUid = ref<number | null>(null);
 const isUpdaterSupported = updaterEnabled();
 const checkingAppUpdate = ref(false);
 const installingAppUpdate = ref(false);
@@ -126,7 +134,7 @@ const startRemotePoll = () => {
       await refreshRuntimeState();
       const now = Date.now();
       if (now - lastRecordingRefreshAt < recordingRefreshIntervalMs) return;
-      if (refreshingRecordings.value || addingRecording.value || removingRecordingUid.value !== null) return;
+      if (refreshingRecordings.value || addingRecording.value || removingRecordingUid.value !== null || updatingRecordingUid.value !== null) return;
       lastRecordingRefreshAt = now;
       await refreshRecordingList();
     })();
@@ -419,6 +427,49 @@ const handleRemoveRecording = async (uid: number) => {
   }
 };
 
+const handleUpdateRecordingPublic = async (uid: number, isPublic: boolean) => {
+  if (!ensureToken()) return;
+  if (!Number.isFinite(uid) || uid <= 0) {
+    toast.error('主播 UID 无效');
+    return;
+  }
+
+  updatingRecordingUid.value = uid;
+  try {
+    const changed = await updateRecordingSetting([
+      {
+        id: uid,
+        setting: { isPublic }
+      }
+    ]);
+
+    if (!changed.includes(uid)) {
+      throw new Error('更新录制公开状态失败');
+    }
+
+    const updated = recordings.value.map(item => {
+      if (item.channel.uId !== uid) {
+        return item;
+      }
+      return {
+        ...item,
+        setting: {
+          ...item.setting,
+          isPublic
+        }
+      };
+    });
+
+    syncRecordingList(updated);
+    toast.success(isPublic ? '已设为公开录制' : '已设为私有录制');
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '更新录制公开状态失败');
+  } finally {
+    updatingRecordingUid.value = null;
+  }
+};
+
 const handleLogout = async () => {
   stopRemotePoll();
   clearCoreConfigAutoSaveTimer();
@@ -543,6 +594,8 @@ onBeforeUnmount(() => {
               :recording-stats-by-room="recordingStatsByRoom"
               :remote-clients="remoteClients"
               :local-client-id="localClientId"
+              :account-name="accountNameForDisplay"
+              :account-id="accountIdForDisplay"
               :bili-account-profile="biliNavProfileState.profile"
               :last-heartbeat-text="lastHeartbeatText"
               :cookie-status-text="cookieStatusText"
@@ -566,6 +619,7 @@ onBeforeUnmount(() => {
               :refreshing-recordings="refreshingRecordings"
               :adding-recording="addingRecording"
               :removing-recording-uid="removingRecordingUid"
+              :updating-recording-uid="updatingRecordingUid"
               :saving-config="savingConfig"
               :updater-supported="isUpdaterSupported"
               :checking-app-update="checkingAppUpdate"
@@ -577,6 +631,7 @@ onBeforeUnmount(() => {
               @refresh-recordings="refreshRecordingList"
               @add-recording="handleAddRecording"
               @remove-recording="handleRemoveRecording"
+              @update-recording-public="handleUpdateRecordingPublic"
             />
 
             <div v-else-if="currentPage === 'bilibili'" key="bilibili">

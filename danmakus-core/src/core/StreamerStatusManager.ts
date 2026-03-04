@@ -140,6 +140,7 @@ export class StreamerStatusManager {
     const statuses: StreamerStatus[] = [];
 
     for (const roomId of roomIds) {
+      const cached = this.statusCache.get(roomId);
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -178,12 +179,16 @@ export class StreamerStatusManager {
         this.logger.warn(`检查房间 ${roomId} 状态失败:`, error instanceof Error ? error.message : error);
       }
 
-      // 创建默认状态
-      const status: StreamerStatus = {
-        roomId,
-        isLive: false
-      };
-      statuses.push(status);
+      // 外部状态源不可达时，保留缓存状态，避免把“未知”误判为“下播”
+      if (cached) {
+        statuses.push({ ...cached, roomId });
+      }
+    }
+
+    // 本轮没有拿到任何可用状态时，保持现有缓存与连接，不触发状态变更广播
+    if (statuses.length === 0) {
+      this.logger.warn('主播状态检查全部失败，保留上一轮状态');
+      return;
     }
 
     this.updateStatusCache(statuses);

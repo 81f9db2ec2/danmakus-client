@@ -103,11 +103,11 @@ const navItems = [
       <div v-if="userInfo" class="flex items-center gap-2.5">
         <Avatar class="h-8 w-8 border border-border">
           <AvatarFallback class="bg-primary/10 text-xs">
-            {{ userInfo.name?.charAt(0) || '?' }}
+            {{ (userInfo.name || `用户${userInfo.id}`).charAt(0) || '?' }}
           </AvatarFallback>
         </Avatar>
         <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium">{{ userInfo.name }}</p>
+          <p class="truncate text-sm font-medium">{{ userInfo.name || `用户${userInfo.id}` }}</p>
           <p class="text-[11px] text-muted-foreground">ID: {{ userInfo.id }}</p>
         </div>
         <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" title="退出登录" @click="emit('logout')">

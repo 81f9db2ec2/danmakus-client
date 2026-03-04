@@ -7,6 +7,13 @@ export interface DanmakuMessage {
   timestamp: number;
 }
 
+// 发送给后端的消息格式
+export interface ClientDanmakuMessage {
+  roomId: number;
+  raw: string;
+  timestamp: number;
+}
+
 // 主播优先级类型
 export type StreamerPriority = 'high' | 'normal' | 'low';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';

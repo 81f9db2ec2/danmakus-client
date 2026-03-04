@@ -30,6 +30,7 @@ const LOCK_RETRY_MIN_COUNT = 1;
 const LOCK_RETRY_MIN_DELAY = 200;
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
+const QUEUE_OVERFLOW_LOG_INTERVAL_MS = 10_000;
 const SERVER_ROOM_OFFLINE_EVICT_HITS = 1;
 const SERVER_ROOM_ASSIGN_GRACE_MS = 60_000;
 
@@ -112,6 +113,8 @@ export class DanmakuClient extends EventEmitter {
   private roomConnectQueueTimer?: ReturnType<typeof setTimeout>;
   private lastRoomConnectStartAt = 0;
   private messageQueueMaxSize = 2000;
+  private queueOverflowLastLogAt = 0;
+  private queueOverflowSuppressedCount = 0;
   private messageRetryBaseDelay = 1000;
   private messageRetryMaxDelay = 30_000;
   private messageRetryMaxAttempts = 6;
@@ -122,6 +125,9 @@ export class DanmakuClient extends EventEmitter {
   private lockAcquireForceTakeover = false;
   private errorHistoryLimit = 50;
   private recentErrors: ClientErrorRecord[] = [];
+  private signalrClientRegistering = false;
+  private lastSignalrClientRegisterAt = 0;
+  private suppressSignalrAutoRegister = false;
 
   constructor(config: Partial<DanmakuConfig> = {}) {
     super();
@@ -236,12 +242,30 @@ export class DanmakuClient extends EventEmitter {
       this.applyServerRoomReplacement(oldRoomId, newRoomId);
     };
 
+    this.signalrConnection.onRoomUnassigned = (roomId: number) => {
+      if (!this.serverAssignedRooms.includes(roomId)) {
+        return;
+      }
+
+      this.logger.info(`收到服务器取消分配指令: ${roomId}`);
+      this.serverAssignedRooms = this.serverAssignedRooms.filter(id => id !== roomId);
+      this.serverRoomOfflineHits.delete(roomId);
+      this.serverRoomAssignedAt.delete(roomId);
+      this.serverRoomLiveConfirmed.delete(roomId);
+      this.statusManager?.updateServerRooms(this.serverAssignedRooms);
+      this.statusManager?.refreshNow();
+      this.disconnectFromRoom(roomId);
+      this.updateConnections();
+      void this.syncRuntimeState();
+    };
+
     this.signalrConnection.onConnected = () => {
+      this.triggerSignalRClientRegistration('connected');
       this.scheduleMessageDispatch(0);
     };
 
     this.signalrConnection.onReconnected = () => {
-      void this.reRegisterSignalRClient();
+      this.triggerSignalRClientRegistration('reconnected');
       this.scheduleMessageDispatch(0);
     };
   }
@@ -334,7 +358,7 @@ export class DanmakuClient extends EventEmitter {
       }, { force: true, strict: true });
 
       // 注册客户端
-      const registerSuccess = await signalrConnection.registerClient([]);
+      const registerSuccess = await signalrConnection.registerClient(this.buildRegisterRoomIds());
       if (!registerSuccess) {
         throw new Error('SignalR客户端注册失败');
       }
@@ -408,6 +432,8 @@ export class DanmakuClient extends EventEmitter {
     this.recentErrors = [];
     this.clearMessageDispatch();
     this.pendingMessages = [];
+    this.queueOverflowLastLogAt = 0;
+    this.queueOverflowSuppressedCount = 0;
     this.clearHeartbeat();
     await this.syncRuntimeState();
     if (this.accountClient) {
@@ -452,7 +478,11 @@ export class DanmakuClient extends EventEmitter {
 
     const config = this.configManager.getConfig();
     const statusManager = this.ensureStatusManager();
-    this.evictInactiveServerAssignedRooms(statusManager);
+    const signalrConnected = this.signalrConnection?.getConnectionState() ?? false;
+    // SignalR 断线期间，保留现有服务端分配，避免因状态查询抖动导致房间被误断开。
+    if (signalrConnected) {
+      this.evictInactiveServerAssignedRooms(statusManager);
+    }
     this.trimServerAssignedRoomsToCapacity(config.maxConnections);
 
     // 获取应该连接的房间
@@ -464,6 +494,14 @@ export class DanmakuClient extends EventEmitter {
     // 当前连接的房间
     const currentConnections = Array.from(this.connections.keys());
     const targetRooms = roomsToConnect.map(r => r.roomId);
+
+    if (!signalrConnected) {
+      for (const roomId of currentConnections) {
+        if (!targetRooms.includes(roomId)) {
+          targetRooms.push(roomId);
+        }
+      }
+    }
 
     for (const queuedRoomId of Array.from(this.queuedRoomIds)) {
       if (!targetRooms.includes(queuedRoomId)) {
@@ -588,9 +626,6 @@ export class DanmakuClient extends EventEmitter {
     const assignedRooms = Array.from(
       new Set(this.serverAssignedRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0))
     );
-    if (assignedRooms.length >= capacity) {
-      return false;
-    }
 
     // 还有待连接的服务器分配房间时，先等待其处理结果，避免重复请求
     if (assignedRooms.some(roomId => !this.connections.has(roomId))) {
@@ -1194,6 +1229,12 @@ export class DanmakuClient extends EventEmitter {
     }
   }
 
+  private buildRegisterRoomIds(): number[] {
+    return Array.from(
+      new Set(this.getConnectedRooms().filter(roomId => Number.isFinite(roomId) && roomId > 0))
+    );
+  }
+
   private buildRuntimeStateSnapshot(): CoreRuntimeStateDto {
     const status = this.getStatus();
     const now = Date.now();
@@ -1290,10 +1331,7 @@ export class DanmakuClient extends EventEmitter {
       const dropped = this.pendingMessages.shift();
       const queueError = new Error(`消息队列已满(${this.messageQueueMaxSize})，最早消息已丢弃`);
       this.recordError(queueError, { category: 'queue', code: 'QUEUE_OVERFLOW', recoverable: true, roomId: dropped?.message.roomId });
-      this.logger.error(queueError.message, {
-        roomId: dropped?.message.roomId,
-        cmd: dropped?.message.cmd
-      });
+      this.logQueueOverflow(queueError, dropped);
       this.emit('error', queueError, dropped?.message.roomId);
     }
 
@@ -1303,6 +1341,26 @@ export class DanmakuClient extends EventEmitter {
       nextRetryAt: Date.now()
     });
     this.scheduleMessageDispatch(0);
+  }
+
+  private logQueueOverflow(queueError: Error, dropped?: QueuedMessage): void {
+    const now = Date.now();
+    if (now - this.queueOverflowLastLogAt < QUEUE_OVERFLOW_LOG_INTERVAL_MS) {
+      this.queueOverflowSuppressedCount += 1;
+      return;
+    }
+
+    const suppressed = this.queueOverflowSuppressedCount;
+    this.queueOverflowSuppressedCount = 0;
+    this.queueOverflowLastLogAt = now;
+    const throttleHint = suppressed > 0
+      ? `；过去 ${Math.floor(QUEUE_OVERFLOW_LOG_INTERVAL_MS / 1000)} 秒内省略 ${suppressed} 条同类日志`
+      : '';
+
+    this.logger.error(`${queueError.message}${throttleHint}`, {
+      roomId: dropped?.message.roomId,
+      cmd: dropped?.message.cmd
+    });
   }
 
   private scheduleMessageDispatch(delayMs: number): void {
@@ -1602,17 +1660,42 @@ export class DanmakuClient extends EventEmitter {
       return;
     }
 
-    const connected = await this.signalrConnection.connect();
-    if (!connected) {
-      throw new Error('配置热更新后无法连接SignalR');
+    this.suppressSignalrAutoRegister = true;
+    try {
+      const connected = await this.signalrConnection.connect();
+      if (!connected) {
+        throw new Error('配置热更新后无法连接SignalR');
+      }
+
+      const registered = await this.signalrConnection.registerClient(this.buildRegisterRoomIds());
+      if (!registered) {
+        throw new Error('配置热更新后客户端注册失败');
+      }
+    } finally {
+      this.suppressSignalrAutoRegister = false;
     }
 
-    const registered = await this.signalrConnection.registerClient([]);
-    if (!registered) {
-      throw new Error('配置热更新后客户端注册失败');
-    }
     this.updateConnections();
+    void this.syncRuntimeState();
     this.scheduleMessageDispatch(0);
+  }
+
+  private triggerSignalRClientRegistration(reason: 'connected' | 'reconnected'): void {
+    if (!this.isRunning || this.isStopping || this.suppressSignalrAutoRegister) {
+      return;
+    }
+
+    const now = Date.now();
+    if (this.signalrClientRegistering || now - this.lastSignalrClientRegisterAt < 1000) {
+      return;
+    }
+
+    this.signalrClientRegistering = true;
+    this.lastSignalrClientRegisterAt = now;
+    this.logger.info(`SignalR ${reason} 后重新注册客户端`);
+    void this.reRegisterSignalRClient().finally(() => {
+      this.signalrClientRegistering = false;
+    });
   }
 
   private async reRegisterSignalRClient(): Promise<void> {
@@ -1621,7 +1704,7 @@ export class DanmakuClient extends EventEmitter {
       return;
     }
 
-    const registered = await signalrConnection.registerClient([]);
+    const registered = await signalrConnection.registerClient(this.buildRegisterRoomIds());
     if (!registered) {
       const error = new Error('SignalR重连后重新注册客户端失败');
       this.recordError(error, { category: 'signalr', code: 'SIGNALR_REREGISTER_FAILED', recoverable: true });
@@ -1629,6 +1712,7 @@ export class DanmakuClient extends EventEmitter {
       return;
     }
     this.updateConnections();
+    void this.syncRuntimeState();
   }
 
   private areHeadersEqual(

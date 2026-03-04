@@ -1,5 +1,5 @@
 import { HubConnection, HubConnectionBuilder, HttpTransportType, LogLevel } from '@microsoft/signalr';
-import { DanmakuMessage } from '../types';
+import { DanmakuMessage, ClientDanmakuMessage } from '../types';
 import { ScopedLogger } from './Logger';
 
 const MAX_RECONNECT_INTERVAL = 60_000;
@@ -78,6 +78,11 @@ export class SignalRConnection {
       this.onRoomReplaced?.(oldRoomId, newRoomId);
     });
 
+    this.connection.on('UnassignRoom', (roomId: number) => {
+      this.logger.info(`服务器要求取消分配房间: ${roomId}`);
+      this.onRoomUnassigned?.(roomId);
+    });
+
     // 监听服务器消息
     this.connection.on('ServerMessage', (message: string) => {
       this.logger.debug(`服务器消息: ${message}`);
@@ -146,7 +151,12 @@ export class SignalRConnection {
     }
 
     try {
-      const result = await this.connection.invoke<unknown>('ReceiveMessage', message);
+      const payload: ClientDanmakuMessage = {
+        roomId: message.roomId,
+        raw: message.raw,
+        timestamp: message.timestamp
+      };
+      const result = await this.connection.invoke<unknown>('ReceiveMessage', payload);
       if (typeof result === 'string' && result.trim()) {
         this.logger.warn(`发送消息被服务端拒绝: room=${message.roomId}, cmd=${message.cmd}, reason=${result}`);
         return false;
@@ -174,12 +184,21 @@ export class SignalRConnection {
 
     if (this.batchUploadState !== 'unavailable') {
       try {
-        const result = await this.connection.invoke<unknown>('ReceiveMessages', messages);
+        const payload: ClientDanmakuMessage[] = messages.map(msg => ({
+          roomId: msg.roomId,
+          raw: msg.raw,
+          timestamp: msg.timestamp
+        }));
+        const result = await this.connection.invoke<unknown>('ReceiveMessages', payload);
         this.batchUploadState = 'available';
-        const failedCount = this.resolveBatchFailedCount(result, messages.length);
-        if (failedCount > 0) {
-          this.logger.warn(`批量上行失败: total=${messages.length}, failed=${failedCount}`);
-          return 0;
+        const failedInfo = this.resolveBatchFailureInfo(result, messages.length);
+        if (failedInfo.failedCount > 0) {
+          const firstReason = failedInfo.firstReason
+            ? `, firstReason=${failedInfo.firstReason}`
+            : '';
+          this.logger.warn(`批量上行失败: total=${messages.length}, failed=${failedInfo.failedCount}${firstReason}`);
+          // 与逐条发送语义对齐：仅返回“连续成功前缀”数量，失败项由上层重试或丢弃
+          return failedInfo.firstFailedIndex < 0 ? 0 : failedInfo.firstFailedIndex;
         }
         return messages.length;
       } catch (error) {
@@ -331,33 +350,78 @@ export class SignalRConnection {
     }
   }
 
-  private resolveBatchFailedCount(result: unknown, messageCount: number): number {
+  private resolveBatchFailureInfo(
+    result: unknown,
+    messageCount: number
+  ): { failedCount: number; firstFailedIndex: number; firstReason: string | null } {
     if (result === null || result === undefined || result === '') {
-      return 0;
+      return { failedCount: 0, firstFailedIndex: -1, firstReason: null };
     }
 
     if (Array.isArray(result)) {
-      return result.reduce((total, item) => {
+      let failedCount = 0;
+      let firstFailedIndex = -1;
+      let firstReason: string | null = null;
+
+      for (let i = 0; i < result.length; i++) {
+        const item = result[i];
         if (typeof item === 'string' && item.trim()) {
-          return total + 1;
+          failedCount += 1;
+          if (firstFailedIndex < 0) {
+            firstFailedIndex = i;
+            firstReason = item.trim().replace(/\s+/g, ' ').slice(0, 200);
+          }
         }
-        return total;
-      }, 0);
+      }
+
+      if (failedCount <= 0) {
+        return { failedCount: 0, firstFailedIndex: -1, firstReason: null };
+      }
+
+      return {
+        failedCount: Math.min(messageCount, failedCount),
+        firstFailedIndex,
+        firstReason
+      };
     }
 
     if (typeof result === 'string') {
-      return result.trim() ? messageCount : 0;
+      const reason = result.trim();
+      if (!reason) {
+        return { failedCount: 0, firstFailedIndex: -1, firstReason: null };
+      }
+
+      return {
+        failedCount: messageCount,
+        firstFailedIndex: 0,
+        firstReason: reason.replace(/\s+/g, ' ').slice(0, 200)
+      };
     }
 
     if (typeof result === 'object') {
       const failedCountRaw = (result as { failedCount?: unknown }).failedCount;
       const failedCount = Number(failedCountRaw);
       if (Number.isFinite(failedCount) && failedCount > 0) {
-        return Math.min(messageCount, Math.floor(failedCount));
+        return {
+          failedCount: Math.min(messageCount, Math.floor(failedCount)),
+          firstFailedIndex: 0,
+          firstReason: null
+        };
+      }
+
+      const reasonRaw = (result as { message?: unknown; reason?: unknown }).message
+        ?? (result as { reason?: unknown }).reason;
+      const reason = typeof reasonRaw === 'string' ? reasonRaw.trim() : '';
+      if (reason) {
+        return {
+          failedCount: messageCount,
+          firstFailedIndex: 0,
+          firstReason: reason.replace(/\s+/g, ' ').slice(0, 200)
+        };
       }
     }
 
-    return 0;
+    return { failedCount: 0, firstFailedIndex: -1, firstReason: null };
   }
 
   private isMissingHubMethodError(error: unknown): boolean {
@@ -370,6 +434,7 @@ export class SignalRConnection {
   // 事件回调
   onRoomAssigned?: (roomId: number) => void;
   onRoomReplaced?: (oldRoomId: number, newRoomId: number) => void;
+  onRoomUnassigned?: (roomId: number) => void;
   onServerDisconnect?: (reason?: string) => void;
   onConnected?: () => void;
   onDisconnected?: (error?: Error) => void;

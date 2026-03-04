@@ -59,13 +59,13 @@ const confirmLogout = () => {
     <Card class="bg-card/60">
       <CardHeader>
         <div class="flex items-center gap-4">
-          <Avatar class="h-14 w-14 border-2 border-border">
+            <Avatar class="h-14 w-14 border-2 border-border">
             <AvatarFallback class="bg-gradient-to-br from-primary/20 to-primary/5 text-lg">
-              {{ userInfo?.name?.charAt(0) || '?' }}
+              {{ (userInfo?.name || `用户${userInfo?.id ?? ''}`).charAt(0) || '?' }}
             </AvatarFallback>
           </Avatar>
           <div class="min-w-0 flex-1">
-            <CardTitle class="truncate text-xl">{{ userInfo?.name || 'Unknown' }}</CardTitle>
+            <CardTitle class="truncate text-xl">{{ userInfo?.name || `用户${userInfo?.id ?? ''}` }}</CardTitle>
             <CardDescription>ID: {{ userInfo?.id }}</CardDescription>
           </div>
           <Button variant="outline" size="sm" as-child>

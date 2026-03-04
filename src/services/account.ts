@@ -22,6 +22,19 @@ export const addRecording = (uid: number) =>
 export const removeRecording = (uid: number) =>
   apiFetch<unknown>(`${ACCOUNT_PREFIX}/del-record?uId=${encodeURIComponent(String(uid))}`);
 
+export interface UpdateRecordingSettingPayload {
+  id: number;
+  setting: {
+    isPublic: boolean;
+  };
+}
+
+export const updateRecordingSetting = (payload: UpdateRecordingSettingPayload[]) =>
+  apiFetch<number[]>(`${ACCOUNT_PREFIX}/update-recording-setting`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+
 export const updateCoreConfig = (config: CoreControlConfigDto) =>
   apiFetch<CoreControlConfigDto>(`${ACCOUNT_PREFIX}/core-config`, {
     method: 'POST',
