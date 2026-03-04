@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRefs } from 'vue';
-import { Loader2, RefreshCw, Save, Plus, Trash2, X } from 'lucide-vue-next';
+import { Download, Loader2, RefreshCw, Save, Plus, Trash2, X } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -24,10 +24,15 @@ const props = defineProps<{
   addingRecording: boolean;
   removingRecordingUid: number | null;
   savingConfig: boolean;
+  updaterSupported: boolean;
+  checkingAppUpdate: boolean;
+  installingAppUpdate: boolean;
+  availableUpdateVersion: string | null;
 }>();
-const { coreConfig, availableAreas, recordings, refreshingRecordings, addingRecording, removingRecordingUid, savingConfig } = toRefs(props);
+const { coreConfig, availableAreas, recordings, refreshingRecordings, addingRecording, removingRecordingUid, savingConfig, updaterSupported, checkingAppUpdate, installingAppUpdate, availableUpdateVersion } = toRefs(props);
 
 const newRecordingUid = ref('');
+const areaSearchQuery = ref('');
 
 const parentAreaOptions = computed(() =>
   Object.keys(availableAreas.value ?? {}).sort((a, b) => a.localeCompare(b))
@@ -35,7 +40,9 @@ const parentAreaOptions = computed(() =>
 
 const areaOptions = computed(() => {
   const map = availableAreas.value ?? {};
-  return Array.from(new Set(Object.values(map).flat())).sort((a, b) => a.localeCompare(b));
+  const allAreas = Array.from(new Set(Object.values(map).flat())).sort((a, b) => a.localeCompare(b));
+  const query = areaSearchQuery.value.trim().toLowerCase();
+  return query ? allAreas.filter(a => a.toLowerCase().includes(query)) : allAreas;
 });
 
 const assignNumber = (field: keyof Pick<CoreControlConfigDto, 'maxConnections' | 'statusCheckInterval' | 'reconnectInterval' | 'cookieRefreshInterval'>, raw: string | number) => {
@@ -80,6 +87,8 @@ const submitAddRecording = () => {
 
 const emit = defineEmits<{
   (e: 'save-config'): void;
+  (e: 'check-app-update'): void;
+  (e: 'install-app-update'): void;
   (e: 'refresh-recordings'): void;
   (e: 'add-recording', uid: number): void;
   (e: 'remove-recording', uid: number): void;
@@ -94,11 +103,34 @@ const emit = defineEmits<{
         <h2 class="text-xl font-semibold tracking-tight">核心配置</h2>
         <p class="mt-0.5 text-sm text-muted-foreground">连接参数、分区过滤与录制管理</p>
       </div>
-      <Button :disabled="savingConfig" @click="emit('save-config')">
-        <Loader2 v-if="savingConfig" class="h-4 w-4 animate-spin" />
-        <Save v-else class="h-4 w-4" />
-        保存配置
-      </Button>
+      <div class="flex items-center gap-2">
+        <Button
+          variant="outline"
+          :disabled="!updaterSupported || checkingAppUpdate || installingAppUpdate"
+          :title="updaterSupported ? '检查是否有可用新版本' : '仅 Tauri 桌面端可检查更新'"
+          @click="emit('check-app-update')"
+        >
+          <Loader2 v-if="checkingAppUpdate" class="h-4 w-4 animate-spin" />
+          <RefreshCw v-else class="h-4 w-4" />
+          检查更新
+        </Button>
+        <Button
+          v-if="availableUpdateVersion"
+          variant="secondary"
+          :disabled="installingAppUpdate || checkingAppUpdate"
+          :title="`安装已发现的新版本 ${availableUpdateVersion}`"
+          @click="emit('install-app-update')"
+        >
+          <Loader2 v-if="installingAppUpdate" class="h-4 w-4 animate-spin" />
+          <Download v-else class="h-4 w-4" />
+          安装 {{ availableUpdateVersion }}
+        </Button>
+        <Button :disabled="savingConfig" @click="emit('save-config')">
+          <Loader2 v-if="savingConfig" class="h-4 w-4 animate-spin" />
+          <Save v-else class="h-4 w-4" />
+          立即保存
+        </Button>
+      </div>
     </div>
 
     <!-- Connection settings -->
@@ -115,6 +147,8 @@ const emit = defineEmits<{
             type="number"
             min="1"
             max="50"
+            placeholder="5"
+            title="同时连接的直播间数量，建议不超过 20 个"
             @update:model-value="assignNumber('maxConnections', $event)"
           />
           <p class="text-[11px] text-muted-foreground">同时连接的房间数量</p>
@@ -126,6 +160,8 @@ const emit = defineEmits<{
             :model-value="coreConfig.statusCheckInterval"
             type="number"
             min="5"
+            placeholder="30"
+            title="定期检查连接状态的时间间隔"
             @update:model-value="assignNumber('statusCheckInterval', $event)"
           />
         </div>
@@ -137,12 +173,14 @@ const emit = defineEmits<{
             type="number"
             min="1000"
             step="1000"
+            placeholder="5000"
+            title="连接断开后尝试重连的等待时间"
             @update:model-value="assignNumber('reconnectInterval', $event)"
           />
         </div>
 
         <div class="space-y-2.5">
-          <div class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5">
+          <div class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5" title="启用后连接断开时会自动尝试重连">
             <div>
               <p class="text-xs font-medium">自动重连</p>
               <p class="text-[11px] text-muted-foreground">连接中断后自动恢复</p>
@@ -150,7 +188,7 @@ const emit = defineEmits<{
             <Switch v-model:model-value="coreConfig.autoReconnect" />
           </div>
 
-          <div class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5">
+          <div class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5" title="启用后服务器会根据分区过滤规则自动分配直播间">
             <div>
               <p class="text-xs font-medium">请求服务器分配</p>
               <p class="text-[11px] text-muted-foreground">由服务端协同房间分配</p>
@@ -224,6 +262,11 @@ const emit = defineEmits<{
               清空
             </Button>
           </div>
+          <Input
+            v-model="areaSearchQuery"
+            placeholder="搜索子分区..."
+            class="h-8 text-xs"
+          />
           <div v-if="coreConfig.allowedAreas.length > 0" class="flex flex-wrap gap-1.5">
             <Badge
               v-for="area in coreConfig.allowedAreas"
@@ -275,6 +318,7 @@ const emit = defineEmits<{
               <Input
                 :model-value="coreConfig.cookieCloudHost ?? ''"
                 placeholder="例如 http://localhost:8088"
+                title="CookieCloud 服务器地址"
                 @update:model-value="coreConfig.cookieCloudHost = String($event)"
               />
             </div>
@@ -282,6 +326,8 @@ const emit = defineEmits<{
               <label class="text-xs font-medium text-muted-foreground">Key</label>
               <Input
                 :model-value="coreConfig.cookieCloudKey ?? ''"
+                placeholder="输入 CookieCloud Key"
+                title="CookieCloud 密钥"
                 @update:model-value="coreConfig.cookieCloudKey = String($event)"
               />
             </div>
@@ -290,6 +336,8 @@ const emit = defineEmits<{
               <Input
                 :model-value="coreConfig.cookieCloudPassword ?? ''"
                 type="password"
+                placeholder="输入 CookieCloud 密码"
+                title="CookieCloud 加密密码"
                 @update:model-value="coreConfig.cookieCloudPassword = String($event)"
               />
             </div>
@@ -299,6 +347,8 @@ const emit = defineEmits<{
                 :model-value="coreConfig.cookieRefreshInterval"
                 type="number"
                 min="60"
+                placeholder="3600"
+                title="自动同步 Cookie 的时间间隔"
                 @update:model-value="assignNumber('cookieRefreshInterval', $event)"
               />
             </div>
@@ -313,7 +363,7 @@ const emit = defineEmits<{
         <div class="flex items-center justify-between gap-3">
           <div>
             <CardTitle class="text-sm">账号录制主播</CardTitle>
-            <CardDescription>统一使用 account.Recording，不再使用本地主播列表</CardDescription>
+            <CardDescription>需要进行弹幕录制的主播列表</CardDescription>
           </div>
           <Button variant="outline" size="sm" :disabled="refreshingRecordings" @click="emit('refresh-recordings')">
             <RefreshCw :class="['h-3.5 w-3.5', refreshingRecordings && 'animate-spin']" />
@@ -330,7 +380,8 @@ const emit = defineEmits<{
               v-model="newRecordingUid"
               type="number"
               min="1"
-              placeholder="输入主播 UID"
+              placeholder="例如 1234567"
+              title="输入 Bilibili 主播的 UID 进行录制"
               @keydown.enter.prevent="submitAddRecording"
             />
           </div>
@@ -346,7 +397,12 @@ const emit = defineEmits<{
           :key="item.channel.uId"
           class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 p-3"
         >
-          <div class="flex min-w-0 items-center gap-2.5">
+          <a
+            :href="`https://space.bilibili.com/${item.channel.uId}`"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex min-w-0 flex-1 items-center gap-2.5 transition-opacity hover:opacity-80"
+          >
             <img
               v-if="item.channel.faceUrl"
               :src="item.channel.faceUrl"
@@ -367,7 +423,7 @@ const emit = defineEmits<{
                 贡献数据: {{ (item.providedDanmakuDataCount ?? 0).toLocaleString() }} · 其中消息: {{ (item.providedMessageCount ?? 0).toLocaleString() }}
               </p>
             </div>
-          </div>
+          </a>
           <div class="flex items-center gap-2">
             <Badge
               variant="outline"

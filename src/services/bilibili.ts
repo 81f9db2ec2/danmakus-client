@@ -1,3 +1,4 @@
+import { reactive } from 'vue'
 import { fetchImpl } from './fetchImpl'
 
 const biliCookieKey = 'bili_cookie'
@@ -44,11 +45,18 @@ function setStoredBuvid(buvid: string): void {
 }
 
 function setStoredCookieJar(cookie: string): void {
+  const previous = getStoredCookieJar()
   const normalized = cookie.trim()
+  if (normalized === previous) {
+    return
+  }
+
   if (normalized) {
     localStorage.setItem(biliCookieKey, normalized)
+    invalidateNavProfileCache(false)
   } else {
     localStorage.removeItem(biliCookieKey)
+    invalidateNavProfileCache(true)
   }
 }
 
@@ -368,7 +376,34 @@ type BiliNavResponse = {
   }
 }
 
-export async function getNavProfileAsync(): Promise<BiliNavProfile | null> {
+const navProfileCacheTtlMs = 30_000
+let navProfileInflight: Promise<BiliNavProfile | null> | null = null
+let navProfileRefreshTimer: number | undefined
+let navProfileRefreshRefCount = 0
+
+export const biliNavProfileState = reactive({
+  profile: null as BiliNavProfile | null,
+  refreshing: false,
+  lastFetchedAt: 0,
+  lastError: null as string | null
+})
+
+function setNavProfileCache(profile: BiliNavProfile | null): void {
+  biliNavProfileState.profile = profile
+  biliNavProfileState.lastFetchedAt = Date.now()
+  biliNavProfileState.lastError = null
+}
+
+function invalidateNavProfileCache(resetProfile: boolean): void {
+  navProfileInflight = null
+  biliNavProfileState.lastFetchedAt = 0
+  biliNavProfileState.lastError = null
+  if (resetProfile) {
+    biliNavProfileState.profile = null
+  }
+}
+
+async function requestNavProfileAsync(): Promise<BiliNavProfile | null> {
   const url = 'https://api.bilibili.com/x/web-interface/nav'
   const response = await QueryBiliAPI(url)
   if (!response.ok) {
@@ -414,6 +449,68 @@ export async function getNavProfileAsync(): Promise<BiliNavProfile | null> {
     money: Number.isFinite(moneyValue) ? moneyValue : 0,
     vipStatus: Number.isFinite(vipValue) ? Math.floor(vipValue) : 0,
     vipLabel: typeof data?.vip_label?.text === 'string' ? data.vip_label.text : ''
+  }
+}
+
+export async function getNavProfileAsync(options?: { force?: boolean }): Promise<BiliNavProfile | null> {
+  const force = options?.force === true
+  const now = Date.now()
+
+  if (!force && biliNavProfileState.lastFetchedAt > 0 && now - biliNavProfileState.lastFetchedAt < navProfileCacheTtlMs) {
+    return biliNavProfileState.profile
+  }
+
+  if (navProfileInflight) {
+    return navProfileInflight
+  }
+
+  biliNavProfileState.refreshing = true
+  navProfileInflight = (async () => {
+    try {
+      const profile = await requestNavProfileAsync()
+      setNavProfileCache(profile)
+      return profile
+    } catch (error) {
+      biliNavProfileState.lastError = error instanceof Error ? error.message : String(error)
+      throw error
+    } finally {
+      biliNavProfileState.refreshing = false
+      navProfileInflight = null
+    }
+  })()
+
+  return navProfileInflight
+}
+
+export function startNavProfileAutoRefresh(): void {
+  navProfileRefreshRefCount += 1
+  if (navProfileRefreshTimer !== undefined) {
+    return
+  }
+
+  void getNavProfileAsync().catch((error) => {
+    console.error('[bili] 初始化刷新 nav 资料失败', error)
+  })
+
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  navProfileRefreshTimer = window.setInterval(() => {
+    void getNavProfileAsync({ force: true }).catch((error) => {
+      console.error('[bili] 定时刷新 nav 资料失败', error)
+    })
+  }, navProfileCacheTtlMs)
+}
+
+export function stopNavProfileAutoRefresh(): void {
+  navProfileRefreshRefCount = Math.max(0, navProfileRefreshRefCount - 1)
+  if (navProfileRefreshRefCount > 0) {
+    return
+  }
+  if (navProfileRefreshTimer !== undefined) {
+    clearInterval(navProfileRefreshTimer)
+    navProfileRefreshTimer = undefined
   }
 }
 
@@ -696,10 +793,10 @@ export const biliCookie = {
         localStorage.setItem(biliRefreshTokenKey, refreshToken);
     },
     clear() {
-        localStorage.removeItem(biliCookieKey);
+        setStoredCookieJar('');
         localStorage.removeItem(biliRefreshTokenKey);
         localStorage.removeItem(biliSessionWarmAtKey);
-        localStorage.removeItem(biliBuvidKey);
+        setStoredBuvid('');
     },
     async check() {
         return await checkLoginStatusAsync();

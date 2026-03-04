@@ -160,6 +160,7 @@ export class StreamerStatusManager {
               const data = result.data;
               const status: StreamerStatus = {
                 roomId,
+                uid: typeof data.uid === 'number' ? data.uid : undefined,
                 isLive: data.live_status === 1,
                 title: data.title,
                 username: data.uname,
@@ -198,6 +199,7 @@ export class StreamerStatusManager {
       const mergedStatus: StreamerStatus = {
         ...cachedStatus,
         ...status,
+        uid: status.uid ?? cachedStatus?.uid,
         username: status.username ?? cachedStatus?.username,
         title: status.title ?? cachedStatus?.title,
         faceUrl: status.faceUrl ?? cachedStatus?.faceUrl,

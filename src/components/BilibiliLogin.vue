@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import QRCode from 'qrcode';
 import { toast } from 'vue-sonner';
-import { CheckCircle2, Loader2, QrCode, UserRound } from 'lucide-vue-next';
+import { CheckCircle2, Loader2, QrCode, UserRound, ExternalLink } from 'lucide-vue-next';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -22,15 +22,17 @@ import {
 } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import {
+  biliNavProfileState,
   biliCookie,
   getLoginInfoAsync,
   getLoginUrlDataAsync,
-  getNavProfileAsync
+  getNavProfileAsync,
+  startNavProfileAutoRefresh,
+  stopNavProfileAutoRefresh
 } from '../services/bilibili';
-import type { BiliNavProfile } from '../services/bilibili';
 
-const isLoggedIn = ref(false);
-const navProfile = ref<BiliNavProfile | null>(null);
+const navProfile = computed(() => biliNavProfileState.profile);
+const isLoggedIn = computed(() => navProfile.value !== null);
 const showLoginModal = ref(false);
 
 const isQRCodeLogining = ref(false);
@@ -41,14 +43,11 @@ const loginQrDataUrl = ref('');
 const expiredTimer = ref<number>();
 const timer = ref<number>();
 
-const checkStatus = async () => {
+const checkStatus = async (force = false) => {
   try {
-    navProfile.value = await getNavProfileAsync();
-    isLoggedIn.value = navProfile.value !== null;
+    await getNavProfileAsync({ force });
   } catch (error) {
     console.error(error);
-    navProfile.value = null;
-    isLoggedIn.value = false;
   }
 };
 
@@ -97,7 +96,7 @@ const startLogin = async () => {
           biliCookie.setBiliCookie(login.cookie, login.refresh_token);
           toast.success('登录成功');
           finishLogin();
-          await checkStatus();
+          await checkStatus(true);
           showLoginModal.value = false;
         } else if (login.status === 'expired') {
           loginStatus.value = 'expired';
@@ -118,8 +117,6 @@ const startLogin = async () => {
 
 const handleLogout = () => {
   biliCookie.clear();
-  isLoggedIn.value = false;
-  navProfile.value = null;
   toast.success('已登出 Bilibili');
 };
 
@@ -129,11 +126,13 @@ const handleDialogOpenChange = (open: boolean) => {
 };
 
 onMounted(() => {
+  startNavProfileAutoRefresh();
   void checkStatus();
 });
 
 onBeforeUnmount(() => {
   finishLogin();
+  stopNavProfileAutoRefresh();
 });
 </script>
 
@@ -148,7 +147,12 @@ onBeforeUnmount(() => {
       <CardContent class="space-y-4">
         <div v-if="isLoggedIn" class="space-y-4">
           <div class="flex items-center justify-between gap-3">
-            <div class="flex min-w-0 items-center gap-3">
+            <a
+              :href="`https://space.bilibili.com/${navProfile?.uid}`"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="flex min-w-0 items-center gap-3 transition-opacity hover:opacity-80"
+            >
               <Avatar class="h-10 w-10 border border-border">
                 <AvatarImage
                   :src="navProfile?.face || 'https://static.hdslb.com/images/member/noface.gif'"
@@ -160,10 +164,13 @@ onBeforeUnmount(() => {
               </Avatar>
 
               <div class="min-w-0">
-                <p class="truncate text-sm font-semibold">{{ navProfile?.uname || '已登录用户' }}</p>
+                <p class="flex items-center gap-1 truncate text-sm font-semibold">
+                  {{ navProfile?.uname || '已登录用户' }}
+                  <ExternalLink class="h-3 w-3 shrink-0" />
+                </p>
                 <p class="text-xs text-muted-foreground">UID: {{ navProfile?.uid }}</p>
               </div>
-            </div>
+            </a>
 
             <Button variant="outline" size="sm" @click="handleLogout">登出</Button>
           </div>

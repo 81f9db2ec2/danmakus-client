@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   AlertCircle,
   Cookie,
@@ -23,6 +24,13 @@ import {
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
 
 type ConnectionInfo = {
   roomId: number;
@@ -32,9 +40,19 @@ type ConnectionInfo = {
 
 type StreamerStatus = {
   roomId: number;
+  uid?: number;
   isLive: boolean;
   username?: string;
   faceUrl?: string;
+};
+
+type RecordingRoomStats = {
+  uid: number;
+  username: string;
+  faceUrl: string;
+  todayDanmakusCount: number;
+  providedDanmakuDataCount: number;
+  providedMessageCount: number;
 };
 
 type RemoteClientSnapshot = {
@@ -54,6 +72,7 @@ type RuntimeStateSnapshot = {
   connectionInfo: ConnectionInfo[];
   messageCount: number;
   messageCmdCountMap: Record<string, number>;
+  roomMessageCountMap: Record<string, number>;
   serverAssignedRooms: number[];
   streamerStatuses: StreamerStatus[];
   lockedByOther: boolean;
@@ -62,11 +81,27 @@ type RuntimeStateSnapshot = {
   lastRoomAssigned: number | null;
 };
 
+type BiliAccountProfile = {
+  uid: number;
+  uname: string;
+  level: number;
+};
+
+const normalizeRoomId = (value: unknown): number | null => {
+  const roomId = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(roomId) || roomId <= 0) {
+    return null;
+  }
+  return Math.floor(roomId);
+};
+
 const props = defineProps<{
   runtimeState: RuntimeStateSnapshot;
   recordingRoomIds: number[];
+  recordingStatsByRoom: Record<string, RecordingRoomStats>;
   remoteClients: RemoteClientSnapshot[];
   localClientId: string;
+  biliAccountProfile: BiliAccountProfile | null;
   lastHeartbeatText: string;
   cookieStatusText: string;
   cookieStatusType: 'success' | 'warning';
@@ -105,24 +140,60 @@ const topMessageTypes = computed(() => {
 });
 
 const connectionRoomCards = computed(() => {
-  const statusMap = new Map(props.runtimeState.streamerStatuses.map(status => [status.roomId, status]));
-  const connectionMap = new Map(props.runtimeState.connectionInfo.map(info => [info.roomId, info]));
-  const connectedSet = new Set(props.runtimeState.connectedRooms);
-  const serverAssignedSet = new Set(props.runtimeState.serverAssignedRooms);
-  const recordingSet = new Set(props.recordingRoomIds.filter(id => Number.isFinite(id) && id > 0));
+  const statusMap = new Map<number, StreamerStatus>();
+  for (const status of props.runtimeState.streamerStatuses) {
+    const roomId = normalizeRoomId(status.roomId);
+    if (roomId === null) continue;
+    statusMap.set(roomId, {
+      ...status,
+      roomId
+    });
+  }
+
+  const connectionMap = new Map<number, ConnectionInfo>();
+  for (const info of props.runtimeState.connectionInfo) {
+    const roomId = normalizeRoomId(info.roomId);
+    if (roomId === null) continue;
+    connectionMap.set(roomId, {
+      ...info,
+      roomId
+    });
+  }
+
+  const connectedSet = new Set(
+    props.runtimeState.connectedRooms
+      .map(normalizeRoomId)
+      .filter((id): id is number => id !== null)
+  );
+  const serverAssignedSet = new Set(
+    props.runtimeState.serverAssignedRooms
+      .map(normalizeRoomId)
+      .filter((id): id is number => id !== null)
+  );
+  const recordingSet = new Set(
+    props.recordingRoomIds
+      .map(normalizeRoomId)
+      .filter((id): id is number => id !== null)
+  );
 
   const roomIds = Array.from(new Set([
-    ...props.runtimeState.serverAssignedRooms,
-    ...props.runtimeState.connectedRooms
+    ...serverAssignedSet,
+    ...connectedSet
   ]));
 
   return roomIds
     .map(roomId => {
     const status = statusMap.get(roomId);
     const connection = connectionMap.get(roomId);
+    const recordingMeta = props.recordingStatsByRoom[String(roomId)];
     const isConnected = connectedSet.has(roomId);
     const priority = connection?.priority ?? '';
     const isRecording = recordingSet.has(roomId);
+    const uid = normalizeRoomId(recordingMeta?.uid ?? status?.uid);
+    const sessionMessageCountRaw = props.runtimeState.roomMessageCountMap[String(roomId)];
+    const sessionMessageCount = Number.isFinite(Number(sessionMessageCountRaw))
+      ? Number(sessionMessageCountRaw)
+      : 0;
     const sourceText = isRecording || (connection && priority !== 'server')
       ? '关注录制'
       : serverAssignedSet.has(roomId)
@@ -131,15 +202,20 @@ const connectionRoomCards = computed(() => {
 
     return {
       roomId,
-      username: status?.username || `房间 ${roomId}`,
-      faceUrl: status?.faceUrl || '',
+      uid,
+      username: recordingMeta?.username || status?.username || `房间 ${roomId}`,
+      faceUrl: recordingMeta?.faceUrl || status?.faceUrl || '',
       isConnected,
       stateText: isConnected ? '已连接' : '等待连接',
       stateClass: isConnected
         ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
         : 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
       sourceText,
-      connectedAt: connection?.connectedAt ?? null
+      connectedAt: connection?.connectedAt ?? null,
+      sessionMessageCount,
+      todayDanmakusCount: Number(recordingMeta?.todayDanmakusCount ?? 0),
+      providedDanmakuDataCount: Number(recordingMeta?.providedDanmakuDataCount ?? 0),
+      providedMessageCount: Number(recordingMeta?.providedMessageCount ?? 0)
     };
     })
     .sort((a, b) => {
@@ -166,33 +242,102 @@ const cookieBadgeClass = computed(() =>
     : 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300'
 );
 
+const selectedRoomId = ref<number | null>(null);
+const nowTimestamp = ref(Date.now());
+let nowTimer: number | undefined;
+
+const selectedRoom = computed(() =>
+  selectedRoomId.value === null
+    ? null
+    : (connectionRoomCards.value.find(room => room.roomId === selectedRoomId.value) ?? null)
+);
+
+const formatDateTime = (ts?: number | null): string => {
+  if (!ts) {
+    return '—';
+  }
+  return new Date(ts).toLocaleString();
+};
+
+const formatDuration = (startTs?: number | null): string => {
+  if (!startTs) {
+    return '—';
+  }
+  const ms = Math.max(0, nowTimestamp.value - startTs);
+  const seconds = Math.floor(ms / 1000);
+  const hh = Math.floor(seconds / 3600).toString().padStart(2, '0');
+  const mm = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+  const ss = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+};
+
 const emit = defineEmits<{
   (e: 'refresh-runtime-state'): void;
   (e: 'force-takeover'): void;
   (e: 'start-core'): void;
   (e: 'stop-core'): void;
 }>();
+
+const openLiveRoom = async (roomId: number) => {
+  try {
+    await openUrl(`https://live.bilibili.com/${roomId}`);
+  } catch (error) {
+    console.error('打开直播间失败:', error);
+  }
+};
+
+const openUserSpace = async (uid: number) => {
+  if (!Number.isFinite(uid) || uid <= 0) {
+    return;
+  }
+  try {
+    await openUrl(`https://space.bilibili.com/${uid}`);
+  } catch (error) {
+    console.error('打开主播主页失败:', error);
+  }
+};
+
+const openRoomDetails = (roomId: number) => {
+  selectedRoomId.value = roomId;
+};
+
+const closeRoomDetails = () => {
+  selectedRoomId.value = null;
+};
+
+onMounted(() => {
+  nowTimer = window.setInterval(() => {
+    nowTimestamp.value = Date.now();
+  }, 1000);
+});
+
+onBeforeUnmount(() => {
+  if (nowTimer) {
+    clearInterval(nowTimer);
+    nowTimer = undefined;
+  }
+});
 </script>
 
 <template>
-  <div class="space-y-5">
+  <div class="space-y-4">
     <!-- Page header with actions -->
     <div class="flex items-center justify-between">
       <div>
         <h2 class="text-xl font-semibold tracking-tight">运行仪表盘</h2>
-        <p class="mt-0.5 text-sm text-muted-foreground">核心状态与运行数据概览</p>
+        <p class="mt-0.5 text-sm text-muted-foreground">实时监控核心运行状态与数据统计</p>
       </div>
       <div class="flex items-center gap-2">
-        <Button variant="outline" size="sm" :disabled="refreshingState" @click="emit('refresh-runtime-state')">
+        <Button variant="outline" size="sm" :disabled="refreshingState" title="刷新运行状态" @click="emit('refresh-runtime-state')">
           <RefreshCw :class="['h-3.5 w-3.5', refreshingState && 'animate-spin']" />
           刷新
         </Button>
-        <Button v-if="!runtimeState.isRunning" size="sm" :disabled="startingCore" @click="emit('start-core')">
+        <Button v-if="!runtimeState.isRunning" size="sm" :disabled="startingCore" title="启动弹幕核心服务" @click="emit('start-core')">
           <Loader2 v-if="startingCore" class="h-3.5 w-3.5 animate-spin" />
           <Play v-else class="h-3.5 w-3.5" />
-          启动核心
+          启动
         </Button>
-        <Button v-else variant="destructive" size="sm" :disabled="stoppingCore" @click="emit('stop-core')">
+        <Button v-else variant="destructive" size="sm" :disabled="stoppingCore" title="停止弹幕核心服务" @click="emit('stop-core')">
           <Loader2 v-if="stoppingCore" class="h-3.5 w-3.5 animate-spin" />
           <StopCircle v-else class="h-3.5 w-3.5" />
           停止
@@ -258,46 +403,55 @@ const emit = defineEmits<{
 
     <!-- Stat cards -->
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <Card class="bg-card/60">
-        <CardContent class="p-3.5">
+      <Card class="bg-card/60" title="Bilibili Cookie 验证状态">
+        <CardContent class="px-3 py-0">
           <div class="flex items-center justify-between">
             <p class="text-xs font-medium text-muted-foreground">Cookie 状态</p>
             <Cookie class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
-          <div class="mt-2">
+          <div class="mt-1">
             <Badge variant="outline" :class="cookieBadgeClass" class="text-xs">{{ cookieStatusText }}</Badge>
           </div>
-          <p class="mt-1.5 text-[11px] text-muted-foreground">{{ lastHeartbeatText }}</p>
+          <p
+            v-if="biliAccountProfile"
+            class="mt-1 truncate text-[11px] text-muted-foreground"
+            :title="`${biliAccountProfile.uname} · UID ${biliAccountProfile.uid} · Lv.${biliAccountProfile.level}`"
+          >
+            {{ biliAccountProfile.uname }} · UID {{ biliAccountProfile.uid }} · Lv.{{ biliAccountProfile.level }}
+          </p>
+          <p v-else class="mt-1 text-[11px] text-muted-foreground">
+            未登录 Bilibili 账号
+          </p>
         </CardContent>
       </Card>
 
-      <Card class="bg-card/60">
-        <CardContent class="p-3.5">
+      <Card class="bg-card/60" title="当前在线的客户端数量">
+        <CardContent class="px-3 py-0">
           <div class="flex items-center justify-between">
             <p class="text-xs font-medium text-muted-foreground">在线客户端</p>
             <MonitorSmartphone class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
-          <p class="mt-2 text-2xl font-bold tabular-nums animate-number-pop">{{ remoteClients.length }}</p>
+          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ remoteClients.length }}</p>
         </CardContent>
       </Card>
 
-      <Card class="bg-card/60">
-        <CardContent class="p-3.5">
+      <Card class="bg-card/60" title="当前已连接的直播间数量">
+        <CardContent class="px-3 py-0">
           <div class="flex items-center justify-between">
-            <p class="text-xs font-medium text-muted-foreground">消息类型</p>
-            <MessageSquare class="h-3.5 w-3.5 text-muted-foreground/60" />
+            <p class="text-xs font-medium text-muted-foreground">已连接房间</p>
+            <TvMinimal class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
-          <p class="mt-2 text-2xl font-bold tabular-nums animate-number-pop">{{ messageCmdRows.length }}</p>
+          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.connectedRooms.length }}</p>
         </CardContent>
       </Card>
 
-      <Card class="bg-card/60">
-        <CardContent class="p-3.5">
+      <Card class="bg-card/60" title="服务器分配的直播间数量">
+        <CardContent class="px-3 py-0">
           <div class="flex items-center justify-between">
             <p class="text-xs font-medium text-muted-foreground">服务器分配</p>
             <Server class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
-          <p class="mt-2 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.serverAssignedRooms.length }}</p>
+          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.serverAssignedRooms.length }}</p>
         </CardContent>
       </Card>
     </div>
@@ -308,7 +462,7 @@ const emit = defineEmits<{
       <Card class="bg-card/60">
         <CardHeader class="pb-3">
           <CardTitle class="text-sm">消息类型分布</CardTitle>
-          <CardDescription>{{ messageCmdRows.length }} 种类型，共 {{ runtimeState.messageCount.toLocaleString() }} 条</CardDescription>
+          <CardDescription>{{ messageCmdRows.length }} 种类型，共 {{ runtimeState.messageCount.toLocaleString() }} 条消息</CardDescription>
         </CardHeader>
         <CardContent>
           <div v-if="topMessageTypes.length > 0" class="space-y-2">
@@ -316,6 +470,7 @@ const emit = defineEmits<{
               v-for="row in topMessageTypes"
               :key="row.cmd"
               class="group flex items-center gap-2"
+              :title="`${row.cmd}: ${row.count.toLocaleString()} 条 (${row.percentage.toFixed(1)}%)`"
             >
               <span class="w-28 truncate text-xs text-muted-foreground" :title="row.cmd">{{ row.cmd }}</span>
               <div class="h-5 flex-1 overflow-hidden rounded-sm bg-muted/50">
@@ -351,6 +506,7 @@ const emit = defineEmits<{
               v-for="client in remoteClients"
               :key="client.clientId"
               class="flex items-center justify-between rounded-lg border bg-background/40 p-2.5 transition-colors hover:bg-background/70"
+              :title="`${client.clientId === localClientId ? '本机客户端' : '远程客户端'} - ${client.isRunning ? '运行中' : '已停止'}`"
             >
               <div class="flex items-center gap-2.5">
                 <div :class="[
@@ -397,7 +553,7 @@ const emit = defineEmits<{
           <div
             v-for="room in connectionRoomCards"
             :key="room.roomId"
-            class="flex items-center justify-between rounded-lg border bg-background/40 px-3 py-2.5"
+            class="flex items-center justify-between rounded-lg border bg-background/40 px-3 py-2 transition-colors hover:bg-background/70"
           >
             <div class="flex items-center gap-2">
               <img
@@ -421,13 +577,93 @@ const emit = defineEmits<{
                 {{ room.stateText }}
               </span>
               <span class="text-[10px] text-muted-foreground">{{ room.sourceText }}</span>
+              <span class="text-[10px] text-muted-foreground">本次 {{ room.sessionMessageCount.toLocaleString() }} 条</span>
               <span v-if="room.connectedAt" class="text-[10px] text-muted-foreground">
                 {{ new Date(room.connectedAt).toLocaleTimeString() }}
               </span>
+              <div class="mt-0.5 flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  class="h-6 px-2 text-[10px]"
+                  @click.stop="openRoomDetails(room.roomId)"
+                >
+                  详情
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="h-6 px-2 text-[10px]"
+                  @click.stop="openLiveRoom(room.roomId)"
+                >
+                  直播间
+                </Button>
+              </div>
             </div>
           </div>
         </div>
       </CardContent>
     </Card>
+
+    <Dialog :open="selectedRoom !== null" @update:open="(opened) => { if (!opened) closeRoomDetails(); }">
+      <DialogContent v-if="selectedRoom" class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <img
+              v-if="selectedRoom.faceUrl"
+              :src="selectedRoom.faceUrl"
+              :alt="selectedRoom.username"
+              referrerpolicy="no-referrer"
+              class="h-6 w-6 rounded-full object-cover"
+            />
+            <span class="truncate">{{ selectedRoom.username }}</span>
+          </DialogTitle>
+          <DialogDescription>
+            房间 #{{ selectedRoom.roomId }} · {{ selectedRoom.sourceText }} · {{ selectedRoom.stateText }}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="grid grid-cols-2 gap-3 rounded-md border bg-background/40 p-3 text-xs">
+          <div>
+            <p class="text-muted-foreground">本次录制开始</p>
+            <p class="mt-1 font-medium">{{ formatDateTime(selectedRoom.connectedAt) }}</p>
+          </div>
+          <div>
+            <p class="text-muted-foreground">本次录制时长</p>
+            <p class="mt-1 font-medium">{{ formatDuration(selectedRoom.connectedAt) }}</p>
+          </div>
+          <div>
+            <p class="text-muted-foreground">本次接收弹幕</p>
+            <p class="mt-1 font-medium">{{ selectedRoom.sessionMessageCount.toLocaleString() }}</p>
+          </div>
+          <div>
+            <p class="text-muted-foreground">今日收录弹幕</p>
+            <p class="mt-1 font-medium">{{ selectedRoom.todayDanmakusCount.toLocaleString() }}</p>
+          </div>
+          <div>
+            <p class="text-muted-foreground">累计贡献数据</p>
+            <p class="mt-1 font-medium">{{ selectedRoom.providedDanmakuDataCount.toLocaleString() }}</p>
+          </div>
+          <div>
+            <p class="text-muted-foreground">累计贡献消息</p>
+            <p class="mt-1 font-medium">{{ selectedRoom.providedMessageCount.toLocaleString() }}</p>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2">
+          <Button variant="outline" size="sm" @click="openLiveRoom(selectedRoom.roomId)">
+            前往直播间
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="!selectedRoom.uid"
+            @click="selectedRoom.uid && openUserSpace(selectedRoom.uid)"
+          >
+            前往主播主页
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

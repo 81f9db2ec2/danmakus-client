@@ -24,6 +24,9 @@ dist-ssr
 *.sln
 *.sw?
 .*/
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 doc/
 bun.lock
 bun.lock

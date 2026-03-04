@@ -29,10 +29,10 @@ const emit = defineEmits<{
 }>();
 
 const navItems = [
-  { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
-  { key: 'settings', label: '核心配置', icon: Settings },
-  { key: 'bilibili', label: 'Bilibili', icon: Tv2 },
-  { key: 'account', label: '账户', icon: CircleUserRound },
+  { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard, tooltip: '查看核心运行状态和数据统计' },
+  { key: 'settings', label: '核心配置', icon: Settings, tooltip: '配置连接参数、分区过滤和录制管理' },
+  { key: 'bilibili', label: 'Bilibili', icon: Tv2, tooltip: '登录 Bilibili 账号同步 Cookie' },
+  { key: 'account', label: '账户', icon: CircleUserRound, tooltip: '查看账户信息和贡献统计' },
 ];
 </script>
 
@@ -57,6 +57,7 @@ const navItems = [
             ? 'bg-sidebar-accent text-sidebar-accent-foreground'
             : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
         ]"
+        :title="item.tooltip"
         @click="emit('navigate', item.key)"
       >
         <component :is="item.icon" class="h-4 w-4 shrink-0" />
@@ -109,7 +110,7 @@ const navItems = [
           <p class="truncate text-sm font-medium">{{ userInfo.name }}</p>
           <p class="text-[11px] text-muted-foreground">ID: {{ userInfo.id }}</p>
         </div>
-        <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" @click="emit('logout')">
+        <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" title="退出登录" @click="emit('logout')">
           <LogOut class="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
       </div>

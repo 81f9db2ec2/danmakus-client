@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import {
   addRecording,
@@ -12,8 +12,10 @@ import {
   updateCoreConfig
 } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
+import { biliNavProfileState, startNavProfileAutoRefresh, stopNavProfileAutoRefresh } from '../services/bilibili';
 import { SIGNALR_URL } from '../services/env';
 import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http';
+import { checkForUpdate, installLatestUpdate, updaterEnabled } from '../services/updater';
 import type { CoreControlConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
 import AppSidebar from './AppSidebar.vue';
 import BilibiliLogin from './BilibiliLogin.vue';
@@ -55,15 +57,58 @@ const recordings = ref<RecordingInfoDto[]>([]);
 const refreshingRecordings = ref(false);
 const addingRecording = ref(false);
 const removingRecordingUid = ref<number | null>(null);
+const isUpdaterSupported = updaterEnabled();
+const checkingAppUpdate = ref(false);
+const installingAppUpdate = ref(false);
+const availableUpdateVersion = ref<string | null>(null);
 let remotePollTimer: number | undefined;
+const recordingRefreshIntervalMs = 15_000;
+let lastRecordingRefreshAt = 0;
+const coreConfigAutoSaveThrottleMs = 1_200;
+let coreConfigAutoSaveTimer: number | undefined;
+let coreConfigAutoSavePending = false;
+let syncingCoreConfigFromRemote = false;
 
 const localClientId = danmakuService.getClientId();
 const remoteClients = computed(() => runtimeState.remoteClients);
+const recordingRoomIds = computed(() =>
+  recordings.value
+    .map(item => Number(item.channel?.roomId))
+    .filter((roomId) => Number.isFinite(roomId) && roomId > 0)
+    .map(roomId => Math.floor(roomId))
+);
+const recordingStatsByRoom = computed(() => {
+  const result: Record<string, {
+    uid: number;
+    username: string;
+    faceUrl: string;
+    todayDanmakusCount: number;
+    providedDanmakuDataCount: number;
+    providedMessageCount: number;
+  }> = {};
+
+  for (const item of recordings.value) {
+    const roomId = Number(item.channel?.roomId);
+    if (!Number.isFinite(roomId) || roomId <= 0) {
+      continue;
+    }
+    result[String(Math.floor(roomId))] = {
+      uid: Number(item.channel?.uId ?? 0),
+      username: item.channel?.uName ?? '',
+      faceUrl: item.channel?.faceUrl ?? '',
+      todayDanmakusCount: Number(item.todayDanmakusCount ?? 0),
+      providedDanmakuDataCount: Number(item.providedDanmakuDataCount ?? 0),
+      providedMessageCount: Number(item.providedMessageCount ?? 0)
+    };
+  }
+
+  return result;
+});
 const lastHeartbeatText = computed(() =>
   runtimeState.lastHeartbeat ? new Date(runtimeState.lastHeartbeat).toLocaleString() : '—'
 );
-const cookieStatusText = computed(() => runtimeState.cookieValid ? '有效' : '未知');
-const cookieStatusType = computed(() => runtimeState.cookieValid ? 'success' : 'warning');
+const cookieStatusText = computed(() => biliNavProfileState.profile ? '有效' : '未知');
+const cookieStatusType = computed(() => biliNavProfileState.profile ? 'success' : 'warning');
 
 const ensureToken = () => {
   if (!token.value) {
@@ -77,7 +122,14 @@ const startRemotePoll = () => {
   if (remotePollTimer) return;
   remotePollTimer = window.setInterval(() => {
     if (!isLoggedIn.value || refreshingState.value) return;
-    void refreshRuntimeState();
+    void (async () => {
+      await refreshRuntimeState();
+      const now = Date.now();
+      if (now - lastRecordingRefreshAt < recordingRefreshIntervalMs) return;
+      if (refreshingRecordings.value || addingRecording.value || removingRecordingUid.value !== null) return;
+      lastRecordingRefreshAt = now;
+      await refreshRecordingList();
+    })();
   }, 5000);
 };
 
@@ -87,20 +139,85 @@ const stopRemotePoll = () => {
   remotePollTimer = undefined;
 };
 
+const clearCoreConfigAutoSaveTimer = () => {
+  if (coreConfigAutoSaveTimer === undefined) return;
+  clearTimeout(coreConfigAutoSaveTimer);
+  coreConfigAutoSaveTimer = undefined;
+};
+
+const buildCoreConfigPayload = (): CoreControlConfigDto => ({
+  ...coreConfig,
+  signalrUrl: coreConfig.signalrUrl,
+  allowedAreas: [...coreConfig.allowedAreas],
+  allowedParentAreas: [...coreConfig.allowedParentAreas],
+  streamers: []
+});
+
+const persistCoreConfig = async (silentSuccess: boolean) => {
+  if (!token.value) return;
+  if (savingConfig.value) return;
+  try {
+    savingConfig.value = true;
+    await updateCoreConfig(buildCoreConfigPayload());
+    if (!silentSuccess) {
+      toast.success('配置已保存');
+    }
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '保存失败');
+  } finally {
+    savingConfig.value = false;
+  }
+};
+
+const flushCoreConfigAutoSave = async () => {
+  if (!coreConfigAutoSavePending) return;
+  if (!isLoggedIn.value || !token.value) {
+    coreConfigAutoSavePending = false;
+    return;
+  }
+  if (savingConfig.value) {
+    scheduleCoreConfigAutoSave();
+    return;
+  }
+
+  coreConfigAutoSavePending = false;
+  await persistCoreConfig(true);
+
+  if (coreConfigAutoSavePending) {
+    scheduleCoreConfigAutoSave();
+  }
+};
+
+const scheduleCoreConfigAutoSave = () => {
+  if (!isLoggedIn.value || !token.value) return;
+  coreConfigAutoSavePending = true;
+  if (coreConfigAutoSaveTimer !== undefined) return;
+  coreConfigAutoSaveTimer = window.setTimeout(() => {
+    coreConfigAutoSaveTimer = undefined;
+    void flushCoreConfigAutoSave();
+  }, coreConfigAutoSaveThrottleMs);
+};
+
 const syncConfig = (config: CoreControlConfigDto) => {
-  coreConfig.maxConnections = config.maxConnections;
-  coreConfig.signalrUrl = config.signalrUrl || signalrFixedUrl;
-  coreConfig.autoReconnect = config.autoReconnect;
-  coreConfig.reconnectInterval = config.reconnectInterval;
-  coreConfig.statusCheckInterval = config.statusCheckInterval;
-  coreConfig.cookieCloudKey = config.cookieCloudKey ?? '';
-  coreConfig.cookieCloudPassword = config.cookieCloudPassword ?? '';
-  coreConfig.cookieCloudHost = config.cookieCloudHost ?? '';
-  coreConfig.cookieRefreshInterval = config.cookieRefreshInterval;
-  coreConfig.requestServerRooms = config.requestServerRooms;
-  coreConfig.allowedAreas = Array.isArray(config.allowedAreas) ? [...config.allowedAreas] : [];
-  coreConfig.allowedParentAreas = Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [];
-  coreConfig.streamers.splice(0);
+  syncingCoreConfigFromRemote = true;
+  try {
+    coreConfig.maxConnections = config.maxConnections;
+    coreConfig.signalrUrl = config.signalrUrl || signalrFixedUrl;
+    coreConfig.autoReconnect = config.autoReconnect;
+    coreConfig.reconnectInterval = config.reconnectInterval;
+    coreConfig.statusCheckInterval = config.statusCheckInterval;
+    coreConfig.cookieCloudKey = config.cookieCloudKey ?? '';
+    coreConfig.cookieCloudPassword = config.cookieCloudPassword ?? '';
+    coreConfig.cookieCloudHost = config.cookieCloudHost ?? '';
+    coreConfig.cookieRefreshInterval = config.cookieRefreshInterval;
+    coreConfig.requestServerRooms = config.requestServerRooms;
+    coreConfig.allowedAreas = Array.isArray(config.allowedAreas) ? [...config.allowedAreas] : [];
+    coreConfig.allowedParentAreas = Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [];
+    coreConfig.streamers.splice(0);
+  } finally {
+    syncingCoreConfigFromRemote = false;
+  }
 };
 
 const sortRecordings = (items: RecordingInfoDto[]) => {
@@ -169,22 +286,64 @@ const loadProfile = async () => {
 
 const handleSaveConfig = async () => {
   if (!ensureToken()) return;
+  coreConfigAutoSavePending = false;
+  clearCoreConfigAutoSaveTimer();
+  await persistCoreConfig(false);
+};
+
+const handleCheckAppUpdate = async () => {
+  if (!isUpdaterSupported) {
+    toast.info('仅 Tauri 桌面客户端支持检查更新');
+    return;
+  }
+  if (checkingAppUpdate.value || installingAppUpdate.value) {
+    return;
+  }
+
+  checkingAppUpdate.value = true;
   try {
-    savingConfig.value = true;
-    const updated = await updateCoreConfig({
-      ...coreConfig,
-      signalrUrl: coreConfig.signalrUrl,
-      allowedAreas: [...coreConfig.allowedAreas],
-      allowedParentAreas: [...coreConfig.allowedParentAreas],
-      streamers: []
-    });
-    syncConfig(updated);
-    toast.success('配置已保存');
+    const update = await checkForUpdate();
+    if (!update) {
+      availableUpdateVersion.value = null;
+      toast.success('当前已是最新版本');
+      return;
+    }
+
+    availableUpdateVersion.value = update.version;
+    toast.info(`发现新版本 ${update.version}`);
   } catch (error) {
     console.error(error);
-    toast.error(error instanceof Error ? error.message : '保存失败');
+    toast.error(error instanceof Error ? error.message : '检查更新失败');
   } finally {
-    savingConfig.value = false;
+    checkingAppUpdate.value = false;
+  }
+};
+
+const handleInstallAppUpdate = async () => {
+  if (!isUpdaterSupported) {
+    toast.info('仅 Tauri 桌面客户端支持安装更新');
+    return;
+  }
+  if (installingAppUpdate.value || checkingAppUpdate.value) {
+    return;
+  }
+
+  installingAppUpdate.value = true;
+  try {
+    const update = await installLatestUpdate();
+    if (!update) {
+      availableUpdateVersion.value = null;
+      toast.success('当前已是最新版本');
+      return;
+    }
+
+    availableUpdateVersion.value = null;
+    toast.success(`更新 ${update.version} 已安装，请手动重启应用`);
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '安装更新失败');
+  } finally {
+    installingAppUpdate.value = false;
   }
 };
 
@@ -262,6 +421,8 @@ const handleRemoveRecording = async (uid: number) => {
 
 const handleLogout = async () => {
   stopRemotePoll();
+  clearCoreConfigAutoSaveTimer();
+  coreConfigAutoSavePending = false;
   try {
     await danmakuService.stop();
   } catch (error) {
@@ -273,6 +434,7 @@ const handleLogout = async () => {
   setAuthToken('');
   userInfo.value = null;
   recordings.value = [];
+  availableUpdateVersion.value = null;
   setServerLoggedIn(false);
   currentPage.value = 'dashboard';
   toast.success('已登出');
@@ -318,6 +480,19 @@ const handleForceTakeover = async () => {
   }
 };
 
+watch(coreConfig, () => {
+  if (syncingCoreConfigFromRemote) return;
+  scheduleCoreConfigAutoSave();
+}, { deep: true });
+
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) {
+    startNavProfileAutoRefresh();
+  } else {
+    stopNavProfileAutoRefresh();
+  }
+}, { immediate: true });
+
 onMounted(async () => {
   if (token.value) {
     await loadProfile();
@@ -327,6 +502,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopRemotePoll();
+  stopNavProfileAutoRefresh();
+  clearCoreConfigAutoSaveTimer();
+  coreConfigAutoSavePending = false;
 });
 </script>
 
@@ -361,9 +539,11 @@ onBeforeUnmount(() => {
               v-if="currentPage === 'dashboard'"
               key="dashboard"
               :runtime-state="runtimeState"
-              :recording-room-ids="recordings.map(item => item.channel.roomId)"
+              :recording-room-ids="recordingRoomIds"
+              :recording-stats-by-room="recordingStatsByRoom"
               :remote-clients="remoteClients"
               :local-client-id="localClientId"
+              :bili-account-profile="biliNavProfileState.profile"
               :last-heartbeat-text="lastHeartbeatText"
               :cookie-status-text="cookieStatusText"
               :cookie-status-type="cookieStatusType"
@@ -387,7 +567,13 @@ onBeforeUnmount(() => {
               :adding-recording="addingRecording"
               :removing-recording-uid="removingRecordingUid"
               :saving-config="savingConfig"
+              :updater-supported="isUpdaterSupported"
+              :checking-app-update="checkingAppUpdate"
+              :installing-app-update="installingAppUpdate"
+              :available-update-version="availableUpdateVersion"
               @save-config="handleSaveConfig"
+              @check-app-update="handleCheckAppUpdate"
+              @install-app-update="handleInstallAppUpdate"
               @refresh-recordings="refreshRecordingList"
               @add-recording="handleAddRecording"
               @remove-recording="handleRemoveRecording"

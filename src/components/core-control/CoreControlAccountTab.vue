@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Github, LogOut, MessageSquare, Shield } from 'lucide-vue-next';
+import { Github, LogOut, MessageSquare, Shield, ExternalLink } from 'lucide-vue-next';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -68,13 +68,19 @@ const confirmLogout = () => {
             <CardTitle class="truncate text-xl">{{ userInfo?.name || 'Unknown' }}</CardTitle>
             <CardDescription>ID: {{ userInfo?.id }}</CardDescription>
           </div>
+          <Button variant="outline" size="sm" as-child>
+            <a href="https://danmakus.com/account" target="_blank" rel="noopener noreferrer" class="gap-1.5">
+              <ExternalLink class="h-3.5 w-3.5" />
+              网站账户
+            </a>
+          </Button>
         </div>
       </CardHeader>
     </Card>
 
     <!-- Stats grid -->
     <div class="grid gap-3 sm:grid-cols-2">
-      <Card class="bg-card/60">
+      <Card class="bg-card/60" title="已绑定的第三方登录方式">
         <CardContent class="p-4">
           <div class="flex items-center gap-3">
             <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
@@ -94,7 +100,7 @@ const confirmLogout = () => {
         </CardContent>
       </Card>
 
-      <Card class="bg-card/60">
+      <Card class="bg-card/60" title="您为直播间提供的弹幕数据统计">
         <CardContent class="p-4">
           <div class="flex items-center gap-3">
             <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-chart-2/10">

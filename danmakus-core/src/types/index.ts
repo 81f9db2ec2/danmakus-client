@@ -31,6 +31,7 @@ export interface StreamerConfig {
 // 主播状态类型
 export interface StreamerStatus {
   roomId: number;
+  uid?: number;
   isLive: boolean;
   title?: string;
   username?: string;

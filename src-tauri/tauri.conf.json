@@ -24,6 +24,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -31,5 +32,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey":  "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzRDc3QjZEN0Y0Nzc0ODkKUldTSmRFZC9iWHZYMDI1WjFobFlVZmJDR2QrUVlodXNpZWlGaExRdFl0UWEyK1l3eDl2T2NBVnoK",
+      "endpoints": [
+        "https://tauri-update-server.81f9db2ec2.workers.dev/v1/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
   }
 }

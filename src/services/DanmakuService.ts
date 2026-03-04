@@ -137,6 +137,8 @@ class DanmakuService {
   private localClientId: string;
   private readonly debugMessageConsoleEnabled: boolean;
   private debugMessageCounter = 0;
+  private lastNavCookieCheckAt = 0;
+  private readonly navCookieCheckIntervalMs = 30_000;
 
   public state = reactive({
     isRunning: false,
@@ -145,6 +147,7 @@ class DanmakuService {
     connectionInfo: [] as ConnectionInfoSnapshot[],
     messageCount: 0,
     messageCmdCountMap: {} as Record<string, number>,
+    roomMessageCountMap: {} as Record<string, number>,
     streamerStatuses: [] as StreamerStatus[],
     serverAssignedRooms: [] as number[],
     lastError: null as string | null,
@@ -266,7 +269,6 @@ class DanmakuService {
     if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
       this.state.isRunning = false;
       this.state.signalrConnected = false;
-      this.state.cookieValid = false;
       this.state.connectedRooms = [];
       this.state.connectionInfo = [];
       this.state.serverAssignedRooms = [];
@@ -274,6 +276,7 @@ class DanmakuService {
       this.state.messageCmdCountMap = {};
       this.state.lastRoomAssigned = null;
       this.state.lastError = null;
+      await this.refreshCookieValidityFromNav(false);
     }
   }
 
@@ -332,6 +335,7 @@ class DanmakuService {
     this.state.connectionInfo = [];
     this.state.messageCount = 0;
     this.state.messageCmdCountMap = {};
+    this.state.roomMessageCountMap = {};
     this.state.streamerStatuses = [];
     this.state.serverAssignedRooms = [];
     this.state.lastError = null;
@@ -380,6 +384,8 @@ class DanmakuService {
       this.state.messageCount += 1;
       const cmd = message.cmd;
       this.state.messageCmdCountMap[cmd] = (this.state.messageCmdCountMap[cmd] || 0) + 1;
+      const roomKey = String(message.roomId);
+      this.state.roomMessageCountMap[roomKey] = (this.state.roomMessageCountMap[roomKey] || 0) + 1;
       if (this.debugMessageConsoleEnabled) {
         this.debugMessageCounter += 1;
         console.debug(
@@ -430,6 +436,22 @@ class DanmakuService {
     this.state.cookieValid = profile !== null;
     if (!profile) {
       throw new Error('未登录 Bilibili，无法获取直播鉴权 Token，请先完成 Bilibili 登录');
+    }
+  }
+
+  private async refreshCookieValidityFromNav(force: boolean): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.lastNavCookieCheckAt < this.navCookieCheckIntervalMs) {
+      return;
+    }
+
+    this.lastNavCookieCheckAt = now;
+    try {
+      const profile = await getNavProfileAsync({ force });
+      this.state.cookieValid = profile !== null;
+    } catch (error) {
+      console.error(error);
+      this.state.cookieValid = false;
     }
   }
 }

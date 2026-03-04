@@ -30,6 +30,8 @@ const LOCK_RETRY_MIN_COUNT = 1;
 const LOCK_RETRY_MIN_DELAY = 200;
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
+const SERVER_ROOM_OFFLINE_EVICT_HITS = 1;
+const SERVER_ROOM_ASSIGN_GRACE_MS = 60_000;
 
 function generateClientId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -87,6 +89,9 @@ export class DanmakuClient extends EventEmitter {
   private clientId: string;
   private connections: Map<number, ConnectionInfo> = new Map();
   private serverAssignedRooms: number[] = [];
+  private serverRoomOfflineHits: Map<number, number> = new Map();
+  private serverRoomAssignedAt: Map<number, number> = new Map();
+  private serverRoomLiveConfirmed: Set<number> = new Set();
   private lastServerRoomRequestAt = 0;
   private isRunning: boolean = false;
   private updateConnectionsTimer?: ReturnType<typeof setTimeout>;
@@ -209,10 +214,15 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.signalrConnection.onRoomAssigned = (roomId: number) => {
-      this.logger.info(`收到服务器分配的房间: ${roomId}`);
-      if (!this.serverAssignedRooms.includes(roomId)) {
-        this.serverAssignedRooms.push(roomId);
+      if (this.serverAssignedRooms.includes(roomId)) {
+        return;
       }
+      this.logger.info(`收到服务器分配的房间: ${roomId}`);
+      this.serverAssignedRooms.push(roomId);
+      this.serverRoomOfflineHits.delete(roomId);
+      this.serverRoomAssignedAt.set(roomId, Date.now());
+      this.serverRoomLiveConfirmed.delete(roomId);
+      this.trimServerAssignedRoomsToCapacity(this.configManager.getConfig().maxConnections);
       this.statusManager?.updateServerRooms(this.serverAssignedRooms);
       this.statusManager?.refreshNow();
       this.lastRoomAssigned = roomId;
@@ -245,6 +255,13 @@ export class DanmakuClient extends EventEmitter {
     if (!this.serverAssignedRooms.includes(newRoomId)) {
       this.serverAssignedRooms.push(newRoomId);
     }
+    this.serverRoomOfflineHits.delete(oldRoomId);
+    this.serverRoomOfflineHits.delete(newRoomId);
+    this.serverRoomAssignedAt.delete(oldRoomId);
+    this.serverRoomAssignedAt.set(newRoomId, Date.now());
+    this.serverRoomLiveConfirmed.delete(oldRoomId);
+    this.serverRoomLiveConfirmed.delete(newRoomId);
+    this.trimServerAssignedRoomsToCapacity(this.configManager.getConfig().maxConnections);
     this.lastRoomAssigned = newRoomId;
 
     const statusManager = this.statusManager;
@@ -306,6 +323,16 @@ export class DanmakuClient extends EventEmitter {
         throw new Error('无法连接到SignalR服务器');
       }
 
+      // 首次注册前先强制同步空连接态，清理同 clientId 旧心跳残留导致的容量误判
+      await this.syncRuntimeState({
+        isRunning: true,
+        signalrConnected: true,
+        connectedRooms: [],
+        connectionInfo: [],
+        serverAssignedRooms: [],
+        lastRoomAssigned: null
+      }, { force: true, strict: true });
+
       // 注册客户端
       const registerSuccess = await signalrConnection.registerClient([]);
       if (!registerSuccess) {
@@ -320,13 +347,6 @@ export class DanmakuClient extends EventEmitter {
       statusManager.updateServerRooms(this.serverAssignedRooms);
       statusManager.start();
       this.startAccountConfigRefresh();
-
-      // 请求服务器分配房间（如果需要）
-      const finalConfig = this.configManager.getConfig();
-      if (finalConfig.requestServerRooms ?? true) {
-        this.logger.info('请求服务器分配房间...');
-        await signalrConnection.requestRoomAssignment();
-      }
 
       this.logger.info('弹幕客户端启动成功');
       await this.syncRuntimeState();
@@ -378,6 +398,9 @@ export class DanmakuClient extends EventEmitter {
     // 断开SignalR连接
     await this.signalrConnection?.disconnect();
     this.serverAssignedRooms = [];
+    this.serverRoomOfflineHits.clear();
+    this.serverRoomAssignedAt.clear();
+    this.serverRoomLiveConfirmed.clear();
     this.statusManager?.updateServerRooms([]);
     this.messageCount = 0;
     this.lastRoomAssigned = undefined;
@@ -428,9 +451,11 @@ export class DanmakuClient extends EventEmitter {
     }
 
     const config = this.configManager.getConfig();
+    const statusManager = this.ensureStatusManager();
+    this.evictInactiveServerAssignedRooms(statusManager);
+    this.trimServerAssignedRoomsToCapacity(config.maxConnections);
 
     // 获取应该连接的房间
-    const statusManager = this.ensureStatusManager();
     const roomsToConnect = statusManager.getRoomsToConnect(
       this.serverAssignedRooms,
       config.maxConnections
@@ -461,11 +486,166 @@ export class DanmakuClient extends EventEmitter {
     }
 
     // 定期向服务器请求分配/替换（由服务端根据容量与优先级决策）
-    if (config.requestServerRooms ?? true) {
-      this.maybeRequestServerRoomAssignment();
+    const shouldRequestServerRooms = (config.requestServerRooms ?? true)
+      && this.shouldRequestServerRooms(config.maxConnections);
+    const syncPromise = this.syncRuntimeState();
+    if (shouldRequestServerRooms) {
+      void syncPromise.finally(() => {
+        this.maybeRequestServerRoomAssignment();
+      });
+      return;
     }
 
-    void this.syncRuntimeState();
+    void syncPromise;
+  }
+
+  private evictInactiveServerAssignedRooms(statusManager: StreamerStatusManager): number[] {
+    if (this.serverAssignedRooms.length === 0) {
+      return [];
+    }
+
+    const keep: number[] = [];
+    const removed: number[] = [];
+
+    for (const roomId of this.serverAssignedRooms) {
+      if (!Number.isFinite(roomId) || roomId <= 0) {
+        continue;
+      }
+
+      if (this.connections.has(roomId)) {
+        this.serverRoomOfflineHits.delete(roomId);
+        keep.push(roomId);
+        continue;
+      }
+
+      const status = statusManager.getStreamerStatus(roomId);
+      if (!status) {
+        keep.push(roomId);
+        continue;
+      }
+
+      if (status.isLive) {
+        this.serverRoomOfflineHits.delete(roomId);
+        this.serverRoomLiveConfirmed.add(roomId);
+        keep.push(roomId);
+        continue;
+      }
+
+      // 新分配但尚未确认在线的房间，给一个保护窗口防止误判导致首轮抖动
+      if (!this.serverRoomLiveConfirmed.has(roomId)) {
+        const assignedAt = this.serverRoomAssignedAt.get(roomId) ?? 0;
+        if (assignedAt > 0 && Date.now() - assignedAt < SERVER_ROOM_ASSIGN_GRACE_MS) {
+          keep.push(roomId);
+          continue;
+        }
+      }
+
+      const hits = (this.serverRoomOfflineHits.get(roomId) ?? 0) + 1;
+      if (hits < SERVER_ROOM_OFFLINE_EVICT_HITS) {
+        this.serverRoomOfflineHits.set(roomId, hits);
+        keep.push(roomId);
+        continue;
+      }
+
+      this.serverRoomOfflineHits.delete(roomId);
+      this.serverRoomAssignedAt.delete(roomId);
+      this.serverRoomLiveConfirmed.delete(roomId);
+      this.removeQueuedRoomConnect(roomId);
+      removed.push(roomId);
+    }
+
+    for (const roomId of Array.from(this.serverRoomOfflineHits.keys())) {
+      if (!keep.includes(roomId)) {
+        this.serverRoomOfflineHits.delete(roomId);
+      }
+    }
+    for (const roomId of Array.from(this.serverRoomAssignedAt.keys())) {
+      if (!keep.includes(roomId)) {
+        this.serverRoomAssignedAt.delete(roomId);
+      }
+    }
+    for (const roomId of Array.from(this.serverRoomLiveConfirmed.keys())) {
+      if (!keep.includes(roomId)) {
+        this.serverRoomLiveConfirmed.delete(roomId);
+      }
+    }
+
+    if (removed.length > 0) {
+      this.serverAssignedRooms = keep;
+      statusManager.updateServerRooms(this.serverAssignedRooms);
+      this.logger.info(`移除已下播房间分配: ${removed.join(',')}`);
+    }
+
+    return removed;
+  }
+
+  private shouldRequestServerRooms(maxConnections: number): boolean {
+    const capacity = Math.max(0, Math.floor(maxConnections));
+    if (capacity <= 0) {
+      return false;
+    }
+
+    const assignedRooms = Array.from(
+      new Set(this.serverAssignedRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0))
+    );
+    if (assignedRooms.length >= capacity) {
+      return false;
+    }
+
+    // 还有待连接的服务器分配房间时，先等待其处理结果，避免重复请求
+    if (assignedRooms.some(roomId => !this.connections.has(roomId))) {
+      return false;
+    }
+
+    if (this.queuedRoomConnects.length > 0) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private trimServerAssignedRoomsToCapacity(maxConnections: number): void {
+    const uniqueRooms = Array.from(
+      new Set(this.serverAssignedRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0))
+    );
+
+    const targetSize = Math.max(0, Math.floor(maxConnections));
+    if (uniqueRooms.length <= targetSize) {
+      if (uniqueRooms.length !== this.serverAssignedRooms.length) {
+        this.serverAssignedRooms = uniqueRooms;
+        this.statusManager?.updateServerRooms(this.serverAssignedRooms);
+      }
+      return;
+    }
+
+    const connectedSet = new Set(this.connections.keys());
+    const keep: number[] = [];
+
+    for (const roomId of uniqueRooms) {
+      if (keep.length >= targetSize) break;
+      if (connectedSet.has(roomId)) {
+        keep.push(roomId);
+      }
+    }
+    for (const roomId of uniqueRooms) {
+      if (keep.length >= targetSize) break;
+      if (!keep.includes(roomId)) {
+        keep.push(roomId);
+      }
+    }
+
+    const dropped = uniqueRooms.filter(roomId => !keep.includes(roomId));
+    this.serverAssignedRooms = keep;
+    this.statusManager?.updateServerRooms(this.serverAssignedRooms);
+    if (dropped.length > 0) {
+      for (const roomId of dropped) {
+        this.serverRoomOfflineHits.delete(roomId);
+        this.serverRoomAssignedAt.delete(roomId);
+        this.serverRoomLiveConfirmed.delete(roomId);
+        this.removeQueuedRoomConnect(roomId);
+      }
+      this.logger.warn(`服务器分配房间超出上限，已裁剪: max=${targetSize}, dropped=${dropped.join(',')}`);
+    }
   }
 
   private queueRoomConnect(roomId: number, priority: 'high' | 'normal' | 'low' | 'server'): void {
@@ -765,15 +945,22 @@ export class DanmakuClient extends EventEmitter {
       this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
       this.connections.delete(roomId);
       this.emit('disconnected', roomId);
-      void this.syncRuntimeState();
+      const syncRuntimePromise = this.syncRuntimeState();
+      void syncRuntimePromise;
+      this.statusManager?.refreshNow();
 
       // 服务器分配的房间如果“连上立刻断”，通常代表房间不在直播/不可用；移除后再申请补位
       if (connectionInfo?.priority === 'server') {
         const lifetimeMs = Date.now() - connectionInfo.connectedAt;
         if (lifetimeMs < 10_000) {
           this.serverAssignedRooms = this.serverAssignedRooms.filter(id => id !== roomId);
+          this.serverRoomOfflineHits.delete(roomId);
+          this.serverRoomAssignedAt.delete(roomId);
+          this.serverRoomLiveConfirmed.delete(roomId);
           this.statusManager?.updateServerRooms(this.serverAssignedRooms);
-          this.maybeRequestServerRoomAssignment();
+          void syncRuntimePromise.finally(() => {
+            this.maybeRequestServerRoomAssignment();
+          });
         }
       }
 
@@ -1424,10 +1611,7 @@ export class DanmakuClient extends EventEmitter {
     if (!registered) {
       throw new Error('配置热更新后客户端注册失败');
     }
-
-    if (config.requestServerRooms ?? true) {
-      await this.signalrConnection.requestRoomAssignment();
-    }
+    this.updateConnections();
     this.scheduleMessageDispatch(0);
   }
 
@@ -1444,11 +1628,7 @@ export class DanmakuClient extends EventEmitter {
       this.emit('error', error);
       return;
     }
-
-    const config = this.configManager.getConfig();
-    if (config.requestServerRooms ?? true) {
-      await signalrConnection.requestRoomAssignment();
-    }
+    this.updateConnections();
   }
 
   private areHeadersEqual(

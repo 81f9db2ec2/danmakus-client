@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Loader2, ShieldCheck } from 'lucide-vue-next';
+import { ExternalLink, Loader2, ShieldCheck } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -45,14 +45,22 @@ const tokenValue = computed({
             v-model="tokenValue"
             type="password"
             placeholder="请输入账号 Token"
+            title="从服务器获取的身份验证令牌"
             class="h-11"
             @keyup.enter="emit('apply-token')"
           />
         </div>
 
-        <Button class="h-11 w-full" :disabled="loadingProfile" @click="emit('apply-token')">
+        <Button class="h-11 w-full" :disabled="loadingProfile" title="使用 Token 登录并加载配置" @click="emit('apply-token')">
           <Loader2 v-if="loadingProfile" class="h-4 w-4 animate-spin" />
           <span>{{ loadingProfile ? '连接中...' : '登录 / 连接' }}</span>
+        </Button>
+
+        <Button as-child variant="outline" class="h-11 w-full" title="前往网页账户中心登录">
+          <a href="https://danmakus.com/account" target="_blank" rel="noopener noreferrer">
+            <ExternalLink class="h-4 w-4" />
+            <span>前往网页登录</span>
+          </a>
         </Button>
       </CardContent>
     </Card>

@@ -97,7 +97,7 @@ program
           } else {
             console.log(`[${message.roomId}] ${username}: ${text}`);
           }
-        } catch (error) {
+        } catch {
           console.log(`[弹幕][房间${message.roomId}] 解析失败: ${message.raw}`);
         }
       });
@@ -110,7 +110,7 @@ program
           const num = data.num || 1;
 
           console.log(`[礼物][房间${message.roomId}] ${username} 送出 ${num}个 ${giftName}`);
-        } catch (error) {
+        } catch {
           console.log(`[礼物][房间${message.roomId}] 解析失败: ${message.raw}`);
         }
       });
