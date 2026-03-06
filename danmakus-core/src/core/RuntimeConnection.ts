@@ -84,8 +84,10 @@ export class RuntimeConnection {
 
     const payload: ClientDanmakuMessage[] = messages.map((msg) => ({
       roomId: msg.roomId,
-      raw: this.resolveRawPayload(msg),
-      timestamp: msg.timestamp
+      raw: msg.recorderEventType ? undefined : this.resolveRawPayload(msg),
+      timestamp: msg.timestamp,
+      eventType: msg.recorderEventType,
+      eventMessage: msg.recorderEventMessage
     }));
 
     try {

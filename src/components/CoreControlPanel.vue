@@ -58,10 +58,6 @@ const coreConfig = reactive<CoreControlConfigDto>({
   autoReconnect: true,
   reconnectInterval: 5000,
   statusCheckInterval: 30,
-  cookieCloudKey: '',
-  cookieCloudPassword: '',
-  cookieCloudHost: '',
-  cookieRefreshInterval: 3600,
   streamers: [],
   requestServerRooms: true,
   allowedAreas: [],
@@ -233,10 +229,6 @@ const syncConfig = (config: CoreControlConfigDto) => {
     coreConfig.autoReconnect = config.autoReconnect;
     coreConfig.reconnectInterval = config.reconnectInterval;
     coreConfig.statusCheckInterval = config.statusCheckInterval;
-    coreConfig.cookieCloudKey = config.cookieCloudKey ?? '';
-    coreConfig.cookieCloudPassword = config.cookieCloudPassword ?? '';
-    coreConfig.cookieCloudHost = config.cookieCloudHost ?? '';
-    coreConfig.cookieRefreshInterval = config.cookieRefreshInterval;
     coreConfig.requestServerRooms = config.requestServerRooms;
     coreConfig.allowedAreas = Array.isArray(config.allowedAreas) ? [...config.allowedAreas] : [];
     coreConfig.allowedParentAreas = Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [];
@@ -488,7 +480,7 @@ const handleStartCore = async () => {
   try {
     if (!ensureToken()) return;
     startingCore.value = true;
-    await danmakuService.initialize();
+    await danmakuService.initialize(localConfig);
     await danmakuService.start();
     toast.success('核心已启动');
     await refreshRuntimeState();

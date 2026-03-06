@@ -59,6 +59,11 @@ export class ConfigManager {
       // 录制主播来源统一由 account.Recording（服务端分配）管理
       streamers: []
     };
+
+    this.config.cookieCloudKey = this.normalizeCookieSecret(this.config.cookieCloudKey);
+    this.config.cookieCloudPassword = this.normalizeCookieSecret(this.config.cookieCloudPassword);
+    this.config.cookieCloudHost = this.normalizeCookieHost(this.config.cookieCloudHost);
+    this.config.cookieRefreshInterval = this.normalizeCookieRefreshInterval(this.config.cookieRefreshInterval);
   }
 
   /**
@@ -115,10 +120,6 @@ export class ConfigManager {
       autoReconnect: remote.autoReconnect,
       reconnectInterval: remote.reconnectInterval,
       statusCheckInterval: remote.statusCheckInterval,
-      cookieCloudKey: this.normalizeCookieSecret(remote.cookieCloudKey),
-      cookieCloudPassword: this.normalizeCookieSecret(remote.cookieCloudPassword),
-      cookieCloudHost: this.normalizeCookieHost(remote.cookieCloudHost),
-      cookieRefreshInterval: this.normalizeCookieRefreshInterval(remote.cookieRefreshInterval),
       requestServerRooms: remote.requestServerRooms,
       allowedAreas: Array.isArray(remote.allowedAreas) ? [...remote.allowedAreas] : [],
       allowedParentAreas: Array.isArray(remote.allowedParentAreas) ? [...remote.allowedParentAreas] : [],

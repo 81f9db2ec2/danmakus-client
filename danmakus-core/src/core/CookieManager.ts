@@ -4,6 +4,7 @@ export class CookieManager {
   private cookies: string = '';
   private lastUpdate: number = 0;
   private updateTimer?: ReturnType<typeof setInterval>;
+  private updateTask?: Promise<boolean>;
 
   private fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -21,9 +22,14 @@ export class CookieManager {
    * 启动定期更新Cookie
    */
   startPeriodicUpdate(): void {
-    this.updateCookies();
+    if (this.updateTimer) {
+      return;
+    }
+    if (!this.isValid()) {
+      void this.updateCookies();
+    }
     this.updateTimer = setInterval(() => {
-      this.updateCookies();
+      void this.updateCookies();
     }, this.refreshInterval * 1000);
   }
 
@@ -41,41 +47,52 @@ export class CookieManager {
    * 更新Cookie信息
    */
   async updateCookies(): Promise<boolean> {
-    try {
-      console.log('正在从CookieCloud获取Cookie信息...');
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-      try {
-        const response = await this.fetch(`${this.host}/get/${this.key}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ password: this.password }),
-          signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const cookieData: CookieCloudResponse = await response.json();
-          this.cookies = this.extractBilibiliCookies(cookieData);
-          this.lastUpdate = Date.now();
-
-          console.log('Cookie信息已更新');
-          return true;
-        }
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    } catch (error) {
-      console.error('获取Cookie失败:', error instanceof Error ? error.message : error);
-      return false;
+    if (this.updateTask) {
+      return this.updateTask;
     }
 
-    return false;
+    this.updateTask = (async () => {
+      try {
+        console.log('正在从CookieCloud获取Cookie信息...');
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        try {
+          const response = await this.fetch(`${this.host}/get/${this.key}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Connection': 'close'
+            },
+            body: JSON.stringify({ password: this.password }),
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            const cookieData: CookieCloudResponse = await response.json();
+            this.cookies = this.extractBilibiliCookies(cookieData);
+            this.lastUpdate = Date.now();
+
+            console.log('Cookie信息已更新');
+            return true;
+          }
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } catch (error) {
+        console.error('获取Cookie失败:', error instanceof Error ? error.message : error);
+        return false;
+      } finally {
+        this.updateTask = undefined;
+      }
+
+      return false;
+    })();
+
+    return this.updateTask;
   }
 
   /**

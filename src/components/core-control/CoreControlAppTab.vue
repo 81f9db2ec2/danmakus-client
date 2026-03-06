@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import type { LocalAppConfigDto } from '../../types/api';
 
@@ -35,6 +36,22 @@ const emit = defineEmits<{
   (e: 'show-main-window'): void;
   (e: 'hide-to-tray'): void;
 }>();
+
+const assignLocalText = (field: 'cookieCloudKey' | 'cookieCloudPassword', raw: string | number) => {
+  props.localConfig[field] = String(raw).trim();
+};
+
+const assignCookieCloudHost = (raw: string | number) => {
+  props.localConfig.cookieCloudHost = String(raw).trim().replace(/\/+$/, '');
+};
+
+const assignCookieRefreshInterval = (raw: string | number) => {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+  props.localConfig.cookieRefreshInterval = Math.max(60, Math.floor(value));
+};
 </script>
 
 <template>
@@ -122,6 +139,55 @@ const emit = defineEmits<{
             v-model:model-value="props.localConfig.minimizeToTray"
             :disabled="!isDesktopRuntime"
           />
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card class="bg-card/60">
+      <CardHeader class="pb-3">
+        <CardTitle class="text-sm">CookieCloud</CardTitle>
+        <CardDescription>仅保存在当前客户端本地，不会上传到服务器；修改后重启核心生效</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div class="rounded-lg border bg-background/30 px-3 py-2 text-xs text-muted-foreground">
+          <p>CLI 模式可继续使用启动参数 `--cookie-key`、`--cookie-password`、`--cookie-host` 直接设置。</p>
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
+          <Input
+            :model-value="props.localConfig.cookieCloudHost"
+            placeholder="https://cookie.danmakus.com"
+            @update:model-value="assignCookieCloudHost"
+          />
+        </div>
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">Key</label>
+            <Input
+              :model-value="props.localConfig.cookieCloudKey"
+              placeholder="Key"
+              @update:model-value="assignLocalText('cookieCloudKey', $event)"
+            />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">密码</label>
+            <Input
+              :model-value="props.localConfig.cookieCloudPassword"
+              type="password"
+              placeholder="密码"
+              @update:model-value="assignLocalText('cookieCloudPassword', $event)"
+            />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
+            <Input
+              :model-value="props.localConfig.cookieRefreshInterval"
+              type="number"
+              min="60"
+              placeholder="3600"
+              @update:model-value="assignCookieRefreshInterval"
+            />
+          </div>
         </div>
       </CardContent>
     </Card>

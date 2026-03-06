@@ -12,10 +12,6 @@ export interface CoreControlConfigDto {
   autoReconnect: boolean;
   reconnectInterval: number;
   statusCheckInterval: number;
-  cookieCloudKey?: string | null;
-  cookieCloudPassword?: string | null;
-  cookieCloudHost?: string | null;
-  cookieRefreshInterval: number;
   streamers: CoreStreamerConfigDto[];
   requestServerRooms: boolean;
   allowedAreas: string[];
@@ -26,6 +22,10 @@ export interface LocalAppConfigDto {
   autoStart: boolean;
   startMinimized: boolean;
   minimizeToTray: boolean;
+  cookieCloudKey: string;
+  cookieCloudPassword: string;
+  cookieCloudHost: string;
+  cookieRefreshInterval: number;
 }
 
 export interface UserInfo {

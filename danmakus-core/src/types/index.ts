@@ -1,17 +1,23 @@
 // 统一的弹幕消息类型
+export type RecorderEventType = 'record_start' | 'record_interrupt' | 'record_end';
+
 export interface DanmakuMessage {
   roomId: number;
   cmd: string;
   data: any;
   raw: string;
   timestamp: number;
+  recorderEventType?: RecorderEventType;
+  recorderEventMessage?: string;
 }
 
 // 发送给后端的消息格式
 export interface ClientDanmakuMessage {
   roomId: number;
-  raw: string;
+  raw?: string;
   timestamp: number;
+  eventType?: RecorderEventType;
+  eventMessage?: string;
 }
 
 // 主播优先级类型
@@ -160,10 +166,6 @@ export interface CoreControlConfigDto {
   autoReconnect: boolean;
   reconnectInterval: number;
   statusCheckInterval: number;
-  cookieCloudKey?: string | null;
-  cookieCloudPassword?: string | null;
-  cookieCloudHost?: string | null;
-  cookieRefreshInterval: number;
   streamers: CoreStreamerConfigDto[];
   requestServerRooms: boolean;
   allowedAreas: string[];

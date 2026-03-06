@@ -6,6 +6,7 @@ import { biliCookie, getLiveWsRoomConfigAsync, getNavProfileAsync } from './bili
 import { ACCOUNT_API_BASE, RUNTIME_URL } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
+import type { LocalAppConfigDto } from '../types/api';
 
 type ConnectionInfoSnapshot = { roomId: number; priority: string; connectedAt: number };
 type RemoteClientSnapshot = {
@@ -168,7 +169,7 @@ class DanmakuService {
     return DanmakuService.instance;
   }
 
-  public async initialize(): Promise<void> {
+  public async initialize(localConfig?: Pick<LocalAppConfigDto, 'cookieCloudKey' | 'cookieCloudPassword' | 'cookieCloudHost' | 'cookieRefreshInterval'>): Promise<void> {
     await this.disposeExistingClient();
 
     const token = getAuthToken();
@@ -182,6 +183,10 @@ class DanmakuService {
       fetchImpl,
       cookieProvider: () => biliCookie.getBiliCookie(),
       liveWsConfigProvider: getLiveWsRoomConfigAsync,
+      cookieCloudKey: localConfig?.cookieCloudKey?.trim() || undefined,
+      cookieCloudPassword: localConfig?.cookieCloudPassword?.trim() || undefined,
+      cookieCloudHost: localConfig?.cookieCloudHost?.trim() || undefined,
+      cookieRefreshInterval: localConfig?.cookieRefreshInterval,
       runtimeHeaders: this.buildRuntimeHeaders(),
       accountToken: token,
       clientVersion: 'desktop',

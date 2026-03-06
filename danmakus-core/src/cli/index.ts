@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { DanmakuClient } from '../core/DanmakuClient';
+import { attachCliEventListeners } from './runtime';
 import { CliOptions } from '../types';
 
 const program = new Command();
@@ -85,62 +86,7 @@ program
       client.applyCliOptions(options);
 
       // 设置事件监听
-      client.on('DANMU_MSG', (message) => {
-        try {
-          const info = message.data.info || [];
-          const text = info[1] || '';
-          const userInfo = info[2] || [];
-          const username = userInfo[1] || '未知用户';
-
-          if (options.verbose) {
-            console.log(`[弹幕][房间${message.roomId}] ${username}: ${text}`);
-          } else {
-            console.log(`[${message.roomId}] ${username}: ${text}`);
-          }
-        } catch {
-          console.log(`[弹幕][房间${message.roomId}] 解析失败: ${message.raw}`);
-        }
-      });
-
-      client.on('SEND_GIFT', (message) => {
-        try {
-          const data = message.data;
-          const username = data.uname || '未知用户';
-          const giftName = data.giftName || '未知礼物';
-          const num = data.num || 1;
-
-          console.log(`[礼物][房间${message.roomId}] ${username} 送出 ${num}个 ${giftName}`);
-        } catch {
-          console.log(`[礼物][房间${message.roomId}] 解析失败: ${message.raw}`);
-        }
-      });
-
-      // 监听所有消息（调试用）
-      if (options.verbose) {
-        client.on('msg', (message) => {
-          console.log(`[DEBUG][房间${message.roomId}][${message.cmd}] ${message.raw.slice(0, 100)}...`);
-        });
-      }
-
-      client.on('connected', (roomId) => {
-        console.log(`✓ 房间 ${roomId} 连接成功`);
-      });
-
-      client.on('disconnected', (roomId) => {
-        console.log(`✗ 房间 ${roomId} 连接断开`);
-      });
-
-      client.on('error', (error, roomId) => {
-        if (roomId) {
-          console.error(`✗ 房间 ${roomId} 发生错误:`, error.message);
-        } else {
-          console.error('✗ 客户端错误:', error.message);
-        }
-      });
-
-      client.on('roomAssigned', (roomId) => {
-        console.log(`🎯 服务器分配房间: ${roomId}`);
-      });
+      attachCliEventListeners(client, options, console);
 
       // 处理退出信号
       process.on('SIGINT', async () => {

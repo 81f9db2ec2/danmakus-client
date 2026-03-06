@@ -1,5 +1,5 @@
 import EventEmitter from 'eventemitter3';
-import { LiveWS } from 'bilibili-live-danmaku';
+import { BilibiliApiClient, LiveWS, parseLiveConfig } from 'bilibili-live-danmaku';
 import { ConfigManager } from './ConfigManager';
 import { CookieManager } from './CookieManager';
 import { RuntimeConnection } from './RuntimeConnection';
@@ -16,7 +16,8 @@ import {
   CoreRuntimeStateDto,
   CoreConnectionInfoDto,
   ErrorCategory,
-  ClientErrorRecord
+  ClientErrorRecord,
+  RecorderEventType
 } from '../types';
 import { ScopedLogger, normalizeLogLevel } from './Logger';
 
@@ -111,6 +112,8 @@ export class DanmakuClient extends EventEmitter {
   private recordingRoomsRefreshing = false;
   private recordingRoomsTag: string | null = null;
   private recordingRoomIds: number[] = [];
+  private recordingSessions: Set<number> = new Set();
+  private lastStreamerLiveStates: Map<number, boolean> = new Map();
   private isStopping = false;
   private messageCount = 0;
   private lastRoomAssigned?: number;
@@ -206,7 +209,7 @@ export class DanmakuClient extends EventEmitter {
       finalConfig.runtimeUrl,
       finalConfig.autoReconnect,
       finalConfig.reconnectInterval,
-      finalConfig.runtimeHeaders,
+      this.buildRuntimeHeaders(finalConfig),
       this.logger.child('Runtime')
     );
     this.setupRuntimeEvents();
@@ -222,6 +225,7 @@ export class DanmakuClient extends EventEmitter {
       this.logger.child('StatusManager')
     );
     this.statusManager.updateServerRooms(this.serverAssignedRooms);
+    this.statusManager.updateRecordingRooms(this.recordingRoomIds);
     this.setupStatusManagerEvents();
   }
 
@@ -329,6 +333,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.statusManager.onStatusUpdated = (statuses: StreamerStatus[]) => {
+      this.handleStreamerStatusTransitions(statuses);
       this.logger.info(`更新主播状态: ${statuses.filter(s => s.isLive).length}/${statuses.length} 在线`);
       this.updateConnections();
       this.emit('streamerStatusUpdated', statuses);
@@ -347,9 +352,12 @@ export class DanmakuClient extends EventEmitter {
     try {
       this.runtimeGeneration += 1;
       this.isStopping = false;
+      this.recordingSessions.clear();
+      this.lastStreamerLiveStates.clear();
       this.logger.info('正在启动弹幕客户端... (v_hot_reload)');
 
       await this.prepareAccountConfig();
+      await this.ensureCookieReadyForStartup();
       await this.acquireRuntimeLock();
 
       // 启动CookieManager
@@ -410,6 +418,7 @@ export class DanmakuClient extends EventEmitter {
   async stop(options?: { suppressReleaseErrors?: boolean }): Promise<void> {
     this.runtimeGeneration += 1;
     this.logger.info('正在停止弹幕客户端...');
+    await this.flushOpenRecordingSessionsOnStop();
     this.isStopping = true;
     this.isRunning = false;
 
@@ -448,6 +457,8 @@ export class DanmakuClient extends EventEmitter {
     this.serverAssignmentTag = null;
     this.serverRoomAssignmentRefreshing = false;
     this.statusManager?.updateServerRooms([]);
+    this.recordingSessions.clear();
+    this.lastStreamerLiveStates.clear();
     this.messageCount = 0;
     this.lastRoomAssigned = undefined;
     this.lastError = undefined;
@@ -509,6 +520,7 @@ export class DanmakuClient extends EventEmitter {
 
     // 获取应该连接的房间
     const roomsToConnect = statusManager.getRoomsToConnect(
+      this.recordingRoomIds,
       this.serverAssignedRooms,
       config.maxConnections
     );
@@ -629,9 +641,36 @@ export class DanmakuClient extends EventEmitter {
     return removed;
   }
 
+  private getRecordingRoomOccupancy(maxConnections: number): number {
+    const capacity = Math.max(0, Math.floor(maxConnections));
+    if (capacity <= 0) {
+      return 0;
+    }
+
+    const occupied = this.recordingRoomIds.filter((roomId) => {
+      if (!Number.isFinite(roomId) || roomId <= 0) {
+        return false;
+      }
+
+      const connection = this.connections.get(roomId);
+      if (connection && connection.priority !== 'server') {
+        return true;
+      }
+
+      return this.statusManager?.getStreamerStatus(roomId)?.isLive === true;
+    }).length;
+
+    return Math.min(capacity, occupied);
+  }
+
   private shouldRequestServerRooms(maxConnections: number): boolean {
     const capacity = Math.max(0, Math.floor(maxConnections));
     if (capacity <= 0) {
+      return false;
+    }
+
+    const availableServerSlots = capacity - this.getRecordingRoomOccupancy(capacity);
+    if (availableServerSlots <= 0) {
       return false;
     }
 
@@ -656,7 +695,8 @@ export class DanmakuClient extends EventEmitter {
       new Set(this.serverAssignedRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0))
     );
 
-    const targetSize = Math.max(0, Math.floor(maxConnections));
+    const capacity = Math.max(0, Math.floor(maxConnections));
+    const targetSize = Math.max(0, capacity - this.getRecordingRoomOccupancy(capacity));
     if (uniqueRooms.length <= targetSize) {
       if (uniqueRooms.length !== this.serverAssignedRooms.length) {
         this.serverAssignedRooms = uniqueRooms;
@@ -666,20 +706,16 @@ export class DanmakuClient extends EventEmitter {
     }
 
     const connectedSet = new Set(this.connections.keys());
-    const keep: number[] = [];
-
-    for (const roomId of uniqueRooms) {
-      if (keep.length >= targetSize) break;
-      if (connectedSet.has(roomId)) {
-        keep.push(roomId);
-      }
-    }
-    for (const roomId of uniqueRooms) {
-      if (keep.length >= targetSize) break;
-      if (!keep.includes(roomId)) {
-        keep.push(roomId);
-      }
-    }
+    const recordingRoomSet = new Set(
+      this.recordingRoomIds.filter(roomId => Number.isFinite(roomId) && roomId > 0)
+    );
+    const prioritizedRooms = [
+      ...uniqueRooms.filter(roomId => connectedSet.has(roomId) && !recordingRoomSet.has(roomId)),
+      ...uniqueRooms.filter(roomId => !connectedSet.has(roomId) && !recordingRoomSet.has(roomId)),
+      ...uniqueRooms.filter(roomId => connectedSet.has(roomId) && recordingRoomSet.has(roomId)),
+      ...uniqueRooms.filter(roomId => !connectedSet.has(roomId) && recordingRoomSet.has(roomId))
+    ];
+    const keep = prioritizedRooms.slice(0, targetSize);
 
     const dropped = uniqueRooms.filter(roomId => !keep.includes(roomId));
     this.serverAssignedRooms = keep;
@@ -747,7 +783,7 @@ export class DanmakuClient extends EventEmitter {
     const now = Date.now();
     const elapsed = now - this.lastRoomConnectStartAt;
     const waitMs = this.lastRoomConnectStartAt === 0
-      ? 0
+      ? this.roomConnectStartInterval
       : Math.max(0, this.roomConnectStartInterval - elapsed);
 
     this.roomConnectQueueTimer = setTimeout(() => {
@@ -785,6 +821,7 @@ export class DanmakuClient extends EventEmitter {
 
     const config = this.configManager.getConfig();
     const roomsToConnect = this.statusManager.getRoomsToConnect(
+      this.recordingRoomIds,
       this.serverAssignedRooms,
       config.maxConnections
     );
@@ -873,7 +910,7 @@ export class DanmakuClient extends EventEmitter {
     const uid = this.readUidFromCookie(cookie);
     const buvid = this.readBuvidFromCookie(cookie);
     this.logger.info(
-      `房间 ${roomId} 准备获取鉴权: cookieSource=${preferredCookie?.source ?? 'none'}, uid=${uid}, buvid=${buvid ? 'present' : 'missing'}, provider=${this.liveWsConfigProvider ? 'remote' : 'none'}`
+      `房间 ${roomId} 准备获取鉴权: cookieSource=${preferredCookie?.source ?? 'none'}, uid=${uid}, buvid=${buvid ? 'present' : 'missing'}, provider=${this.liveWsConfigProvider ? 'remote' : 'builtin'}`
     );
 
     const options: LiveWsConnectionOptions = {
@@ -885,7 +922,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     if (!this.liveWsConfigProvider) {
-      return options;
+      return this.resolveBuiltinLiveWsConnectionOptions(roomId, options, cookie);
     }
 
     const remote = await this.liveWsConfigProvider(roomId);
@@ -912,6 +949,41 @@ export class DanmakuClient extends EventEmitter {
       uid: mergedUid,
       buvid: remote.buvid ?? options.buvid,
       protover: remote.protover ?? options.protover
+    };
+  }
+
+  private async resolveBuiltinLiveWsConnectionOptions(
+    roomId: number,
+    options: LiveWsConnectionOptions,
+    cookie?: string
+  ): Promise<LiveWsConnectionOptions> {
+    const normalizedCookie = typeof cookie === 'string' ? cookie.trim() : '';
+    if (!normalizedCookie) {
+      throw new Error(`房间 ${roomId} 缺少可用 Cookie，无法获取内置鉴权信息`);
+    }
+
+    const currentConfig = this.configManager.getConfig();
+    const apiClient = new BilibiliApiClient({
+      cookie: normalizedCookie,
+      fetch: currentConfig.fetchImpl
+    });
+
+    const danmuInfo = await apiClient.xliveGetDanmuInfo({ id: roomId });
+    const parsedConfig = parseLiveConfig(danmuInfo.data);
+    const roomInit = await apiClient.liveRoomInit({ id: roomId });
+    const resolvedRoomIdRaw = roomInit.data?.room_id;
+    const resolvedRoomId = typeof resolvedRoomIdRaw === 'number' ? resolvedRoomIdRaw : Number(resolvedRoomIdRaw);
+    if (!Number.isFinite(resolvedRoomId) || resolvedRoomId <= 0) {
+      throw new Error(`房间 ${roomId} 获取内置鉴权信息失败: room_id 无效`);
+    }
+
+    return {
+      ...options,
+      ...parsedConfig,
+      roomId: resolvedRoomId,
+      uid: options.uid,
+      buvid: options.buvid,
+      protover: options.protover ?? 3
     };
   }
 
@@ -988,6 +1060,7 @@ export class DanmakuClient extends EventEmitter {
 
     liveWS.addEventListener('CONNECT_SUCCESS', ({ data }: any) => {
       this.logger.debug(`房间 ${roomId} CONNECT_SUCCESS`, data);
+      this.markRecordingSessionStarted(roomId);
     });
 
     liveWS.addEventListener('HEARTBEAT_REPLY', ({ data }: any) => {
@@ -1007,6 +1080,12 @@ export class DanmakuClient extends EventEmitter {
       const code = typeof event?.code === 'number' ? event.code : -1;
       const reason = typeof event?.reason === 'string' ? event.reason : '';
       this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
+      const status = this.statusManager?.getStreamerStatus(roomId);
+      this.markRecordingSessionClosed(
+        roomId,
+        status?.isLive === false ? 'record_end' : 'record_interrupt',
+        status?.isLive === false ? '录制结束' : '录制中断'
+      );
       this.connections.delete(roomId);
       this.emit('disconnected', roomId);
       this.statusManager?.refreshNow();
@@ -1197,6 +1276,24 @@ export class DanmakuClient extends EventEmitter {
     this.applyRuntimeTunings(this.configManager.getConfig());
     this.initializeManagers();
     await this.refreshRecordingRooms();
+  }
+
+  private async ensureCookieReadyForStartup(): Promise<void> {
+    if (this.liveWsConfigProvider || this.hasAvailableCookie()) {
+      return;
+    }
+
+    if (this.cookieManager) {
+      this.logger.info('当前无可用 Cookie，正在尝试从 CookieCloud 拉取...');
+      const updated = await this.cookieManager.updateCookies();
+      if (updated && this.hasAvailableCookie()) {
+        return;
+      }
+
+      throw new Error('CookieCloud 未返回可用的 Bilibili Cookie，无法启动弹幕客户端');
+    }
+
+    throw new Error('未提供可用的 Bilibili Cookie，无法启动弹幕客户端；请先配置本地 Cookie 或 CookieCloud');
   }
 
   private async acquireRuntimeLock(): Promise<void> {
@@ -1459,8 +1556,11 @@ export class DanmakuClient extends EventEmitter {
       const changed = !this.areRoomIdsEqual(this.recordingRoomIds, roomIds);
       this.recordingRoomIds = roomIds;
       this.recordingRoomsTag = resolvedTag;
+      this.statusManager?.updateRecordingRooms(this.recordingRoomIds);
       if (changed) {
         this.logger.info('录制房间列表已更新', { roomCount: roomIds.length });
+        this.updateConnections();
+        this.statusManager?.refreshNow();
       }
     } catch (error) {
       this.recordError(error, { category: 'runtime-sync', code: 'RECORDING_ROOMS_SYNC_FAILED', recoverable: true });
@@ -1476,6 +1576,86 @@ export class DanmakuClient extends EventEmitter {
     this.recordingRoomsRefreshing = false;
     this.recordingRoomsTag = null;
     this.recordingRoomIds = [];
+    this.statusManager?.updateRecordingRooms([]);
+  }
+
+  private handleStreamerStatusTransitions(statuses: StreamerStatus[]): void {
+    const nextStates = new Map<number, boolean>();
+
+    for (const status of statuses) {
+      nextStates.set(status.roomId, status.isLive);
+      const previous = this.lastStreamerLiveStates.get(status.roomId);
+      if (previous === true && !status.isLive) {
+        this.markRecordingSessionClosed(status.roomId, 'record_end', '录制结束');
+      }
+    }
+
+    this.lastStreamerLiveStates = nextStates;
+  }
+
+  private markRecordingSessionStarted(roomId: number, timestamp: number = Date.now()): void {
+    if (roomId <= 0 || this.recordingSessions.has(roomId)) {
+      return;
+    }
+
+    this.recordingSessions.add(roomId);
+    this.enqueueRecorderEvent(roomId, 'record_start', '录制开始', timestamp);
+  }
+
+  private markRecordingSessionClosed(
+    roomId: number,
+    eventType: 'record_interrupt' | 'record_end',
+    eventMessage: string,
+    timestamp: number = Date.now()
+  ): void {
+    if (roomId <= 0 || !this.recordingSessions.has(roomId)) {
+      return;
+    }
+
+    this.recordingSessions.delete(roomId);
+    this.enqueueRecorderEvent(roomId, eventType, eventMessage, timestamp);
+  }
+
+  private enqueueRecorderEvent(
+    roomId: number,
+    eventType: RecorderEventType,
+    eventMessage: string,
+    timestamp: number = Date.now()
+  ): void {
+    const message: DanmakuMessage = {
+      roomId,
+      cmd: `__${eventType.toUpperCase()}__`,
+      data: undefined,
+      raw: '',
+      timestamp,
+      recorderEventType: eventType,
+      recorderEventMessage: eventMessage
+    };
+
+    this.enqueueMessage(message);
+  }
+
+  private async flushOpenRecordingSessionsOnStop(): Promise<void> {
+    if (!this.isRunning || this.recordingSessions.size === 0) {
+      return;
+    }
+
+    for (const roomId of Array.from(this.recordingSessions)) {
+      this.markRecordingSessionClosed(roomId, 'record_interrupt', '录制中断');
+    }
+
+    if (!this.runtimeConnection?.getConnectionState()) {
+      return;
+    }
+
+    const maxFlushRounds = Math.max(1, Math.ceil(this.pendingMessages.length / this.messageBatchSize) + 1);
+    for (let i = 0; i < maxFlushRounds; i++) {
+      if (this.pendingMessages.length === 0) {
+        break;
+      }
+
+      await this.flushPendingMessages();
+    }
   }
 
   private enqueueMessage(message: DanmakuMessage): void {
@@ -1498,7 +1678,9 @@ export class DanmakuClient extends EventEmitter {
       // 队列上行仅依赖 roomId/raw/timestamp，避免长时间持有原始 data 树导致内存上涨。
       data: undefined,
       raw: message.raw,
-      timestamp: message.timestamp
+      timestamp: message.timestamp,
+      recorderEventType: message.recorderEventType,
+      recorderEventMessage: message.recorderEventMessage
     };
 
     this.pendingMessages.push({
@@ -1848,6 +2030,7 @@ export class DanmakuClient extends EventEmitter {
       this.logger.child('StatusManager')
     );
     this.statusManager.updateServerRooms(this.serverAssignedRooms);
+    this.statusManager.updateRecordingRooms(this.recordingRoomIds);
     this.setupStatusManagerEvents();
     if (this.isRunning && !this.isStopping) {
       this.statusManager.start();
@@ -1870,7 +2053,7 @@ export class DanmakuClient extends EventEmitter {
       config.runtimeUrl,
       config.autoReconnect,
       config.reconnectInterval,
-      config.runtimeHeaders,
+      this.buildRuntimeHeaders(config),
       this.logger.child('Runtime')
     );
     this.setupRuntimeEvents();
@@ -2018,6 +2201,22 @@ export class DanmakuClient extends EventEmitter {
     return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
   }
 
+  private buildRuntimeHeaders(config: DanmakuConfig): Record<string, string> | undefined {
+    const headers = { ...(config.runtimeHeaders ?? {}) };
+    const token = typeof config.accountToken === 'string' ? config.accountToken.trim() : '';
+    const clientId = typeof this.clientId === 'string' ? this.clientId.trim() : '';
+
+    if (!headers.Token && token) {
+      headers.Token = token;
+    }
+
+    if (!headers.ClientId && clientId) {
+      headers.ClientId = clientId;
+    }
+
+    return Object.keys(headers).length > 0 ? headers : undefined;
+  }
+
   private areRoomIdsEqual(left: number[], right: number[]): boolean {
     if (left.length !== right.length) {
       return false;
@@ -2089,3 +2288,6 @@ export class DanmakuClient extends EventEmitter {
     return super.emit(event, ...args);
   }
 }
+
+
+

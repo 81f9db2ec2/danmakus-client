@@ -11,7 +11,6 @@ import {
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
@@ -43,7 +42,7 @@ const areaOptions = computed(() => {
   return query ? allAreas.filter(a => a.toLowerCase().includes(query)) : allAreas;
 });
 
-const assignNumber = (field: keyof Pick<CoreControlConfigDto, 'maxConnections' | 'statusCheckInterval' | 'reconnectInterval' | 'cookieRefreshInterval'>, raw: string | number) => {
+const assignNumber = (field: keyof Pick<CoreControlConfigDto, 'maxConnections' | 'statusCheckInterval' | 'reconnectInterval'>, raw: string | number) => {
   const value = Number(raw);
   if (!Number.isFinite(value)) return;
   coreConfig.value[field] = value as never;
@@ -245,59 +244,6 @@ const emit = defineEmits<{
           </div>
         </CardContent>
       </Card>
-
-      <!-- CookieCloud settings -->
-      <Collapsible>
-        <Card class="bg-card/60">
-          <CardHeader class="pb-3">
-            <div class="flex items-center justify-between">
-              <div>
-                <div class="flex items-center gap-1.5">
-                  <CardTitle class="text-sm">CookieCloud 设置</CardTitle>
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <Info class="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent class="max-w-xs">
-                      <p>CookieCloud 可以自动同步你的 Bilibili Cookie，避免手动更新。如果你不知道这是什么，可以跳过此设置</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <CardDescription>自动同步 Cookie（选填）</CardDescription>
-              </div>
-              <CollapsibleTrigger as-child>
-                <Button variant="ghost" size="sm" class="text-xs">展开 / 收起</Button>
-              </CollapsibleTrigger>
-            </div>
-          </CardHeader>
-          <CollapsibleContent>
-            <CardContent class="space-y-3">
-              <div class="space-y-1">
-                <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
-                <Input :model-value="coreConfig.cookieCloudHost ?? ''" placeholder="cookie.danmakus.com"
-                  title="CookieCloud 服务器地址" @update:model-value="coreConfig.cookieCloudHost = String($event)" />
-              </div>
-              <div class="grid gap-3 sm:grid-cols-3">
-                <div class="space-y-1">
-                  <label class="text-xs font-medium text-muted-foreground">Key</label>
-                  <Input :model-value="coreConfig.cookieCloudKey ?? ''" placeholder="Key"
-                    title="CookieCloud 密钥" @update:model-value="coreConfig.cookieCloudKey = String($event)" />
-                </div>
-                <div class="space-y-1">
-                  <label class="text-xs font-medium text-muted-foreground">密码</label>
-                  <Input :model-value="coreConfig.cookieCloudPassword ?? ''" type="password" placeholder="密码"
-                    title="CookieCloud 加密密码" @update:model-value="coreConfig.cookieCloudPassword = String($event)" />
-                </div>
-                <div class="space-y-1">
-                  <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
-                  <Input :model-value="coreConfig.cookieRefreshInterval" type="number" min="60" placeholder="3600"
-                    title="自动同步 Cookie 的时间间隔" @update:model-value="assignNumber('cookieRefreshInterval', $event)" />
-                </div>
-              </div>
-            </CardContent>
-          </CollapsibleContent>
-        </Card>
-      </Collapsible>
 
       <!-- Recording manager -->
       <Card class="bg-card/60">

@@ -44,6 +44,7 @@ export class StreamerStatusManager {
   private fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   private statusApiUrl: string;
   private serverRooms: number[] = [];
+  private recordingRooms: number[] = [];
   private lastManualRefreshAt = 0;
 
   constructor(
@@ -263,12 +264,29 @@ export class StreamerStatusManager {
    * 根据直播状态获取应该连接的房间
    */
   getRoomsToConnect(
+    recordingRooms: number[],
     serverAssignedRooms: number[],
     maxConnections: number
-  ): { roomId: number; priority: 'server' }[] {
-    const rooms: { roomId: number; priority: 'server' }[] = [];
+  ): { roomId: number; priority: 'high' | 'server' }[] {
+    const rooms: { roomId: number; priority: 'high' | 'server' }[] = [];
+    const normalizedRecordingRooms = Array.from(new Set(
+      recordingRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
+    ));
+    const normalizedServerRooms = Array.from(new Set(
+      serverAssignedRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
+    ));
 
-    for (const roomId of serverAssignedRooms) {
+    for (const roomId of normalizedRecordingRooms) {
+      if (rooms.length >= maxConnections) {
+        break;
+      }
+      const status = this.statusCache.get(roomId);
+      if (status?.isLive) {
+        rooms.push({ roomId, priority: 'high' });
+      }
+    }
+
+    for (const roomId of normalizedServerRooms) {
       if (rooms.length >= maxConnections) {
         break;
       }
@@ -291,8 +309,15 @@ export class StreamerStatusManager {
     this.serverRooms = Array.from(new Set(normalized));
   }
 
+  updateRecordingRooms(rooms: number[]): void {
+    const normalized = rooms
+      .map(r => Number(r))
+      .filter(r => Number.isFinite(r) && r > 0);
+    this.recordingRooms = Array.from(new Set(normalized));
+  }
+
   private getTrackedRoomIds(): number[] {
-    const all = [...this.serverRooms]
+    const all = [...this.recordingRooms, ...this.serverRooms]
       .map(r => Number(r))
       .filter(r => Number.isFinite(r) && r > 0);
     return Array.from(new Set(all));

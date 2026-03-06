@@ -30,7 +30,31 @@ let trayCurrentHealthState: TrayHealthState | null = null;
 const DEFAULT_LOCAL_APP_CONFIG: LocalAppConfigDto = {
   autoStart: false,
   startMinimized: false,
-  minimizeToTray: false
+  minimizeToTray: false,
+  cookieCloudKey: '',
+  cookieCloudPassword: '',
+  cookieCloudHost: '',
+  cookieRefreshInterval: 3600
+};
+
+const normalizeCookieText = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim();
+};
+
+const normalizeCookieHost = (value: unknown): string => {
+  const host = normalizeCookieText(value);
+  return host ? host.replace(/\/+$/, '') : '';
+};
+
+const normalizeCookieRefreshInterval = (value: unknown): number => {
+  const next = Number(value);
+  if (!Number.isFinite(next) || next <= 0) {
+    return DEFAULT_LOCAL_APP_CONFIG.cookieRefreshInterval;
+  }
+  return Math.max(60, Math.floor(next));
 };
 
 const normalizeConfig = (value: unknown): LocalAppConfigDto => {
@@ -41,7 +65,11 @@ const normalizeConfig = (value: unknown): LocalAppConfigDto => {
   return {
     autoStart: Boolean(raw.autoStart),
     startMinimized: Boolean(raw.startMinimized),
-    minimizeToTray: Boolean(raw.minimizeToTray)
+    minimizeToTray: Boolean(raw.minimizeToTray),
+    cookieCloudKey: normalizeCookieText(raw.cookieCloudKey),
+    cookieCloudPassword: normalizeCookieText(raw.cookieCloudPassword),
+    cookieCloudHost: normalizeCookieHost(raw.cookieCloudHost),
+    cookieRefreshInterval: normalizeCookieRefreshInterval(raw.cookieRefreshInterval)
   };
 };
 
