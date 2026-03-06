@@ -3,7 +3,7 @@
 `danmakus-core` 是 `danmakus-client` 的采集内核，负责：
 
 - 连接 Bilibili 直播间并解析消息
-- 通过 UserHub 上行消息
+- 通过 Runtime API 上行消息
 - 轮询主播状态并维护连接池
 - 与账号中心同步核心运行态
 
@@ -12,7 +12,7 @@
 - CLI 以账号中心配置为主（需要 `Token`）。
 - 主播列表、连接参数默认从 `/api/v2/account/core-config` 拉取。
 - Cookie 策略固定为 `BiliLocal > CookieCloud`（本地扫码 Cookie 优先）。
-- SignalR 默认地址：`https://ukamnads.icu/api/v2/user-hub`，可通过参数覆盖。
+- Runtime 默认地址：`https://ukamnads.icu/api/v2/core-runtime`，可通过参数覆盖。
 
 ## CLI 使用
 
@@ -33,8 +33,8 @@ danmakus --token "your-account-token"
 # 使用 CookieCloud
 danmakus --token "your-account-token" -k "cookie-key" -p "cookie-password"
 
-# 本地联调：覆盖 UserHub 地址
-danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/user-hub"
+# 本地联调：覆盖 Runtime API 地址
+danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runtime"
 ```
 
 ### CLI 参数
@@ -44,7 +44,7 @@ danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/user-hub"
 | `--max-connections <number>` | `-m` | 最大连接数，范围 `1-10` | `5` |
 | `--token <token>` | `-t` | 账号 Token（必填） | - |
 | `--account-api <url>` | - | 账号 API 地址 | `https://ukamnads.icu/api/v2/account` |
-| `--signalr-url <url>` | `-s` | UserHub 地址 | `https://ukamnads.icu/api/v2/user-hub` |
+| `--runtime-url <url>` | `-s` | Runtime API 地址 | `https://ukamnads.icu/api/v2/core-runtime` |
 | `--cookie-key <key>` | `-k` | CookieCloud Key | - |
 | `--cookie-password <password>` | `-p` | CookieCloud Password | - |
 | `--cookie-host <host>` | - | CookieCloud 服务地址 | `http://localhost:8088` |
@@ -58,7 +58,7 @@ danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/user-hub"
 | --- | --- |
 | `DANMAKUS_TOKEN` | 等价于 `--token` |
 | `DANMAKUS_ACCOUNT_API` | 等价于 `--account-api` 默认值 |
-| `DANMAKUS_SIGNALR_URL` | 等价于 `--signalr-url` 默认值 |
+| `DANMAKUS_RUNTIME_URL` | 等价于 `--runtime-url` 默认值 |
 
 ## 作为库使用
 
@@ -67,7 +67,7 @@ import { DanmakuClient } from 'danmakus-core';
 
 const client = new DanmakuClient({
   maxConnections: 5,
-  signalrUrl: 'https://ukamnads.icu/api/v2/user-hub',
+  runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
   accountToken: process.env.DANMAKUS_TOKEN,
   accountApiBase: 'https://ukamnads.icu/api/v2/account',
   streamers: [
@@ -98,7 +98,7 @@ interface StreamerConfig {
 interface DanmakuConfig {
   maxConnections: number;
   streamers: StreamerConfig[];
-  signalrUrl: string;
+  runtimeUrl: string;
   accountToken?: string;
   accountApiBase?: string;
   cookieProvider?: () => string | null | undefined;

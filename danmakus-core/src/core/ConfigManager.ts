@@ -3,12 +3,40 @@ import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types';
 export class ConfigManager {
   private config: DanmakuConfig;
 
+  private normalizeCookieSecret(value?: string | null): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private normalizeCookieHost(value?: string | null): string {
+    const fallback = this.config?.cookieCloudHost || 'https://cookie.danmakus.com';
+    if (typeof value !== 'string') {
+      return fallback;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return fallback;
+    }
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  private normalizeCookieRefreshInterval(value: number | null | undefined): number {
+    const next = Number(value);
+    if (!Number.isFinite(next) || next <= 0) {
+      return this.config?.cookieRefreshInterval || 3600;
+    }
+    return Math.max(60, Math.floor(next));
+  }
+
   constructor(options: Partial<DanmakuConfig> = {}) {
     this.config = {
       maxConnections: 10,
-      cookieCloudHost: 'http://localhost:8088',
-      signalrUrl: 'https://ukamnads.icu/api/v2/user-hub',
-      signalrHeaders: options.signalrHeaders,
+      cookieCloudHost: 'https://cookie.danmakus.com',
+      runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
+      runtimeHeaders: options.runtimeHeaders,
       cookieRefreshInterval: 3600, // 1小时
       autoReconnect: true,
       reconnectInterval: 5000, // 5秒
@@ -21,7 +49,7 @@ export class ConfigManager {
       messageRetryBaseDelay: 1000,
       messageRetryMaxDelay: 30000,
       messageRetryMaxAttempts: 6,
-      batchUploadSize: 20,
+      batchUploadSize: 100,
       heartbeatInterval: 5000,
       lockAcquireRetryCount: 4,
       lockAcquireRetryDelay: 1200,
@@ -42,23 +70,23 @@ export class ConfigManager {
     }
 
     if (options.cookieKey) {
-      this.config.cookieCloudKey = options.cookieKey;
+      this.config.cookieCloudKey = this.normalizeCookieSecret(options.cookieKey);
     }
 
     if (options.cookiePassword) {
-      this.config.cookieCloudPassword = options.cookiePassword;
+      this.config.cookieCloudPassword = this.normalizeCookieSecret(options.cookiePassword);
     }
 
     if (options.cookieHost) {
-      this.config.cookieCloudHost = options.cookieHost;
+      this.config.cookieCloudHost = this.normalizeCookieHost(options.cookieHost);
     }
 
     if (options.statusCheckInterval !== undefined) {
       this.config.statusCheckInterval = Math.max(10, options.statusCheckInterval);
     }
 
-    if (options.signalrUrl) {
-      this.config.signalrUrl = options.signalrUrl;
+    if (options.runtimeUrl) {
+      this.config.runtimeUrl = options.runtimeUrl;
     }
 
     if (options.token) {
@@ -80,17 +108,17 @@ export class ConfigManager {
     this.config = {
       ...this.config,
       maxConnections: remote.maxConnections,
-      // 如果本地配置了 localhost 开发环境，则忽略远程的 SignalR URL 配置
-      signalrUrl: (this.config.signalrUrl.includes('localhost') || this.config.signalrUrl.includes('127.0.0.1'))
-        ? this.config.signalrUrl
-        : (remote.signalrUrl || this.config.signalrUrl),
+      // 如果本地配置了 localhost 开发环境，则忽略远程的 Runtime URL 配置
+      runtimeUrl: (this.config.runtimeUrl.includes('localhost') || this.config.runtimeUrl.includes('127.0.0.1'))
+        ? this.config.runtimeUrl
+        : (remote.runtimeUrl || this.config.runtimeUrl),
       autoReconnect: remote.autoReconnect,
       reconnectInterval: remote.reconnectInterval,
       statusCheckInterval: remote.statusCheckInterval,
-      cookieCloudKey: remote.cookieCloudKey ?? undefined,
-      cookieCloudPassword: remote.cookieCloudPassword ?? undefined,
-      cookieCloudHost: remote.cookieCloudHost ?? undefined,
-      cookieRefreshInterval: remote.cookieRefreshInterval,
+      cookieCloudKey: this.normalizeCookieSecret(remote.cookieCloudKey),
+      cookieCloudPassword: this.normalizeCookieSecret(remote.cookieCloudPassword),
+      cookieCloudHost: this.normalizeCookieHost(remote.cookieCloudHost),
+      cookieRefreshInterval: this.normalizeCookieRefreshInterval(remote.cookieRefreshInterval),
       requestServerRooms: remote.requestServerRooms,
       allowedAreas: Array.isArray(remote.allowedAreas) ? [...remote.allowedAreas] : [],
       allowedParentAreas: Array.isArray(remote.allowedParentAreas) ? [...remote.allowedParentAreas] : [],
@@ -103,8 +131,8 @@ export class ConfigManager {
    * 验证配置有效性
    */
   validate(): boolean {
-    if (!this.config.signalrUrl) {
-      throw new Error('SignalR URL 必须设置');
+    if (!this.config.runtimeUrl) {
+      throw new Error('Runtime URL 必须设置');
     }
 
     if (this.config.maxConnections < 1 || this.config.maxConnections > 10) {
@@ -137,6 +165,9 @@ export class ConfigManager {
    * 是否配置了CookieCloud
    */
   hasCookieCloudConfig(): boolean {
-    return !!(this.config.cookieCloudKey && this.config.cookieCloudPassword);
+    return !!(
+      this.normalizeCookieSecret(this.config.cookieCloudKey)
+      && this.normalizeCookieSecret(this.config.cookieCloudPassword)
+    );
   }
 }

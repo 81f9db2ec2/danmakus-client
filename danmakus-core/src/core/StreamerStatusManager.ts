@@ -1,18 +1,18 @@
 import { StreamerStatus } from '../types';
 import { ScopedLogger } from './Logger';
 
-const buildStreamerStatusApiUrl = (hubUrl: string): string => {
+const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
   try {
-    const parsed = new URL(hubUrl);
+    const parsed = new URL(runtimeUrl);
 
-    if (parsed.pathname.endsWith('/api/v2/user-hub')) {
-      parsed.pathname = parsed.pathname.replace(/\/api\/v2\/user-hub$/, '/api/v2/streamer-status');
+    if (parsed.pathname.endsWith('/api/v2/core-runtime')) {
+      parsed.pathname = parsed.pathname.replace(/\/api\/v2\/core-runtime$/, '/api/v2/streamer-status');
       parsed.search = '';
       return parsed.toString();
     }
 
-    if (parsed.pathname.endsWith('/danmakuHub')) {
-      parsed.pathname = parsed.pathname.replace(/\/danmakuHub$/, '/api/streamer-status');
+    if (parsed.pathname.endsWith('/api/core-runtime')) {
+      parsed.pathname = parsed.pathname.replace(/\/api\/core-runtime$/, '/api/streamer-status');
       parsed.search = '';
       return parsed.toString();
     }
@@ -27,12 +27,12 @@ const buildStreamerStatusApiUrl = (hubUrl: string): string => {
     parsed.search = '';
     return parsed.toString();
   } catch {
-    const normalized = hubUrl.trim();
-    if (/\/api\/v2\/user-hub\b/.test(normalized)) {
-      return normalized.replace(/\/api\/v2\/user-hub\b/, '/api/v2/streamer-status');
+    const normalized = runtimeUrl.trim();
+    if (/\/api\/v2\/core-runtime\b/.test(normalized)) {
+      return normalized.replace(/\/api\/v2\/core-runtime\b/, '/api/v2/streamer-status');
     }
-    if (/\/danmakuHub\b/.test(normalized)) {
-      return normalized.replace(/\/danmakuHub\b/, '/api/streamer-status');
+    if (/\/api\/core-runtime\b/.test(normalized)) {
+      return normalized.replace(/\/api\/core-runtime\b/, '/api/streamer-status');
     }
     return normalized;
   }
@@ -48,12 +48,12 @@ export class StreamerStatusManager {
 
   constructor(
     private checkInterval: number = 30, // 秒
-    signalrUrl: string,
+    runtimeUrl: string,
     fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
     private logger: ScopedLogger = new ScopedLogger('StreamerStatusManager')
   ) {
     this.fetch = fetchImpl || globalThis.fetch.bind(globalThis);
-    this.statusApiUrl = buildStreamerStatusApiUrl(signalrUrl);
+    this.statusApiUrl = buildStreamerStatusApiUrl(runtimeUrl);
   }
 
   /**

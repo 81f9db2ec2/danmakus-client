@@ -10,7 +10,7 @@ export class CookieManager {
   constructor(
     private key: string,
     private password: string,
-    private host: string = 'http://localhost:8088',
+    private host: string = 'https://cookie.danmakus.com',
     private refreshInterval: number = 3600, // 秒
     fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
   ) {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Activity,
+  AppWindow,
   CircleUserRound,
   LayoutDashboard,
   LogOut,
@@ -18,7 +19,7 @@ defineProps<{
   currentPage: string;
   userInfo: UserInfo | null;
   isRunning: boolean;
-  signalrConnected: boolean;
+  runtimeConnected: boolean;
   messageCount: number;
   connectedRoomsCount: number;
 }>();
@@ -31,6 +32,7 @@ const emit = defineEmits<{
 const navItems = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard, tooltip: '查看核心运行状态和数据统计' },
   { key: 'settings', label: '核心配置', icon: Settings, tooltip: '配置连接参数、分区过滤和录制管理' },
+  { key: 'app', label: '应用设置', icon: AppWindow, tooltip: '管理托盘、启动项和应用更新' },
   { key: 'bilibili', label: 'Bilibili', icon: Tv2, tooltip: '登录 Bilibili 账号同步 Cookie' },
   { key: 'account', label: '账户', icon: CircleUserRound, tooltip: '查看账户信息和贡献统计' },
 ];
@@ -87,11 +89,11 @@ const navItems = [
           <span class="text-xs text-muted-foreground">{{ connectedRoomsCount }} 房间</span>
         </div>
         <Badge
-          v-if="signalrConnected"
+          v-if="runtimeConnected"
           variant="outline"
           class="mt-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-400"
         >
-          SignalR 已连接
+          Runtime 已连接
         </Badge>
       </div>
     </div>

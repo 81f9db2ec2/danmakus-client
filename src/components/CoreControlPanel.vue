@@ -4,23 +4,38 @@ import { toast } from 'vue-sonner';
 import {
   addRecording,
   getCoreConfig,
+  getCoreHeartbeatTags,
   getDanmakuAreas,
   getRecordingList,
   getUserInfo,
   removeRecording,
   syncCoreRuntimeState,
   updateCoreConfig,
-  updateRecordingSetting
+  updateRecordingSetting,
+  type CoreSyncTagSnapshot
 } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
 import { biliNavProfileState, startNavProfileAutoRefresh, stopNavProfileAutoRefresh } from '../services/bilibili';
-import { SIGNALR_URL } from '../services/env';
+import { RUNTIME_URL } from '../services/env';
 import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http';
+import {
+  applyAutoStartEnabled,
+  hideMainWindow,
+  isDesktopRuntime,
+  loadLocalAppConfig,
+  readAutoStartEnabled,
+  registerCloseToTrayHandler,
+  saveLocalAppConfig,
+  syncTrayHealthFromRuntime,
+  setupTrayInTs,
+  showMainWindow
+} from '../services/localApp';
 import { checkForUpdate, installLatestUpdate, updaterEnabled } from '../services/updater';
-import type { CoreControlConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
+import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
 import AppSidebar from './AppSidebar.vue';
 import BilibiliLogin from './BilibiliLogin.vue';
 import CoreControlAccountTab from './core-control/CoreControlAccountTab.vue';
+import CoreControlAppTab from './core-control/CoreControlAppTab.vue';
 import CoreControlDashboardTab from './core-control/CoreControlDashboardTab.vue';
 import CoreControlLoginCard from './core-control/CoreControlLoginCard.vue';
 import CoreControlSettingsTab from './core-control/CoreControlSettingsTab.vue';
@@ -35,10 +50,11 @@ const accountNameForDisplay = computed(() => {
 });
 const accountIdForDisplay = computed<number | null>(() => userInfo.value?.id ?? null);
 const currentPage = ref('dashboard');
-const signalrFixedUrl = SIGNALR_URL;
+const isDesktopApp = isDesktopRuntime();
+const runtimeFixedUrl = RUNTIME_URL;
 const coreConfig = reactive<CoreControlConfigDto>({
   maxConnections: 5,
-  signalrUrl: signalrFixedUrl,
+  runtimeUrl: runtimeFixedUrl,
   autoReconnect: true,
   reconnectInterval: 5000,
   statusCheckInterval: 30,
@@ -51,6 +67,7 @@ const coreConfig = reactive<CoreControlConfigDto>({
   allowedAreas: [],
   allowedParentAreas: []
 });
+const localConfig = reactive<LocalAppConfigDto>(loadLocalAppConfig());
 
 const runtimeState = danmakuService.state;
 const availableAreas = ref<Record<string, string[]>>({});
@@ -69,13 +86,19 @@ const isUpdaterSupported = updaterEnabled();
 const checkingAppUpdate = ref(false);
 const installingAppUpdate = ref(false);
 const availableUpdateVersion = ref<string | null>(null);
+const showingMainWindow = ref(false);
+const hidingToTray = ref(false);
 let remotePollTimer: number | undefined;
-const recordingRefreshIntervalMs = 15_000;
-let lastRecordingRefreshAt = 0;
+let remoteHeartbeatPolling = false;
+const remoteConfigTag = ref<string | null>(null);
+const remoteClientsTag = ref<string | null>(null);
+const remoteRecordingTag = ref<string | null>(null);
 const coreConfigAutoSaveThrottleMs = 1_200;
 let coreConfigAutoSaveTimer: number | undefined;
 let coreConfigAutoSavePending = false;
 let syncingCoreConfigFromRemote = false;
+let syncingAutoStartFromDesktop = false;
+let closeToTrayUnlisten: (() => void) | null = null;
 
 const localClientId = danmakuService.getClientId();
 const remoteClients = computed(() => runtimeState.remoteClients);
@@ -129,19 +152,13 @@ const ensureToken = () => {
 const startRemotePoll = () => {
   if (remotePollTimer) return;
   remotePollTimer = window.setInterval(() => {
-    if (!isLoggedIn.value || refreshingState.value) return;
-    void (async () => {
-      await refreshRuntimeState();
-      const now = Date.now();
-      if (now - lastRecordingRefreshAt < recordingRefreshIntervalMs) return;
-      if (refreshingRecordings.value || addingRecording.value || removingRecordingUid.value !== null || updatingRecordingUid.value !== null) return;
-      lastRecordingRefreshAt = now;
-      await refreshRecordingList();
-    })();
+    if (!isLoggedIn.value || remoteHeartbeatPolling) return;
+    void pollRemoteHeartbeatTags();
   }, 5000);
 };
 
 const stopRemotePoll = () => {
+  remoteHeartbeatPolling = false;
   if (!remotePollTimer) return;
   clearInterval(remotePollTimer);
   remotePollTimer = undefined;
@@ -155,7 +172,7 @@ const clearCoreConfigAutoSaveTimer = () => {
 
 const buildCoreConfigPayload = (): CoreControlConfigDto => ({
   ...coreConfig,
-  signalrUrl: coreConfig.signalrUrl,
+  runtimeUrl: coreConfig.runtimeUrl,
   allowedAreas: [...coreConfig.allowedAreas],
   allowedParentAreas: [...coreConfig.allowedParentAreas],
   streamers: []
@@ -166,7 +183,8 @@ const persistCoreConfig = async (silentSuccess: boolean) => {
   if (savingConfig.value) return;
   try {
     savingConfig.value = true;
-    await updateCoreConfig(buildCoreConfigPayload());
+    const result = await updateCoreConfig(buildCoreConfigPayload());
+    applyRemoteSyncTagSnapshot(result.tags);
     if (!silentSuccess) {
       toast.success('配置已保存');
     }
@@ -211,7 +229,7 @@ const syncConfig = (config: CoreControlConfigDto) => {
   syncingCoreConfigFromRemote = true;
   try {
     coreConfig.maxConnections = config.maxConnections;
-    coreConfig.signalrUrl = config.signalrUrl || signalrFixedUrl;
+    coreConfig.runtimeUrl = config.runtimeUrl || runtimeFixedUrl;
     coreConfig.autoReconnect = config.autoReconnect;
     coreConfig.reconnectInterval = config.reconnectInterval;
     coreConfig.statusCheckInterval = config.statusCheckInterval;
@@ -245,14 +263,120 @@ const syncRecordingList = (items: RecordingInfoDto[]) => {
   recordings.value = sortRecordings(items);
 };
 
+const applyRemoteSyncTagSnapshot = (tags: CoreSyncTagSnapshot) => {
+  if (tags.configTag !== null) {
+    remoteConfigTag.value = tags.configTag;
+  }
+  if (tags.clientsTag !== null) {
+    remoteClientsTag.value = tags.clientsTag;
+  }
+  if (tags.recordingTag !== null) {
+    remoteRecordingTag.value = tags.recordingTag;
+  }
+};
+
+const fetchRuntimeStateInternal = async () => {
+  const tags = await danmakuService.refreshRemoteState();
+  applyRemoteSyncTagSnapshot(tags);
+};
+
+const syncCoreConfigFromServer = async () => {
+  if (!token.value) return;
+  const result = await getCoreConfig();
+  syncConfig(result.data);
+  applyRemoteSyncTagSnapshot(result.tags);
+};
+
+const fetchRecordingListInternal = async () => {
+  if (!token.value) return;
+  const result = await getRecordingList();
+  syncRecordingList(result.data);
+  applyRemoteSyncTagSnapshot(result.tags);
+};
+
 const refreshRecordingList = async () => {
   if (!ensureToken()) return;
   refreshingRecordings.value = true;
   try {
-    const data = await getRecordingList();
-    syncRecordingList(data);
+    await fetchRecordingListInternal();
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '刷新录制列表失败');
   } finally {
     refreshingRecordings.value = false;
+  }
+};
+
+const pollRemoteHeartbeatTags = async () => {
+  if (!token.value || remoteHeartbeatPolling) {
+    return;
+  }
+
+  remoteHeartbeatPolling = true;
+  try {
+    const tags = await getCoreHeartbeatTags();
+
+    if (
+      tags.configTag !== null
+      && remoteConfigTag.value !== null
+      && tags.configTag !== remoteConfigTag.value
+      && !savingConfig.value
+      && !coreConfigAutoSavePending
+    ) {
+      try {
+        await syncCoreConfigFromServer();
+        remoteConfigTag.value = tags.configTag;
+      } catch (error) {
+        console.error(error);
+      }
+    } else if (remoteConfigTag.value === null && tags.configTag !== null) {
+      remoteConfigTag.value = tags.configTag;
+    }
+
+    if (
+      tags.clientsTag !== null
+      && remoteClientsTag.value !== null
+      && tags.clientsTag !== remoteClientsTag.value
+      && !refreshingState.value
+    ) {
+      refreshingState.value = true;
+      try {
+        await fetchRuntimeStateInternal();
+        remoteClientsTag.value = tags.clientsTag;
+      } catch (error) {
+        console.error(error);
+      } finally {
+        refreshingState.value = false;
+      }
+    } else if (remoteClientsTag.value === null && tags.clientsTag !== null) {
+      remoteClientsTag.value = tags.clientsTag;
+    }
+
+    if (
+      tags.recordingTag !== null
+      && remoteRecordingTag.value !== null
+      && tags.recordingTag !== remoteRecordingTag.value
+      && !refreshingRecordings.value
+      && !addingRecording.value
+      && removingRecordingUid.value === null
+      && updatingRecordingUid.value === null
+    ) {
+      refreshingRecordings.value = true;
+      try {
+        await fetchRecordingListInternal();
+        remoteRecordingTag.value = tags.recordingTag;
+      } catch (error) {
+        console.error(error);
+      } finally {
+        refreshingRecordings.value = false;
+      }
+    } else if (remoteRecordingTag.value === null && tags.recordingTag !== null) {
+      remoteRecordingTag.value = tags.recordingTag;
+    }
+  } catch (error) {
+    console.error(error);
+  } finally {
+    remoteHeartbeatPolling = false;
   }
 };
 
@@ -261,15 +385,17 @@ const loadProfile = async () => {
   try {
     loadingProfile.value = true;
     setAuthToken(token.value);
-    const [info, config, recordingData] = await Promise.all([
+    const [info, configResult, recordingResult] = await Promise.all([
       getUserInfo(),
       getCoreConfig(),
       getRecordingList()
     ]);
     userInfo.value = info;
     setServerLoggedIn(true);
-    syncConfig(config);
-    syncRecordingList(recordingData);
+    syncConfig(configResult.data);
+    syncRecordingList(recordingResult.data);
+    applyRemoteSyncTagSnapshot(configResult.tags);
+    applyRemoteSyncTagSnapshot(recordingResult.tags);
     try {
       availableAreas.value = await getDanmakuAreas();
     } catch (error) {
@@ -284,6 +410,9 @@ const loadProfile = async () => {
     console.error(error);
     userInfo.value = null;
     recordings.value = [];
+    remoteConfigTag.value = null;
+    remoteClientsTag.value = null;
+    remoteRecordingTag.value = null;
     setServerLoggedIn(false);
     stopRemotePoll();
     toast.error(error instanceof Error ? error.message : '加载失败');
@@ -393,12 +522,14 @@ const handleAddRecording = async (uid: number) => {
   }
   addingRecording.value = true;
   try {
-    const added = await addRecording(uid);
+    const result = await addRecording(uid);
+    const added = result.data;
     if (!recordings.value.some(item => item.channel.uId === added.channel.uId)) {
       syncRecordingList([...recordings.value, added]);
     } else {
       await refreshRecordingList();
     }
+    applyRemoteSyncTagSnapshot(result.tags);
     toast.success(`已添加录制主播: ${added.channel.uName || added.channel.uId}`);
   } catch (error) {
     console.error(error);
@@ -416,8 +547,9 @@ const handleRemoveRecording = async (uid: number) => {
   }
   removingRecordingUid.value = uid;
   try {
-    await removeRecording(uid);
+    const result = await removeRecording(uid);
     syncRecordingList(recordings.value.filter(item => item.channel.uId !== uid));
+    applyRemoteSyncTagSnapshot(result.tags);
     toast.success('已移除录制主播');
   } catch (error) {
     console.error(error);
@@ -436,12 +568,13 @@ const handleUpdateRecordingPublic = async (uid: number, isPublic: boolean) => {
 
   updatingRecordingUid.value = uid;
   try {
-    const changed = await updateRecordingSetting([
+    const result = await updateRecordingSetting([
       {
         id: uid,
         setting: { isPublic }
       }
     ]);
+    const changed = result.data;
 
     if (!changed.includes(uid)) {
       throw new Error('更新录制公开状态失败');
@@ -461,6 +594,7 @@ const handleUpdateRecordingPublic = async (uid: number, isPublic: boolean) => {
     });
 
     syncRecordingList(updated);
+    applyRemoteSyncTagSnapshot(result.tags);
     toast.success(isPublic ? '已设为公开录制' : '已设为私有录制');
   } catch (error) {
     console.error(error);
@@ -485,6 +619,9 @@ const handleLogout = async () => {
   setAuthToken('');
   userInfo.value = null;
   recordings.value = [];
+  remoteConfigTag.value = null;
+  remoteClientsTag.value = null;
+  remoteRecordingTag.value = null;
   availableUpdateVersion.value = null;
   setServerLoggedIn(false);
   currentPage.value = 'dashboard';
@@ -494,7 +631,7 @@ const handleLogout = async () => {
 const refreshRuntimeState = async () => {
   refreshingState.value = true;
   try {
-    await danmakuService.refreshRemoteState();
+    await fetchRuntimeStateInternal();
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? error.message : '刷新状态失败');
@@ -512,7 +649,7 @@ const handleForceTakeover = async () => {
       clientId: danmakuService.getClientId(),
       clientVersion: 'desktop',
       isRunning: false,
-      signalrConnected: false,
+      runtimeConnected: false,
       cookieValid: false,
       connectedRooms: [],
       connectionInfo: [],
@@ -531,10 +668,100 @@ const handleForceTakeover = async () => {
   }
 };
 
+const syncDesktopLocalConfig = async () => {
+  if (!isDesktopApp) {
+    return;
+  }
+
+  const autoStartEnabled = await readAutoStartEnabled();
+  if (autoStartEnabled === null) {
+    return;
+  }
+  syncingAutoStartFromDesktop = true;
+  localConfig.autoStart = autoStartEnabled;
+  syncingAutoStartFromDesktop = false;
+};
+
+const handleShowMainWindow = async () => {
+  if (!isDesktopApp) {
+    toast.info('仅桌面端支持托盘窗口操作');
+    return;
+  }
+  if (showingMainWindow.value) {
+    return;
+  }
+  showingMainWindow.value = true;
+  try {
+    await showMainWindow();
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '显示主窗口失败');
+  } finally {
+    showingMainWindow.value = false;
+  }
+};
+
+const handleHideToTray = async () => {
+  if (!isDesktopApp) {
+    toast.info('仅桌面端支持托盘窗口操作');
+    return;
+  }
+  if (hidingToTray.value) {
+    return;
+  }
+  hidingToTray.value = true;
+  try {
+    await hideMainWindow();
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '隐藏到托盘失败');
+  } finally {
+    hidingToTray.value = false;
+  }
+};
+
 watch(coreConfig, () => {
   if (syncingCoreConfigFromRemote) return;
   scheduleCoreConfigAutoSave();
 }, { deep: true });
+
+watch(localConfig, () => {
+  saveLocalAppConfig(localConfig);
+}, { deep: true });
+
+watch(() => localConfig.autoStart, (nextValue, previousValue) => {
+  if (!isDesktopApp || syncingAutoStartFromDesktop) {
+    return;
+  }
+  void (async () => {
+    try {
+      await applyAutoStartEnabled(nextValue);
+    } catch (error) {
+      console.error(error);
+      syncingAutoStartFromDesktop = true;
+      localConfig.autoStart = previousValue ?? false;
+      syncingAutoStartFromDesktop = false;
+      toast.error(error instanceof Error ? error.message : '更新开机自启失败');
+    }
+  })();
+});
+
+watch(
+  () => [runtimeState.isRunning, runtimeState.runtimeConnected, runtimeState.lastError] as const,
+  ([isRunning, runtimeConnected, lastError]) => {
+    if (!isDesktopApp) {
+      return;
+    }
+    void syncTrayHealthFromRuntime({
+      isRunning,
+      runtimeConnected,
+      lastError
+    }).catch(error => {
+      console.error(error);
+    });
+  },
+  { immediate: true }
+);
 
 watch(isLoggedIn, (loggedIn) => {
   if (loggedIn) {
@@ -545,6 +772,24 @@ watch(isLoggedIn, (loggedIn) => {
 }, { immediate: true });
 
 onMounted(async () => {
+  if (isDesktopApp) {
+    try {
+      await setupTrayInTs();
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : '初始化托盘失败');
+    }
+    closeToTrayUnlisten = await registerCloseToTrayHandler(() => localConfig.minimizeToTray);
+    await syncDesktopLocalConfig();
+    if (localConfig.startMinimized) {
+      try {
+        await hideMainWindow({ notify: false });
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  }
+
   if (token.value) {
     await loadProfile();
   }
@@ -556,6 +801,10 @@ onBeforeUnmount(() => {
   stopNavProfileAutoRefresh();
   clearCoreConfigAutoSaveTimer();
   coreConfigAutoSavePending = false;
+  if (closeToTrayUnlisten) {
+    closeToTrayUnlisten();
+    closeToTrayUnlisten = null;
+  }
 });
 </script>
 
@@ -576,7 +825,7 @@ onBeforeUnmount(() => {
         :current-page="currentPage"
         :user-info="userInfo"
         :is-running="runtimeState.isRunning"
-        :signalr-connected="runtimeState.signalrConnected"
+        :runtime-connected="runtimeState.runtimeConnected"
         :message-count="runtimeState.messageCount"
         :connected-rooms-count="runtimeState.connectedRooms.length"
         @navigate="currentPage = $event"
@@ -621,17 +870,28 @@ onBeforeUnmount(() => {
               :removing-recording-uid="removingRecordingUid"
               :updating-recording-uid="updatingRecordingUid"
               :saving-config="savingConfig"
-              :updater-supported="isUpdaterSupported"
-              :checking-app-update="checkingAppUpdate"
-              :installing-app-update="installingAppUpdate"
-              :available-update-version="availableUpdateVersion"
               @save-config="handleSaveConfig"
-              @check-app-update="handleCheckAppUpdate"
-              @install-app-update="handleInstallAppUpdate"
               @refresh-recordings="refreshRecordingList"
               @add-recording="handleAddRecording"
               @remove-recording="handleRemoveRecording"
               @update-recording-public="handleUpdateRecordingPublic"
+            />
+
+            <CoreControlAppTab
+              v-else-if="currentPage === 'app'"
+              key="app"
+              :local-config="localConfig"
+              :is-desktop-runtime="isDesktopApp"
+              :updater-supported="isUpdaterSupported"
+              :checking-app-update="checkingAppUpdate"
+              :installing-app-update="installingAppUpdate"
+              :available-update-version="availableUpdateVersion"
+              :showing-main-window="showingMainWindow"
+              :hiding-to-tray="hidingToTray"
+              @check-app-update="handleCheckAppUpdate"
+              @install-app-update="handleInstallAppUpdate"
+              @show-main-window="handleShowMainWindow"
+              @hide-to-tray="handleHideToTray"
             />
 
             <div v-else-if="currentPage === 'bilibili'" key="bilibili">

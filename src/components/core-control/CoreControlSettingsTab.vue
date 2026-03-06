@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRefs } from 'vue';
-import { Download, Loader2, RefreshCw, Save, Plus, Trash2, X, Info } from 'lucide-vue-next';
+import { Loader2, RefreshCw, Save, Plus, Trash2, X, Info } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -26,12 +26,8 @@ const props = defineProps<{
   removingRecordingUid: number | null;
   updatingRecordingUid: number | null;
   savingConfig: boolean;
-  updaterSupported: boolean;
-  checkingAppUpdate: boolean;
-  installingAppUpdate: boolean;
-  availableUpdateVersion: string | null;
 }>();
-const { coreConfig, availableAreas, recordings, refreshingRecordings, addingRecording, removingRecordingUid, updatingRecordingUid, savingConfig, updaterSupported, checkingAppUpdate, installingAppUpdate, availableUpdateVersion } = toRefs(props);
+const { coreConfig, availableAreas, recordings, refreshingRecordings, addingRecording, removingRecordingUid, updatingRecordingUid, savingConfig } = toRefs(props);
 
 const newRecordingUid = ref('');
 const areaSearchQuery = ref('');
@@ -89,8 +85,6 @@ const submitAddRecording = () => {
 
 const emit = defineEmits<{
   (e: 'save-config'): void;
-  (e: 'check-app-update'): void;
-  (e: 'install-app-update'): void;
   (e: 'refresh-recordings'): void;
   (e: 'add-recording', uid: number): void;
   (e: 'remove-recording', uid: number): void;
@@ -108,18 +102,6 @@ const emit = defineEmits<{
           <p class="mt-0.5 text-sm text-muted-foreground">连接参数、分区过滤与录制管理</p>
         </div>
         <div class="flex items-center gap-2">
-          <Button variant="outline" :disabled="!updaterSupported || checkingAppUpdate || installingAppUpdate"
-            :title="updaterSupported ? '检查是否有可用新版本' : '仅 Tauri 桌面端可检查更新'" @click="emit('check-app-update')">
-            <Loader2 v-if="checkingAppUpdate" class="h-4 w-4 animate-spin" />
-            <RefreshCw v-else class="h-4 w-4" />
-            检查更新
-          </Button>
-          <Button v-if="availableUpdateVersion" variant="secondary" :disabled="installingAppUpdate || checkingAppUpdate"
-            :title="`安装已发现的新版本 ${availableUpdateVersion}`" @click="emit('install-app-update')">
-            <Loader2 v-if="installingAppUpdate" class="h-4 w-4 animate-spin" />
-            <Download v-else class="h-4 w-4" />
-            安装 {{ availableUpdateVersion }}
-          </Button>
           <Button :disabled="savingConfig" @click="emit('save-config')">
             <Loader2 v-if="savingConfig" class="h-4 w-4 animate-spin" />
             <Save v-else class="h-4 w-4" />
@@ -289,27 +271,28 @@ const emit = defineEmits<{
             </div>
           </CardHeader>
           <CollapsibleContent>
-            <CardContent class="grid gap-4 sm:grid-cols-2">
-              <div class="space-y-1.5 sm:col-span-2">
-                <label class="text-xs font-medium text-muted-foreground">Host</label>
-                <Input :model-value="coreConfig.cookieCloudHost ?? ''" placeholder="例如 http://localhost:8088"
+            <CardContent class="space-y-3">
+              <div class="space-y-1">
+                <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
+                <Input :model-value="coreConfig.cookieCloudHost ?? ''" placeholder="cookie.danmakus.com"
                   title="CookieCloud 服务器地址" @update:model-value="coreConfig.cookieCloudHost = String($event)" />
               </div>
-              <div class="space-y-1.5">
-                <label class="text-xs font-medium text-muted-foreground">Key</label>
-                <Input :model-value="coreConfig.cookieCloudKey ?? ''" placeholder="输入 CookieCloud Key"
-                  title="CookieCloud 密钥" @update:model-value="coreConfig.cookieCloudKey = String($event)" />
-              </div>
-              <div class="space-y-1.5">
-                <label class="text-xs font-medium text-muted-foreground">Password</label>
-                <Input :model-value="coreConfig.cookieCloudPassword ?? ''" type="password"
-                  placeholder="输入 CookieCloud 密码" title="CookieCloud 加密密码"
-                  @update:model-value="coreConfig.cookieCloudPassword = String($event)" />
-              </div>
-              <div class="space-y-1.5 sm:col-span-2">
-                <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
-                <Input :model-value="coreConfig.cookieRefreshInterval" type="number" min="60" placeholder="3600"
-                  title="自动同步 Cookie 的时间间隔" @update:model-value="assignNumber('cookieRefreshInterval', $event)" />
+              <div class="grid gap-3 sm:grid-cols-3">
+                <div class="space-y-1">
+                  <label class="text-xs font-medium text-muted-foreground">Key</label>
+                  <Input :model-value="coreConfig.cookieCloudKey ?? ''" placeholder="Key"
+                    title="CookieCloud 密钥" @update:model-value="coreConfig.cookieCloudKey = String($event)" />
+                </div>
+                <div class="space-y-1">
+                  <label class="text-xs font-medium text-muted-foreground">密码</label>
+                  <Input :model-value="coreConfig.cookieCloudPassword ?? ''" type="password" placeholder="密码"
+                    title="CookieCloud 加密密码" @update:model-value="coreConfig.cookieCloudPassword = String($event)" />
+                </div>
+                <div class="space-y-1">
+                  <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
+                  <Input :model-value="coreConfig.cookieRefreshInterval" type="number" min="60" placeholder="3600"
+                    title="自动同步 Cookie 的时间间隔" @update:model-value="assignNumber('cookieRefreshInterval', $event)" />
+                </div>
               </div>
             </CardContent>
           </CollapsibleContent>

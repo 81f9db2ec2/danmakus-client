@@ -17,7 +17,7 @@ export interface ClientDanmakuMessage {
 // 主播优先级类型
 export type StreamerPriority = 'high' | 'normal' | 'low';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
-export type ErrorCategory = 'network' | 'signalr' | 'runtime-sync' | 'livews' | 'config' | 'queue' | 'lock' | 'unknown';
+export type ErrorCategory = 'network' | 'runtime' | 'runtime-sync' | 'livews' | 'config' | 'queue' | 'lock' | 'unknown';
 
 export interface ClientErrorRecord {
   timestamp: number;
@@ -69,8 +69,8 @@ export interface DanmakuConfig {
   cookieCloudPassword?: string;
   cookieCloudHost?: string;
   cookieProvider?: () => string | null | undefined;
-  signalrUrl: string;
-  signalrHeaders?: Record<string, string>;
+  runtimeUrl: string;
+  runtimeHeaders?: Record<string, string>;
   cookieRefreshInterval: number; // 秒
   autoReconnect: boolean;
   reconnectInterval: number; // 毫秒
@@ -156,7 +156,7 @@ export interface CoreStreamerConfigDto {
 
 export interface CoreControlConfigDto {
   maxConnections: number;
-  signalrUrl: string;
+  runtimeUrl: string;
   autoReconnect: boolean;
   reconnectInterval: number;
   statusCheckInterval: number;
@@ -182,7 +182,7 @@ export interface CoreRuntimeStateDto {
   clientId: string;
   clientVersion?: string | null;
   isRunning: boolean;
-  signalrConnected: boolean;
+  runtimeConnected: boolean;
   cookieValid: boolean;
   connectedRooms: number[];
   connectionInfo: CoreConnectionInfoDto[];
@@ -204,7 +204,7 @@ export interface CliOptions {
   cookieKey?: string;
   cookiePassword?: string;
   cookieHost?: string;
-  signalrUrl?: string;
+  runtimeUrl?: string;
   statusCheckInterval?: number;
   verbose?: boolean;
   token?: string;

@@ -1,9 +1,9 @@
 import { DanmakuClient } from 'danmakus-core';
 import type { DanmakuMessage, StreamerStatus } from 'danmakus-core';
 import { reactive } from 'vue';
-import { getCoreClients } from './account';
+import { getCoreClients, type CoreSyncTagSnapshot } from './account';
 import { biliCookie, getLiveWsRoomConfigAsync, getNavProfileAsync } from './bilibili';
-import { ACCOUNT_API_BASE, SIGNALR_URL } from './env';
+import { ACCOUNT_API_BASE, RUNTIME_URL } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
 
@@ -13,7 +13,7 @@ type RemoteClientSnapshot = {
   clientVersion: string | null;
   ip: string | null;
   isRunning: boolean;
-  signalrConnected: boolean;
+  runtimeConnected: boolean;
   cookieValid: boolean;
   connectedRooms: number[];
   connectionInfo: ConnectionInfoSnapshot[];
@@ -135,14 +135,12 @@ class DanmakuService {
   private static instance: DanmakuService;
   private client: DanmakuClient | null = null;
   private localClientId: string;
-  private readonly debugMessageConsoleEnabled: boolean;
-  private debugMessageCounter = 0;
   private lastNavCookieCheckAt = 0;
   private readonly navCookieCheckIntervalMs = 30_000;
 
   public state = reactive({
     isRunning: false,
-    signalrConnected: false,
+    runtimeConnected: false,
     connectedRooms: [] as number[],
     connectionInfo: [] as ConnectionInfoSnapshot[],
     messageCount: 0,
@@ -161,8 +159,6 @@ class DanmakuService {
 
   private constructor() {
     this.localClientId = getOrCreateClientId();
-    const debugFlag = typeof localStorage !== 'undefined' && localStorage.getItem('danmakus_debug_msg') === '1';
-    this.debugMessageConsoleEnabled = Boolean(import.meta.env.DEV || debugFlag);
   }
 
   public static getInstance(): DanmakuService {
@@ -186,24 +182,24 @@ class DanmakuService {
       fetchImpl,
       cookieProvider: () => biliCookie.getBiliCookie(),
       liveWsConfigProvider: getLiveWsRoomConfigAsync,
-      signalrHeaders: this.buildSignalRHeaders(),
+      runtimeHeaders: this.buildRuntimeHeaders(),
       accountToken: token,
       clientVersion: 'desktop',
       accountApiBase: ACCOUNT_API_BASE,
-      signalrUrl: SIGNALR_URL
+      runtimeUrl: RUNTIME_URL
     });
 
     this.setupListeners();
     this.applyStatusSnapshot();
   }
 
-  public async refreshRemoteState(): Promise<void> {
+  public async refreshRemoteState(): Promise<CoreSyncTagSnapshot> {
     const token = getAuthToken();
     if (!token) {
       throw new Error('请先登录并提供 Token');
     }
 
-    const remotes = await getCoreClients();
+    const { data: remotes, tags } = await getCoreClients();
     const normalizedClients = remotes.map((remote) => {
       const raw = remote as unknown as Record<string, unknown>;
       const clientId = getRemoteString(raw, 'clientId', 'ClientId').trim();
@@ -240,7 +236,7 @@ class DanmakuService {
         clientVersion: clientVersion == null ? null : String(clientVersion),
         ip: ip == null ? null : String(ip),
         isRunning: getRemoteBoolean(raw, 'isRunning', 'IsRunning'),
-        signalrConnected: getRemoteBoolean(raw, 'signalrConnected', 'SignalrConnected'),
+        runtimeConnected: getRemoteBoolean(raw, 'runtimeConnected', 'RuntimeConnected'),
         cookieValid: getRemoteBoolean(raw, 'cookieValid', 'CookieValid'),
         connectedRooms,
         connectionInfo,
@@ -256,7 +252,7 @@ class DanmakuService {
 
     const self = normalizedClients.find((c) => c.clientId === this.localClientId) ?? null;
     const activeOwner = normalizedClients
-      .filter((c) => c.clientId !== this.localClientId && (c.isRunning || c.signalrConnected))
+      .filter((c) => c.clientId !== this.localClientId && (c.isRunning || c.runtimeConnected))
       .sort((a, b) => (b.lastHeartbeat ?? 0) - (a.lastHeartbeat ?? 0))[0]
       ?? normalizedClients.find((c) => c.clientId !== this.localClientId)
       ?? null;
@@ -268,7 +264,7 @@ class DanmakuService {
 
     if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
       this.state.isRunning = false;
-      this.state.signalrConnected = false;
+      this.state.runtimeConnected = false;
       this.state.connectedRooms = [];
       this.state.connectionInfo = [];
       this.state.serverAssignedRooms = [];
@@ -278,6 +274,8 @@ class DanmakuService {
       this.state.lastError = null;
       await this.refreshCookieValidityFromNav(false);
     }
+
+    return tags;
   }
 
   public async start(): Promise<void> {
@@ -330,7 +328,7 @@ class DanmakuService {
 
   private resetRuntimeState(): void {
     this.state.isRunning = false;
-    this.state.signalrConnected = false;
+    this.state.runtimeConnected = false;
     this.state.connectedRooms = [];
     this.state.connectionInfo = [];
     this.state.messageCount = 0;
@@ -386,13 +384,6 @@ class DanmakuService {
       this.state.messageCmdCountMap[cmd] = (this.state.messageCmdCountMap[cmd] || 0) + 1;
       const roomKey = String(message.roomId);
       this.state.roomMessageCountMap[roomKey] = (this.state.roomMessageCountMap[roomKey] || 0) + 1;
-      if (this.debugMessageConsoleEnabled) {
-        this.debugMessageCounter += 1;
-        console.debug(
-          `[DanmakuService][msg#${this.debugMessageCounter}] room=${message.roomId} cmd=${cmd}`,
-          message
-        );
-      }
     });
 
     this.client.on('error', (error: Error) => {
@@ -407,7 +398,7 @@ class DanmakuService {
 
     const status = this.client.getStatus();
     this.state.isRunning = status.isRunning;
-    this.state.signalrConnected = status.signalrConnected;
+    this.state.runtimeConnected = status.runtimeConnected;
     this.state.connectedRooms = [...status.connectedRooms];
     this.state.connectionInfo = status.connectionInfo.map(normalizeConnectionInfo);
     this.state.cookieValid = status.cookieValid;
@@ -420,7 +411,7 @@ class DanmakuService {
     this.state.lastHeartbeat = status.lastHeartbeat ?? null;
   }
 
-  private buildSignalRHeaders(): Record<string, string> | undefined {
+  private buildRuntimeHeaders(): Record<string, string> | undefined {
     const token = getAuthToken()?.trim();
     if (!token) {
       return undefined;
@@ -432,10 +423,16 @@ class DanmakuService {
   }
 
   private async assertBiliLoginReady(): Promise<void> {
-    const profile = await getNavProfileAsync();
+    const cookie = biliCookie.getBiliCookie().trim();
+    if (!cookie) {
+      this.state.cookieValid = false;
+      throw new Error('未提供 Bilibili Cookie，无法连接弹幕客户端，请先完成 Bilibili 登录');
+    }
+
+    const profile = await getNavProfileAsync({ force: true });
     this.state.cookieValid = profile !== null;
     if (!profile) {
-      throw new Error('未登录 Bilibili，无法获取直播鉴权 Token，请先完成 Bilibili 登录');
+      throw new Error('Bilibili Cookie 无效或已过期，无法获取直播鉴权 Token，请重新登录');
     }
   }
 

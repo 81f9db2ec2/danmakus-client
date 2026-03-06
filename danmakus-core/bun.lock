@@ -5,7 +5,9 @@
     "": {
       "name": "danmakus-core",
       "dependencies": {
+        "@hpcc-js/wasm-zstd": "^1.12.0",
         "@microsoft/signalr": "^10.0.0",
+        "@microsoft/signalr-protocol-msgpack": "^10.0.0",
         "bilibili-live-danmaku": "^0.7.14",
         "commander": "^14.0.2",
         "eventemitter3": "^5.0.1",
@@ -19,7 +21,13 @@
   "packages": {
     "@floating-live/cookies": ["@floating-live/cookies@0.1.0", "", {}, "sha512-5Er4jnuojKxjB1o1SAx7YEAcKgtUGhRsrRQrmPe91ReIw5Fst7e1lyWUbMC0jZy2fNVC6V84ekBZw3LoLgUpHA=="],
 
+    "@hpcc-js/wasm-zstd": ["@hpcc-js/wasm-zstd@1.12.0", "", {}, "sha512-sVCjc0uEfdoEarXNxkHkoKZEdIOv1k8uCgh0lsBUKjDkF6oeuZl2mcZICLkfwOvrPi44c9GYeBdNftH+A4QRVg=="],
+
     "@microsoft/signalr": ["@microsoft/signalr@10.0.0", "", { "dependencies": { "abort-controller": "^3.0.0", "eventsource": "^2.0.2", "fetch-cookie": "^2.0.3", "node-fetch": "^2.6.7", "ws": "^7.5.10" } }, "sha512-0BRqz/uCx3JdrOqiqgFhih/+hfTERaUfCZXFB52uMaZJrKaPRzHzMuqVsJC/V3pt7NozcNXGspjKiQEK+X7P2w=="],
+
+    "@microsoft/signalr-protocol-msgpack": ["@microsoft/signalr-protocol-msgpack@10.0.0", "", { "dependencies": { "@microsoft/signalr": ">=10.0.0", "@msgpack/msgpack": "^2.7.0" } }, "sha512-N4h4BD+y9kw/iszpDaDaIRJpxaRSA5uBtveM6HUIwmwkeJIPOoMrPNvmj77UrjZHAsbVwa/acLiWnPDfffO3yQ=="],
+
+    "@msgpack/msgpack": ["@msgpack/msgpack@2.8.0", "", {}, "sha512-h9u4u/jiIRKbq25PM+zymTyW6bhTzELvOoUd+AvYriWOAKpLGnIamaET3pnHYoI5iYphAHBI4ayx0MehR+VVPQ=="],
 
     "@protobufjs/aspromise": ["@protobufjs/aspromise@1.1.2", "", {}, "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="],
 

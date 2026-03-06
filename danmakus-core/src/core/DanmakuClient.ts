@@ -2,7 +2,7 @@ import EventEmitter from 'eventemitter3';
 import { LiveWS } from 'bilibili-live-danmaku';
 import { ConfigManager } from './ConfigManager';
 import { CookieManager } from './CookieManager';
-import { SignalRConnection } from './SignalRConnection';
+import { RuntimeConnection } from './RuntimeConnection';
 import { StreamerStatusManager } from './StreamerStatusManager';
 import { AccountApiClient } from './AccountApiClient';
 import {
@@ -26,6 +26,7 @@ const MESSAGE_RETRY_MIN_DELAY = 200;
 const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
 const MESSAGE_BATCH_MIN_SIZE = 1;
 const MESSAGE_BATCH_MAX_SIZE = 200;
+const MESSAGE_UPLOAD_INTERVAL_MS = 1000;
 const LOCK_RETRY_MIN_COUNT = 1;
 const LOCK_RETRY_MIN_DELAY = 200;
 const ERROR_HISTORY_MIN_LIMIT = 10;
@@ -68,6 +69,13 @@ interface ClientErrorContext {
 }
 
 type CookieSource = 'biliLocal' | 'cookieCloud';
+type NormalizedCookieRuntimeConfig = {
+  enabled: boolean;
+  key?: string;
+  password?: string;
+  host: string;
+  refreshInterval: number;
+};
 type LiveWsConnectionOptions = {
   roomId?: number;
   address?: string;
@@ -84,7 +92,7 @@ export class DanmakuClient extends EventEmitter {
   private cookieProvider?: () => string | null | undefined;
   private liveWsConfigProvider?: (roomId: number) => Promise<LiveWsRoomConfig | null | undefined>;
   private liveWsConnectionFactory?: (roomId: number, options: LiveWsRoomConfig) => Promise<LiveWsConnection>;
-  private signalrConnection?: SignalRConnection;
+  private runtimeConnection?: RuntimeConnection;
   private statusManager?: StreamerStatusManager;
   private accountClient?: AccountApiClient;
   private clientId: string;
@@ -93,12 +101,16 @@ export class DanmakuClient extends EventEmitter {
   private serverRoomOfflineHits: Map<number, number> = new Map();
   private serverRoomAssignedAt: Map<number, number> = new Map();
   private serverRoomLiveConfirmed: Set<number> = new Set();
-  private lastServerRoomRequestAt = 0;
+  private serverAssignmentTag: string | null = null;
+  private serverRoomAssignmentRefreshing = false;
   private isRunning: boolean = false;
   private updateConnectionsTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setTimeout>;
-  private accountConfigRefreshTimer?: ReturnType<typeof setInterval>;
   private accountConfigRefreshing = false;
+  private accountConfigTag: string | null = null;
+  private recordingRoomsRefreshing = false;
+  private recordingRoomsTag: string | null = null;
+  private recordingRoomIds: number[] = [];
   private isStopping = false;
   private messageCount = 0;
   private lastRoomAssigned?: number;
@@ -119,15 +131,17 @@ export class DanmakuClient extends EventEmitter {
   private messageRetryMaxDelay = 30_000;
   private messageRetryMaxAttempts = 6;
   private messageBatchSize = 20;
+  private messageUploadInterval = MESSAGE_UPLOAD_INTERVAL_MS;
   private heartbeatInterval = 5000;
   private lockAcquireRetryCount = 4;
   private lockAcquireRetryDelay = 1200;
   private lockAcquireForceTakeover = false;
   private errorHistoryLimit = 50;
   private recentErrors: ClientErrorRecord[] = [];
-  private signalrClientRegistering = false;
-  private lastSignalrClientRegisterAt = 0;
-  private suppressSignalrAutoRegister = false;
+  private runtimeClientRegistering = false;
+  private lastRuntimeClientRegisterAt = 0;
+  private suppressRuntimeAutoRegister = false;
+  private runtimeGeneration = 0;
 
   constructor(config: Partial<DanmakuConfig> = {}) {
     super();
@@ -184,18 +198,18 @@ export class DanmakuClient extends EventEmitter {
       )
       : undefined;
 
-    if (this.signalrConnection) {
-      void this.signalrConnection.disconnect().catch(() => undefined);
+    if (this.runtimeConnection) {
+      void this.runtimeConnection.disconnect().catch(() => undefined);
     }
 
-    this.signalrConnection = new SignalRConnection(
-      finalConfig.signalrUrl,
+    this.runtimeConnection = new RuntimeConnection(
+      finalConfig.runtimeUrl,
       finalConfig.autoReconnect,
       finalConfig.reconnectInterval,
-      finalConfig.signalrHeaders,
-      this.logger.child('SignalR')
+      finalConfig.runtimeHeaders,
+      this.logger.child('Runtime')
     );
-    this.setupSignalREvents();
+    this.setupRuntimeEvents();
 
     if (this.statusManager) {
       this.statusManager.stop();
@@ -203,7 +217,7 @@ export class DanmakuClient extends EventEmitter {
 
     this.statusManager = new StreamerStatusManager(
       finalConfig.statusCheckInterval,
-      finalConfig.signalrUrl,
+      finalConfig.runtimeUrl,
       finalConfig.fetchImpl,
       this.logger.child('StatusManager')
     );
@@ -212,14 +226,14 @@ export class DanmakuClient extends EventEmitter {
   }
 
   /**
-   * 设置SignalR事件处理
+   * 设置Runtime事件处理
    */
-  private setupSignalREvents(): void {
-    if (!this.signalrConnection) {
+  private setupRuntimeEvents(): void {
+    if (!this.runtimeConnection) {
       return;
     }
 
-    this.signalrConnection.onRoomAssigned = (roomId: number) => {
+    this.runtimeConnection.onRoomAssigned = (roomId: number) => {
       if (this.serverAssignedRooms.includes(roomId)) {
         return;
       }
@@ -237,12 +251,12 @@ export class DanmakuClient extends EventEmitter {
       this.emit('roomAssigned', roomId);
     };
 
-    this.signalrConnection.onRoomReplaced = (oldRoomId: number, newRoomId: number) => {
+    this.runtimeConnection.onRoomReplaced = (oldRoomId: number, newRoomId: number) => {
       this.logger.info(`收到服务器替换指令: ${oldRoomId} -> ${newRoomId}`);
       this.applyServerRoomReplacement(oldRoomId, newRoomId);
     };
 
-    this.signalrConnection.onRoomUnassigned = (roomId: number) => {
+    this.runtimeConnection.onRoomUnassigned = (roomId: number) => {
       if (!this.serverAssignedRooms.includes(roomId)) {
         return;
       }
@@ -259,14 +273,18 @@ export class DanmakuClient extends EventEmitter {
       void this.syncRuntimeState();
     };
 
-    this.signalrConnection.onConnected = () => {
-      this.triggerSignalRClientRegistration('connected');
-      this.scheduleMessageDispatch(0);
+    this.runtimeConnection.onConnected = () => {
+      this.triggerRuntimeClientRegistration('connected');
+      this.scheduleMessageDispatch(this.messageUploadInterval);
     };
 
-    this.signalrConnection.onReconnected = () => {
-      this.triggerSignalRClientRegistration('reconnected');
-      this.scheduleMessageDispatch(0);
+    this.runtimeConnection.onReconnected = () => {
+      this.triggerRuntimeClientRegistration('reconnected');
+      this.scheduleMessageDispatch(this.messageUploadInterval);
+    };
+
+    this.runtimeConnection.onSessionInvalid = (reason: string) => {
+      this.handleRuntimeSessionInvalid(reason);
     };
   }
 
@@ -327,6 +345,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     try {
+      this.runtimeGeneration += 1;
       this.isStopping = false;
       this.logger.info('正在启动弹幕客户端... (v_hot_reload)');
 
@@ -339,18 +358,18 @@ export class DanmakuClient extends EventEmitter {
         this.cookieManager.startPeriodicUpdate();
       }
 
-      // 连接SignalR
-      this.logger.info('连接到SignalR服务器...');
-      const signalrConnection = this.ensureSignalRConnection();
-      const signalrConnected = await signalrConnection.connect();
-      if (!signalrConnected) {
-        throw new Error('无法连接到SignalR服务器');
+      // 连接Runtime
+      this.logger.info('连接到Runtime服务器...');
+      const runtimeConnection = this.ensureRuntimeConnection();
+      const runtimeConnected = await runtimeConnection.connect();
+      if (!runtimeConnected) {
+        throw new Error('无法连接到Runtime服务器');
       }
 
       // 首次注册前先强制同步空连接态，清理同 clientId 旧心跳残留导致的容量误判
       await this.syncRuntimeState({
         isRunning: true,
-        signalrConnected: true,
+        runtimeConnected: true,
         connectedRooms: [],
         connectionInfo: [],
         serverAssignedRooms: [],
@@ -358,10 +377,11 @@ export class DanmakuClient extends EventEmitter {
       }, { force: true, strict: true });
 
       // 注册客户端
-      const registerSuccess = await signalrConnection.registerClient(this.buildRegisterRoomIds());
+      const registerSuccess = await runtimeConnection.registerClient(this.buildRegisterRoomIds());
       if (!registerSuccess) {
-        throw new Error('SignalR客户端注册失败');
+        throw new Error('Runtime客户端注册失败');
       }
+      this.serverAssignmentTag = runtimeConnection.getAssignmentTag();
       this.isRunning = true;
       this.messageCount = 0;
 
@@ -370,12 +390,11 @@ export class DanmakuClient extends EventEmitter {
       const statusManager = this.ensureStatusManager();
       statusManager.updateServerRooms(this.serverAssignedRooms);
       statusManager.start();
-      this.startAccountConfigRefresh();
 
       this.logger.info('弹幕客户端启动成功');
       await this.syncRuntimeState();
       this.ensureHeartbeat();
-      this.scheduleMessageDispatch(0);
+      this.scheduleMessageDispatch(this.messageUploadInterval);
 
     } catch (error) {
       this.logger.error('启动弹幕客户端失败:', error);
@@ -389,11 +408,12 @@ export class DanmakuClient extends EventEmitter {
    * 停止客户端
    */
   async stop(options?: { suppressReleaseErrors?: boolean }): Promise<void> {
+    this.runtimeGeneration += 1;
     this.logger.info('正在停止弹幕客户端...');
     this.isStopping = true;
     this.isRunning = false;
 
-    this.stopAccountConfigRefresh();
+    this.resetAccountConfigSyncState();
 
     if (this.updateConnectionsTimer) {
       clearTimeout(this.updateConnectionsTimer);
@@ -419,19 +439,21 @@ export class DanmakuClient extends EventEmitter {
       this.cookieManager.stopPeriodicUpdate();
     }
 
-    // 断开SignalR连接
-    await this.signalrConnection?.disconnect();
+    // 断开Runtime连接
+    await this.runtimeConnection?.disconnect();
     this.serverAssignedRooms = [];
     this.serverRoomOfflineHits.clear();
     this.serverRoomAssignedAt.clear();
     this.serverRoomLiveConfirmed.clear();
+    this.serverAssignmentTag = null;
+    this.serverRoomAssignmentRefreshing = false;
     this.statusManager?.updateServerRooms([]);
     this.messageCount = 0;
     this.lastRoomAssigned = undefined;
     this.lastError = undefined;
     this.recentErrors = [];
     this.clearMessageDispatch();
-    this.pendingMessages = [];
+    this.clearPendingMessages();
     this.queueOverflowLastLogAt = 0;
     this.queueOverflowSuppressedCount = 0;
     this.clearHeartbeat();
@@ -478,9 +500,9 @@ export class DanmakuClient extends EventEmitter {
 
     const config = this.configManager.getConfig();
     const statusManager = this.ensureStatusManager();
-    const signalrConnected = this.signalrConnection?.getConnectionState() ?? false;
-    // SignalR 断线期间，保留现有服务端分配，避免因状态查询抖动导致房间被误断开。
-    if (signalrConnected) {
+    const runtimeConnected = this.runtimeConnection?.getConnectionState() ?? false;
+    // Runtime 断线期间，保留现有服务端分配，避免因状态查询抖动导致房间被误断开。
+    if (runtimeConnected) {
       this.evictInactiveServerAssignedRooms(statusManager);
     }
     this.trimServerAssignedRoomsToCapacity(config.maxConnections);
@@ -495,7 +517,7 @@ export class DanmakuClient extends EventEmitter {
     const currentConnections = Array.from(this.connections.keys());
     const targetRooms = roomsToConnect.map(r => r.roomId);
 
-    if (!signalrConnected) {
+    if (!runtimeConnected) {
       for (const roomId of currentConnections) {
         if (!targetRooms.includes(roomId)) {
           targetRooms.push(roomId);
@@ -523,18 +545,7 @@ export class DanmakuClient extends EventEmitter {
       }
     }
 
-    // 定期向服务器请求分配/替换（由服务端根据容量与优先级决策）
-    const shouldRequestServerRooms = (config.requestServerRooms ?? true)
-      && this.shouldRequestServerRooms(config.maxConnections);
-    const syncPromise = this.syncRuntimeState();
-    if (shouldRequestServerRooms) {
-      void syncPromise.finally(() => {
-        this.maybeRequestServerRoomAssignment();
-      });
-      return;
-    }
-
-    void syncPromise;
+    void this.syncRuntimeState();
   }
 
   private evictInactiveServerAssignedRooms(statusManager: StreamerStatusManager): number[] {
@@ -610,6 +621,7 @@ export class DanmakuClient extends EventEmitter {
 
     if (removed.length > 0) {
       this.serverAssignedRooms = keep;
+      this.serverAssignmentTag = null;
       statusManager.updateServerRooms(this.serverAssignedRooms);
       this.logger.info(`移除已下播房间分配: ${removed.join(',')}`);
     }
@@ -671,6 +683,9 @@ export class DanmakuClient extends EventEmitter {
 
     const dropped = uniqueRooms.filter(roomId => !keep.includes(roomId));
     this.serverAssignedRooms = keep;
+    if (dropped.length > 0) {
+      this.serverAssignmentTag = null;
+    }
     this.statusManager?.updateServerRooms(this.serverAssignedRooms);
     if (dropped.length > 0) {
       for (const roomId of dropped) {
@@ -679,7 +694,9 @@ export class DanmakuClient extends EventEmitter {
         this.serverRoomLiveConfirmed.delete(roomId);
         this.removeQueuedRoomConnect(roomId);
       }
-      this.logger.warn(`服务器分配房间超出上限，已裁剪: max=${targetSize}, dropped=${dropped.join(',')}`);
+      this.logger.info(
+        `服务器分配房间超出上限，已裁剪: max=${targetSize}, droppedCount=${dropped.length}, droppedRooms=${dropped.join(',')}`
+      );
     }
   }
 
@@ -781,6 +798,7 @@ export class DanmakuClient extends EventEmitter {
     if (!this.isRunning || this.isStopping) {
       return;
     }
+    const generation = this.runtimeGeneration;
 
     if (this.connections.has(roomId)) {
       this.logger.warn(`房间 ${roomId} 已经连接`);
@@ -791,6 +809,9 @@ export class DanmakuClient extends EventEmitter {
       this.logger.info(`正在连接到房间 ${roomId} (优先级: ${priority})...`);
 
       const connectionOptions = await this.resolveLiveWsConnectionOptions(roomId);
+      if (generation !== this.runtimeGeneration || !this.isRunning || this.isStopping || this.connections.has(roomId)) {
+        return;
+      }
       const targetRoomId = typeof connectionOptions.roomId === 'number' && connectionOptions.roomId > 0
         ? connectionOptions.roomId
         : roomId;
@@ -813,6 +834,14 @@ export class DanmakuClient extends EventEmitter {
       const liveWS = this.liveWsConnectionFactory
         ? await this.liveWsConnectionFactory(targetRoomId, roomConfig)
         : new LiveWS(targetRoomId, liveOptions);
+      if (generation !== this.runtimeGeneration || !this.isRunning || this.isStopping) {
+        try {
+          liveWS.close();
+        } catch {
+          // ignore close errors for stale in-flight connection
+        }
+        return;
+      }
 
       // 设置事件监听
       this.setupLiveWSEvents(liveWS, roomId);
@@ -980,11 +1009,9 @@ export class DanmakuClient extends EventEmitter {
       this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
       this.connections.delete(roomId);
       this.emit('disconnected', roomId);
-      const syncRuntimePromise = this.syncRuntimeState();
-      void syncRuntimePromise;
       this.statusManager?.refreshNow();
 
-      // 服务器分配的房间如果“连上立刻断”，通常代表房间不在直播/不可用；移除后再申请补位
+      // 服务器分配的房间如果“连上立刻断”，通常代表房间不在直播/不可用；先从本地候选集中移除，后续由 heartbeat tag 驱动补位。
       if (connectionInfo?.priority === 'server') {
         const lifetimeMs = Date.now() - connectionInfo.connectedAt;
         if (lifetimeMs < 10_000) {
@@ -992,12 +1019,12 @@ export class DanmakuClient extends EventEmitter {
           this.serverRoomOfflineHits.delete(roomId);
           this.serverRoomAssignedAt.delete(roomId);
           this.serverRoomLiveConfirmed.delete(roomId);
+          this.serverAssignmentTag = null;
           this.statusManager?.updateServerRooms(this.serverAssignedRooms);
-          void syncRuntimePromise.finally(() => {
-            this.maybeRequestServerRoomAssignment();
-          });
         }
       }
+
+      void this.syncRuntimeState();
 
       if (!this.isStopping && this.isRunning) {
         this.updateConnections();
@@ -1042,7 +1069,7 @@ export class DanmakuClient extends EventEmitter {
   private safeStringify(value: unknown): string {
     const seen = new WeakSet<object>();
     try {
-      return JSON.stringify(value, (_key, item) => {
+      const serialized = JSON.stringify(value, (_key, item) => {
         if (typeof item === 'bigint') {
           return item.toString();
         }
@@ -1054,6 +1081,10 @@ export class DanmakuClient extends EventEmitter {
         }
         return item;
       });
+      if (typeof serialized === 'string' && serialized.length > 0) {
+        return serialized;
+      }
+      return '[Unserializable Message]';
     } catch {
       return '[Unserializable Message]';
     }
@@ -1063,6 +1094,10 @@ export class DanmakuClient extends EventEmitter {
    * 处理消息
    */
   private async handleMessage(message: DanmakuMessage): Promise<void> {
+    if (!this.isRunning || this.isStopping) {
+      return;
+    }
+
     this.messageCount += 1;
     // 发射 'msg' 事件（所有消息）
     this.emit('msg', message);
@@ -1105,6 +1140,10 @@ export class DanmakuClient extends EventEmitter {
     }));
   }
 
+  getRecordingRoomIds(): number[] {
+    return [...this.recordingRoomIds];
+  }
+
   /**
    * 获取客户端状态
    */
@@ -1117,10 +1156,11 @@ export class DanmakuClient extends EventEmitter {
       isRunning: this.isRunning,
       connectedRooms: this.getConnectedRooms(),
       connectionInfo,
-      signalrConnected: this.signalrConnection?.getConnectionState() ?? false,
+      runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
       cookieValid: this.hasAvailableCookie(),
       streamerStatuses,
       serverAssignedRooms: [...this.serverAssignedRooms],
+      recordingRoomIds: [...this.recordingRoomIds],
       messageCount: this.messageCount,
       pendingMessageCount: this.pendingMessages.length,
       recentErrors: this.recentErrors.map(item => ({ ...item })),
@@ -1131,11 +1171,11 @@ export class DanmakuClient extends EventEmitter {
     };
   }
 
-  private ensureSignalRConnection(): SignalRConnection {
-    if (!this.signalrConnection) {
-      throw new Error('SignalR连接尚未初始化');
+  private ensureRuntimeConnection(): RuntimeConnection {
+    if (!this.runtimeConnection) {
+      throw new Error('Runtime连接尚未初始化');
     }
-    return this.signalrConnection;
+    return this.runtimeConnection;
   }
 
   private ensureStatusManager(): StreamerStatusManager {
@@ -1152,9 +1192,11 @@ export class DanmakuClient extends EventEmitter {
 
     this.logger.info('正在从账号中心加载核心配置...');
     const remoteConfig = await this.accountClient.getCoreConfig();
+    this.accountConfigTag = this.accountClient.getCoreConfigTag();
     this.configManager.applyAccountConfig(remoteConfig);
     this.applyRuntimeTunings(this.configManager.getConfig());
     this.initializeManagers();
+    await this.refreshRecordingRooms();
   }
 
   private async acquireRuntimeLock(): Promise<void> {
@@ -1208,7 +1250,7 @@ export class DanmakuClient extends EventEmitter {
 
     const beat = async () => {
       this.heartbeatTimer = undefined;
-      await this.syncRuntimeState();
+      await this.heartbeatRuntimeState();
       this.ensureHeartbeat();
     };
 
@@ -1230,9 +1272,9 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private buildRegisterRoomIds(): number[] {
-    return Array.from(
-      new Set(this.getConnectedRooms().filter(roomId => Number.isFinite(roomId) && roomId > 0))
-    );
+    const connectedRooms = this.getConnectedRooms().filter(roomId => Number.isFinite(roomId) && roomId > 0);
+    const assignedRooms = this.serverAssignedRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0);
+    return Array.from(new Set([...connectedRooms, ...assignedRooms]));
   }
 
   private buildRuntimeStateSnapshot(): CoreRuntimeStateDto {
@@ -1243,7 +1285,7 @@ export class DanmakuClient extends EventEmitter {
       clientId: this.clientId,
       clientVersion: status.config.clientVersion ?? 'core',
       isRunning: status.isRunning,
-      signalrConnected: status.signalrConnected,
+      runtimeConnected: status.runtimeConnected,
       cookieValid: status.cookieValid,
       connectedRooms: status.connectedRooms,
       connectionInfo: status.connectionInfo.map<CoreConnectionInfoDto>(info => ({
@@ -1257,6 +1299,42 @@ export class DanmakuClient extends EventEmitter {
       lastError: this.lastError ?? null,
       lastHeartbeat: new Date(this.lastHeartbeat || now).toISOString()
     };
+  }
+
+  private buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string } {
+    const status = this.getStatus();
+    return {
+      clientId: this.clientId,
+      clientVersion: status.config.clientVersion ?? 'core',
+      isRunning: status.isRunning,
+      runtimeConnected: status.runtimeConnected,
+      cookieValid: status.cookieValid,
+      messageCount: status.messageCount,
+      lastRoomAssigned: status.lastRoomAssigned ?? null,
+      lastError: status.lastError ?? null
+    };
+  }
+
+  private async heartbeatRuntimeState(options?: { force?: boolean; strict?: boolean }): Promise<void> {
+    if (!this.accountClient) {
+      return;
+    }
+
+    try {
+      const result = await this.accountClient.heartbeatRuntimeState(this.buildRuntimeHeartbeatPayload(), {
+        force: options?.force
+      });
+      this.lastHeartbeat = Date.now();
+      await this.handleAccountConfigTagChange(result.configTag);
+      await this.handleRecordingRoomsTagChange(result.recordingRoomsTag);
+      this.handleServerAssignmentTagChange(result.assignmentTag);
+    } catch (error) {
+      this.recordError(error, { category: 'runtime-sync', code: 'RUNTIME_HEARTBEAT_FAILED', recoverable: true });
+      this.logger.warn('同步核心心跳失败', error);
+      if (options?.strict) {
+        throw error;
+      }
+    }
   }
 
   private async syncRuntimeState(
@@ -1289,37 +1367,115 @@ export class DanmakuClient extends EventEmitter {
     }
   }
 
-  private maybeRequestServerRoomAssignment(): void {
-    const signalrConnection = this.signalrConnection;
-    if (!signalrConnection?.getConnectionState()) {
-      return;
-    }
-
-    const now = Date.now();
-    if (now - this.lastServerRoomRequestAt < 15_000) {
-      return;
-    }
-    this.lastServerRoomRequestAt = now;
-
-    void signalrConnection.requestRoomAssignment();
+  private isServerRoomAssignmentEnabled(config: DanmakuConfig = this.configManager.getConfig()): boolean {
+    return (config.requestServerRooms ?? true) && Math.max(0, Math.floor(config.maxConnections)) > 0;
   }
 
-  private startAccountConfigRefresh(): void {
-    if (this.accountConfigRefreshTimer || !this.accountClient) {
+  private clearServerAssignedRooms(assignmentTag: string | null): void {
+    this.serverAssignmentTag = assignmentTag;
+    if (this.serverAssignedRooms.length === 0) {
       return;
     }
 
-    this.accountConfigRefreshTimer = setInterval(() => {
-      void this.refreshAccountConfig();
-    }, 30_000);
+    const removedRooms = [...this.serverAssignedRooms];
+    this.serverAssignedRooms = [];
+    for (const roomId of removedRooms) {
+      this.serverRoomOfflineHits.delete(roomId);
+      this.serverRoomAssignedAt.delete(roomId);
+      this.serverRoomLiveConfirmed.delete(roomId);
+      this.removeQueuedRoomConnect(roomId);
+      this.disconnectFromRoom(roomId);
+    }
+
+    this.statusManager?.updateServerRooms([]);
+    this.statusManager?.refreshNow();
+    this.updateConnections();
+    void this.syncRuntimeState();
   }
 
-  private stopAccountConfigRefresh(): void {
-    if (this.accountConfigRefreshTimer) {
-      clearInterval(this.accountConfigRefreshTimer);
-      this.accountConfigRefreshTimer = undefined;
+  private async requestServerRoomAssignment(reason: string): Promise<boolean> {
+    const runtimeConnection = this.runtimeConnection;
+    if (!runtimeConnection?.getConnectionState()) {
+      return false;
     }
+
+    const success = await runtimeConnection.requestRoomAssignment(reason);
+    if (success) {
+      this.serverAssignmentTag = runtimeConnection.getAssignmentTag();
+    }
+    return success;
+  }
+
+  private handleServerAssignmentTagChange(nextTag: string | null): void {
+    if (nextTag === this.serverAssignmentTag) {
+      return;
+    }
+
+    if (!this.isServerRoomAssignmentEnabled()) {
+      this.clearServerAssignedRooms(nextTag);
+      return;
+    }
+
+    if (!this.runtimeConnection?.getConnectionState()) {
+      return;
+    }
+
+    const { maxConnections } = this.configManager.getConfig();
+    if (this.serverRoomAssignmentRefreshing || !this.shouldRequestServerRooms(maxConnections)) {
+      return;
+    }
+
+    this.serverRoomAssignmentRefreshing = true;
+    void this.requestServerRoomAssignment('heartbeat-tag').finally(() => {
+      this.serverRoomAssignmentRefreshing = false;
+    });
+  }
+
+  private async handleAccountConfigTagChange(nextTag: string | null): Promise<void> {
+    if (nextTag === null || nextTag === this.accountConfigTag) {
+      return;
+    }
+
+    await this.refreshAccountConfig(nextTag);
+  }
+
+  private async handleRecordingRoomsTagChange(nextTag: string | null): Promise<void> {
+    if (nextTag === null || nextTag === this.recordingRoomsTag) {
+      return;
+    }
+
+    await this.refreshRecordingRooms(nextTag);
+  }
+
+  private async refreshRecordingRooms(nextTag?: string | null): Promise<void> {
+    if (!this.accountClient || this.recordingRoomsRefreshing || this.isStopping) {
+      return;
+    }
+
+    this.recordingRoomsRefreshing = true;
+    try {
+      const roomIds = await this.accountClient.getRecordingRooms();
+      const resolvedTag = this.accountClient.getRecordingRoomsTag() ?? nextTag ?? null;
+      const changed = !this.areRoomIdsEqual(this.recordingRoomIds, roomIds);
+      this.recordingRoomIds = roomIds;
+      this.recordingRoomsTag = resolvedTag;
+      if (changed) {
+        this.logger.info('录制房间列表已更新', { roomCount: roomIds.length });
+      }
+    } catch (error) {
+      this.recordError(error, { category: 'runtime-sync', code: 'RECORDING_ROOMS_SYNC_FAILED', recoverable: true });
+      this.logger.warn('同步录制房间列表失败', error);
+    } finally {
+      this.recordingRoomsRefreshing = false;
+    }
+  }
+
+  private resetAccountConfigSyncState(): void {
     this.accountConfigRefreshing = false;
+    this.accountConfigTag = null;
+    this.recordingRoomsRefreshing = false;
+    this.recordingRoomsTag = null;
+    this.recordingRoomIds = [];
   }
 
   private enqueueMessage(message: DanmakuMessage): void {
@@ -1333,14 +1489,40 @@ export class DanmakuClient extends EventEmitter {
       this.recordError(queueError, { category: 'queue', code: 'QUEUE_OVERFLOW', recoverable: true, roomId: dropped?.message.roomId });
       this.logQueueOverflow(queueError, dropped);
       this.emit('error', queueError, dropped?.message.roomId);
+      this.releaseQueuedMessage(dropped);
     }
 
+    const queuedMessage: DanmakuMessage = {
+      roomId: message.roomId,
+      cmd: message.cmd,
+      // 队列上行仅依赖 roomId/raw/timestamp，避免长时间持有原始 data 树导致内存上涨。
+      data: undefined,
+      raw: message.raw,
+      timestamp: message.timestamp
+    };
+
     this.pendingMessages.push({
-      message,
+      message: queuedMessage,
       retryCount: 0,
       nextRetryAt: Date.now()
     });
-    this.scheduleMessageDispatch(0);
+    this.scheduleMessageDispatch(this.messageUploadInterval);
+  }
+
+  private releaseQueuedMessage(queued?: QueuedMessage): void {
+    if (!queued) {
+      return;
+    }
+
+    queued.message.raw = '';
+    queued.message.data = undefined;
+  }
+
+  private clearPendingMessages(): void {
+    for (const queued of this.pendingMessages) {
+      this.releaseQueuedMessage(queued);
+    }
+    this.pendingMessages = [];
   }
 
   private logQueueOverflow(queueError: Error, dropped?: QueuedMessage): void {
@@ -1364,6 +1546,14 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private scheduleMessageDispatch(delayMs: number): void {
+    if (this.pendingMessages.length === 0) {
+      if (this.messageDispatchTimer) {
+        clearTimeout(this.messageDispatchTimer);
+        this.messageDispatchTimer = undefined;
+      }
+      return;
+    }
+
     const delay = Math.max(0, Math.floor(delayMs));
     if (this.messageDispatchTimer) {
       if (delay > 0) {
@@ -1394,64 +1584,78 @@ export class DanmakuClient extends EventEmitter {
 
     this.messageDispatching = true;
     try {
-      while (this.pendingMessages.length > 0) {
-        const now = Date.now();
-        const queued = this.pendingMessages[0];
-
-        if (queued.nextRetryAt > now) {
-          this.scheduleMessageDispatch(queued.nextRetryAt - now);
-          return;
-        }
-
-        const signalrConnection = this.signalrConnection;
-        if (!signalrConnection?.getConnectionState()) {
-          this.scheduleMessageDispatch(this.messageRetryBaseDelay);
-          return;
-        }
-
-        const batch = this.pendingMessages
-          .slice(0, this.messageBatchSize)
-          .filter(item => item.nextRetryAt <= now);
-        if (batch.length === 0) {
-          this.scheduleMessageDispatch(this.messageRetryBaseDelay);
-          return;
-        }
-
-        const sentCount = await signalrConnection.sendMessages(batch.map(item => item.message));
-        if (sentCount > 0) {
-          this.pendingMessages.splice(0, sentCount);
-          continue;
-        }
-
-        const failed = this.pendingMessages[0];
-        failed.retryCount += 1;
-        if (failed.retryCount >= this.messageRetryMaxAttempts) {
-          this.pendingMessages.shift();
-          const sendError = new Error(
-            `消息上行失败: room=${failed.message.roomId}, cmd=${failed.message.cmd}, retry=${failed.retryCount}`
-          );
-          this.recordError(sendError, {
-            category: 'signalr',
-            code: 'MESSAGE_UPLOAD_FAILED',
-            roomId: failed.message.roomId,
-            recoverable: false
-          });
-          this.emit('error', sendError, failed.message.roomId);
-          continue;
-        }
-
-        const delay = this.calculateMessageRetryDelay(failed.retryCount);
-        failed.nextRetryAt = now + delay;
-        this.logger.warn(
-          `消息上行失败，${delay}ms 后重试 (room=${failed.message.roomId}, cmd=${failed.message.cmd}, retry=${failed.retryCount})`
-        );
-        this.scheduleMessageDispatch(delay);
+      if (this.pendingMessages.length === 0) {
         return;
       }
+
+      const now = Date.now();
+      const queued = this.pendingMessages[0];
+
+      if (queued.nextRetryAt > now) {
+        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, queued.nextRetryAt - now));
+        return;
+      }
+
+      const runtimeConnection = this.runtimeConnection;
+      if (!runtimeConnection?.getConnectionState()) {
+        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
+        return;
+      }
+
+      const batch: QueuedMessage[] = [];
+      for (const item of this.pendingMessages) {
+        if (item.nextRetryAt > now || batch.length >= this.messageBatchSize) {
+          break;
+        }
+        batch.push(item);
+      }
+      if (batch.length === 0) {
+        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
+        return;
+      }
+
+      const sentCount = await runtimeConnection.sendMessages(batch.map(item => item.message));
+      if (sentCount > 0) {
+        const sentMessages = this.pendingMessages.splice(0, sentCount);
+        for (const sent of sentMessages) {
+          this.releaseQueuedMessage(sent);
+        }
+        return;
+      }
+
+      const failed = this.pendingMessages[0];
+      failed.retryCount += 1;
+      if (failed.retryCount >= this.messageRetryMaxAttempts) {
+        const dropped = this.pendingMessages.shift();
+        if (!dropped) {
+          return;
+        }
+        const { roomId, cmd } = dropped.message;
+        const sendError = new Error(
+          `消息上行失败: room=${roomId}, cmd=${cmd}, retry=${dropped.retryCount}`
+        );
+        this.recordError(sendError, {
+          category: 'runtime',
+          code: 'MESSAGE_UPLOAD_FAILED',
+          roomId,
+          recoverable: false
+        });
+        this.emit('error', sendError, roomId);
+        this.releaseQueuedMessage(dropped);
+        return;
+      }
+
+      const delay = this.calculateMessageRetryDelay(failed.retryCount);
+      failed.nextRetryAt = now + delay;
+      this.logger.warn(
+        `消息上行失败，${delay}ms 后重试 (room=${failed.message.roomId}, cmd=${failed.message.cmd}, retry=${failed.retryCount})`
+      );
+      this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, delay));
+      return;
     } finally {
       this.messageDispatching = false;
       if (this.pendingMessages.length > 0 && !this.messageDispatchTimer && this.isRunning && !this.isStopping) {
-        this.scheduleMessageDispatch(0);
+        this.scheduleMessageDispatch(this.messageUploadInterval);
       }
     }
   }
@@ -1466,6 +1670,14 @@ export class DanmakuClient extends EventEmitter {
 
     const queueSize = Math.floor(config.messageQueueMaxSize ?? 2000);
     this.messageQueueMaxSize = Math.max(MESSAGE_QUEUE_MIN_SIZE, queueSize);
+    if (this.pendingMessages.length > this.messageQueueMaxSize) {
+      const overflowCount = this.pendingMessages.length - this.messageQueueMaxSize;
+      const dropped = this.pendingMessages.splice(0, overflowCount);
+      for (const item of dropped) {
+        this.releaseQueuedMessage(item);
+      }
+      this.logger.warn(`消息队列容量调整后丢弃 ${overflowCount} 条待发送消息`);
+    }
 
     const retryBaseDelay = Math.floor(config.messageRetryBaseDelay ?? 1000);
     this.messageRetryBaseDelay = Math.max(MESSAGE_RETRY_MIN_DELAY, retryBaseDelay);
@@ -1476,7 +1688,7 @@ export class DanmakuClient extends EventEmitter {
     const retryMaxAttempts = Math.floor(config.messageRetryMaxAttempts ?? 6);
     this.messageRetryMaxAttempts = Math.max(MESSAGE_RETRY_MIN_ATTEMPTS, retryMaxAttempts);
 
-    const batchSize = Math.floor(config.batchUploadSize ?? 20);
+    const batchSize = Math.floor(config.batchUploadSize ?? 100);
     this.messageBatchSize = Math.min(MESSAGE_BATCH_MAX_SIZE, Math.max(MESSAGE_BATCH_MIN_SIZE, batchSize));
 
     const heartbeat = Math.floor(config.heartbeatInterval ?? 5000);
@@ -1497,7 +1709,7 @@ export class DanmakuClient extends EventEmitter {
     }
   }
 
-  private async refreshAccountConfig(): Promise<void> {
+  private async refreshAccountConfig(nextTag: string): Promise<void> {
     if (!this.accountClient || this.accountConfigRefreshing || this.isStopping || !this.isRunning) {
       return;
     }
@@ -1509,6 +1721,7 @@ export class DanmakuClient extends EventEmitter {
       this.configManager.applyAccountConfig(remoteConfig);
       this.configManager.validate();
       const nextConfig = this.configManager.getConfig();
+      this.accountConfigTag = this.accountClient.getCoreConfigTag() ?? nextTag;
 
       if (!this.hasHotConfigChanges(previousConfig, nextConfig)) {
         return;
@@ -1535,43 +1748,43 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private hasHotConfigChanges(previous: DanmakuConfig, next: DanmakuConfig): boolean {
+    const previousCookie = this.normalizeCookieRuntimeConfig(previous);
+    const nextCookie = this.normalizeCookieRuntimeConfig(next);
+    const cookieConfigChanged = this.hasCookieConfigChanged(previousCookie, nextCookie);
+
     return previous.maxConnections !== next.maxConnections
-      || previous.signalrUrl !== next.signalrUrl
+      || previous.runtimeUrl !== next.runtimeUrl
       || previous.autoReconnect !== next.autoReconnect
       || previous.reconnectInterval !== next.reconnectInterval
       || previous.statusCheckInterval !== next.statusCheckInterval
-      || previous.cookieCloudKey !== next.cookieCloudKey
-      || previous.cookieCloudPassword !== next.cookieCloudPassword
-      || previous.cookieCloudHost !== next.cookieCloudHost
-      || previous.cookieRefreshInterval !== next.cookieRefreshInterval
+      || cookieConfigChanged
       || previous.requestServerRooms !== next.requestServerRooms
       || normalizeLogLevel(previous.logLevel, 'info') !== normalizeLogLevel(next.logLevel, 'info')
       || (previous.messageQueueMaxSize ?? 2000) !== (next.messageQueueMaxSize ?? 2000)
       || (previous.messageRetryBaseDelay ?? 1000) !== (next.messageRetryBaseDelay ?? 1000)
       || (previous.messageRetryMaxDelay ?? 30000) !== (next.messageRetryMaxDelay ?? 30000)
       || (previous.messageRetryMaxAttempts ?? 6) !== (next.messageRetryMaxAttempts ?? 6)
-      || (previous.batchUploadSize ?? 20) !== (next.batchUploadSize ?? 20)
+      || (previous.batchUploadSize ?? 100) !== (next.batchUploadSize ?? 100)
       || (previous.heartbeatInterval ?? 5000) !== (next.heartbeatInterval ?? 5000)
       || (previous.lockAcquireRetryCount ?? 4) !== (next.lockAcquireRetryCount ?? 4)
       || (previous.lockAcquireRetryDelay ?? 1200) !== (next.lockAcquireRetryDelay ?? 1200)
       || (previous.lockAcquireForceTakeover ?? false) !== (next.lockAcquireForceTakeover ?? false)
       || (previous.errorHistoryLimit ?? 50) !== (next.errorHistoryLimit ?? 50)
-      || !this.areHeadersEqual(previous.signalrHeaders, next.signalrHeaders);
+      || !this.areHeadersEqual(previous.runtimeHeaders, next.runtimeHeaders);
   }
 
   private async applyHotConfigChanges(previous: DanmakuConfig, next: DanmakuConfig): Promise<void> {
     this.applyRuntimeTunings(next);
 
     const statusManagerChanged = previous.statusCheckInterval !== next.statusCheckInterval
-      || previous.signalrUrl !== next.signalrUrl;
-    const signalrChanged = previous.signalrUrl !== next.signalrUrl
+      || previous.runtimeUrl !== next.runtimeUrl;
+    const runtimeChanged = previous.runtimeUrl !== next.runtimeUrl
       || previous.autoReconnect !== next.autoReconnect
       || previous.reconnectInterval !== next.reconnectInterval
-      || !this.areHeadersEqual(previous.signalrHeaders, next.signalrHeaders);
-    const cookieChanged = previous.cookieCloudKey !== next.cookieCloudKey
-      || previous.cookieCloudPassword !== next.cookieCloudPassword
-      || previous.cookieCloudHost !== next.cookieCloudHost
-      || previous.cookieRefreshInterval !== next.cookieRefreshInterval;
+      || !this.areHeadersEqual(previous.runtimeHeaders, next.runtimeHeaders);
+    const previousCookie = this.normalizeCookieRuntimeConfig(previous);
+    const nextCookie = this.normalizeCookieRuntimeConfig(next);
+    const cookieChanged = this.hasCookieConfigChanged(previousCookie, nextCookie);
 
     if (cookieChanged) {
       this.rebuildCookieManager(next);
@@ -1581,21 +1794,25 @@ export class DanmakuClient extends EventEmitter {
       this.rebuildStatusManager(next);
     }
 
-    if (signalrChanged) {
-      await this.rebuildSignalRConnection(next);
+    if (runtimeChanged) {
+      await this.rebuildRuntimeConnection(next);
     }
 
     if (
       statusManagerChanged
-      || signalrChanged
+      || runtimeChanged
       || previous.maxConnections !== next.maxConnections
       || previous.requestServerRooms !== next.requestServerRooms
     ) {
       this.updateConnections();
     }
 
+    if (!this.isServerRoomAssignmentEnabled(next)) {
+      this.clearServerAssignedRooms(null);
+    }
+
     this.logger.info('账号配置热更新已应用', {
-      signalrChanged,
+      runtimeChanged,
       statusManagerChanged,
       cookieChanged,
       maxConnections: next.maxConnections,
@@ -1605,13 +1822,14 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private rebuildCookieManager(config: DanmakuConfig): void {
+    const normalized = this.normalizeCookieRuntimeConfig(config);
     this.cookieManager?.stopPeriodicUpdate();
-    this.cookieManager = this.configManager.hasCookieCloudConfig()
+    this.cookieManager = normalized.enabled
       ? new CookieManager(
-        config.cookieCloudKey!,
-        config.cookieCloudPassword!,
-        config.cookieCloudHost,
-        config.cookieRefreshInterval,
+        normalized.key!,
+        normalized.password!,
+        normalized.host,
+        normalized.refreshInterval,
         config.fetchImpl
       )
       : undefined;
@@ -1625,7 +1843,7 @@ export class DanmakuClient extends EventEmitter {
     this.statusManager?.stop();
     this.statusManager = new StreamerStatusManager(
       config.statusCheckInterval,
-      config.signalrUrl,
+      config.runtimeUrl,
       config.fetchImpl,
       this.logger.child('StatusManager')
     );
@@ -1636,83 +1854,148 @@ export class DanmakuClient extends EventEmitter {
     }
   }
 
-  private async rebuildSignalRConnection(config: DanmakuConfig): Promise<void> {
-    if (this.signalrConnection) {
-      this.signalrConnection.onRoomAssigned = undefined;
-      this.signalrConnection.onRoomReplaced = undefined;
-      this.signalrConnection.onServerDisconnect = undefined;
-      this.signalrConnection.onConnected = undefined;
-      this.signalrConnection.onDisconnected = undefined;
-      this.signalrConnection.onReconnected = undefined;
-      await this.signalrConnection.disconnect();
+  private async rebuildRuntimeConnection(config: DanmakuConfig): Promise<void> {
+    if (this.runtimeConnection) {
+      this.runtimeConnection.onRoomAssigned = undefined;
+      this.runtimeConnection.onRoomReplaced = undefined;
+      this.runtimeConnection.onServerDisconnect = undefined;
+      this.runtimeConnection.onConnected = undefined;
+      this.runtimeConnection.onDisconnected = undefined;
+      this.runtimeConnection.onReconnected = undefined;
+      this.runtimeConnection.onSessionInvalid = undefined;
+      await this.runtimeConnection.disconnect();
     }
 
-    this.signalrConnection = new SignalRConnection(
-      config.signalrUrl,
+    this.runtimeConnection = new RuntimeConnection(
+      config.runtimeUrl,
       config.autoReconnect,
       config.reconnectInterval,
-      config.signalrHeaders,
-      this.logger.child('SignalR')
+      config.runtimeHeaders,
+      this.logger.child('Runtime')
     );
-    this.setupSignalREvents();
+    this.setupRuntimeEvents();
 
     if (!this.isRunning || this.isStopping) {
       return;
     }
 
-    this.suppressSignalrAutoRegister = true;
+    this.suppressRuntimeAutoRegister = true;
     try {
-      const connected = await this.signalrConnection.connect();
+      const connected = await this.runtimeConnection.connect();
       if (!connected) {
-        throw new Error('配置热更新后无法连接SignalR');
+        throw new Error('配置热更新后无法连接Runtime');
       }
 
-      const registered = await this.signalrConnection.registerClient(this.buildRegisterRoomIds());
+      const registered = await this.runtimeConnection.registerClient(this.buildRegisterRoomIds());
       if (!registered) {
         throw new Error('配置热更新后客户端注册失败');
       }
+      this.serverAssignmentTag = this.runtimeConnection.getAssignmentTag();
     } finally {
-      this.suppressSignalrAutoRegister = false;
+      this.suppressRuntimeAutoRegister = false;
     }
 
     this.updateConnections();
     void this.syncRuntimeState();
-    this.scheduleMessageDispatch(0);
+    this.scheduleMessageDispatch(this.messageUploadInterval);
   }
 
-  private triggerSignalRClientRegistration(reason: 'connected' | 'reconnected'): void {
-    if (!this.isRunning || this.isStopping || this.suppressSignalrAutoRegister) {
+  private triggerRuntimeClientRegistration(reason: 'connected' | 'reconnected'): void {
+    if (!this.isRunning || this.isStopping || this.suppressRuntimeAutoRegister) {
       return;
     }
 
     const now = Date.now();
-    if (this.signalrClientRegistering || now - this.lastSignalrClientRegisterAt < 1000) {
+    if (this.runtimeClientRegistering || now - this.lastRuntimeClientRegisterAt < 1000) {
       return;
     }
 
-    this.signalrClientRegistering = true;
-    this.lastSignalrClientRegisterAt = now;
-    this.logger.info(`SignalR ${reason} 后重新注册客户端`);
-    void this.reRegisterSignalRClient().finally(() => {
-      this.signalrClientRegistering = false;
+    this.runtimeClientRegistering = true;
+    this.lastRuntimeClientRegisterAt = now;
+    this.logger.info(`Runtime ${reason} 后重新注册客户端`);
+    void this.reRegisterRuntimeClient().finally(() => {
+      this.runtimeClientRegistering = false;
     });
   }
 
-  private async reRegisterSignalRClient(): Promise<void> {
-    const signalrConnection = this.signalrConnection;
-    if (!signalrConnection?.getConnectionState()) {
+  private handleRuntimeSessionInvalid(reason: string): void {
+    if (!this.isRunning || this.isStopping) {
       return;
     }
 
-    const registered = await signalrConnection.registerClient(this.buildRegisterRoomIds());
+    this.logger.warn(`检测到 Runtime 会话失效，准备重新注册客户端: ${reason}`);
+    this.triggerRuntimeClientRegistration('reconnected');
+  }
+
+  private async reRegisterRuntimeClient(): Promise<void> {
+    const runtimeConnection = this.runtimeConnection;
+    if (!runtimeConnection?.getConnectionState()) {
+      return;
+    }
+
+    const registered = await runtimeConnection.registerClient(this.buildRegisterRoomIds());
     if (!registered) {
-      const error = new Error('SignalR重连后重新注册客户端失败');
-      this.recordError(error, { category: 'signalr', code: 'SIGNALR_REREGISTER_FAILED', recoverable: true });
+      const error = new Error('Runtime重连后重新注册客户端失败');
+      this.recordError(error, { category: 'runtime', code: 'RUNTIME_REREGISTER_FAILED', recoverable: true });
       this.emit('error', error);
       return;
     }
+    this.serverAssignmentTag = runtimeConnection.getAssignmentTag();
     this.updateConnections();
     void this.syncRuntimeState();
+  }
+
+  private normalizeCookieSecret(value?: string): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private normalizeCookieHost(host?: string): string {
+    const fallback = 'https://cookie.danmakus.com';
+    if (typeof host !== 'string') {
+      return fallback;
+    }
+    const trimmed = host.trim();
+    if (!trimmed) {
+      return fallback;
+    }
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  private normalizeCookieRuntimeConfig(config: DanmakuConfig): NormalizedCookieRuntimeConfig {
+    const key = this.normalizeCookieSecret(config.cookieCloudKey);
+    const password = this.normalizeCookieSecret(config.cookieCloudPassword);
+    const refreshRaw = Number(config.cookieRefreshInterval ?? 3600);
+    const refreshInterval = Number.isFinite(refreshRaw) && refreshRaw > 0
+      ? Math.max(60, Math.floor(refreshRaw))
+      : 3600;
+    return {
+      enabled: !!(key && password),
+      key,
+      password,
+      host: this.normalizeCookieHost(config.cookieCloudHost),
+      refreshInterval
+    };
+  }
+
+  private hasCookieConfigChanged(
+    previous: NormalizedCookieRuntimeConfig,
+    next: NormalizedCookieRuntimeConfig
+  ): boolean {
+    if (previous.enabled !== next.enabled) {
+      return true;
+    }
+    if (!next.enabled) {
+      return false;
+    }
+
+    return previous.key !== next.key
+      || previous.password !== next.password
+      || previous.host !== next.host
+      || previous.refreshInterval !== next.refreshInterval;
   }
 
   private areHeadersEqual(
@@ -1733,6 +2016,14 @@ export class DanmakuClient extends EventEmitter {
     }
 
     return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+  }
+
+  private areRoomIdsEqual(left: number[], right: number[]): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+
+    return left.every((roomId, index) => roomId === right[index]);
   }
 
   private recordError(error: unknown, context?: ClientErrorContext): void {
@@ -1772,8 +2063,8 @@ export class DanmakuClient extends EventEmitter {
     switch (category) {
       case 'network':
         return 'NETWORK_ERROR';
-      case 'signalr':
-        return 'SIGNALR_ERROR';
+      case 'runtime':
+        return 'RUNTIME_ERROR';
       case 'runtime-sync':
         return 'RUNTIME_SYNC_ERROR';
       case 'livews':

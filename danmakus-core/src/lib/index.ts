@@ -2,7 +2,7 @@
 export { DanmakuClient } from '../core/DanmakuClient';
 export { ConfigManager } from '../core/ConfigManager';
 export { CookieManager } from '../core/CookieManager';
-export { SignalRConnection } from '../core/SignalRConnection';
+export { RuntimeConnection } from '../core/RuntimeConnection';
 export { StreamerStatusManager } from '../core/StreamerStatusManager';
 
 // 导出类型

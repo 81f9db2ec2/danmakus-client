@@ -1,7 +1,21 @@
 import { CoreControlConfigDto, CoreRuntimeStateDto, ResponseValue } from '../types';
 
+type HeartbeatRuntimeStateResult = {
+  assignmentTag: string | null;
+  configTag: string | null;
+  recordingRoomsTag: string | null;
+};
+
+const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
+const CONFIG_TAG_HEADER = 'X-Core-Config-Tag';
+const RECORDING_ROOMS_TAG_HEADER = 'X-Core-Recording-Rooms-Tag';
+
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  private accountBaseUrl: string;
+  private coreRuntimeBaseUrl: string;
+  private coreConfigTag: string | null = null;
+  private recordingRoomsTag: string | null = null;
 
   constructor(
     private token: string,
@@ -9,14 +23,39 @@ export class AccountApiClient {
     fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
   ) {
     this.fetchImpl = fetchImpl ?? fetch;
+    this.accountBaseUrl = this.normalizeBaseUrl(this.baseUrl);
+    this.coreRuntimeBaseUrl = this.resolveCoreRuntimeBaseUrl(this.accountBaseUrl);
   }
 
   async getCoreConfig(): Promise<CoreControlConfigDto> {
-    return this.request<CoreControlConfigDto>('/core-config');
+    const response = await this.fetchWithBase(this.accountBaseUrl, '/core-config', {
+      method: 'GET'
+    });
+
+    const config = await this.parseResponsePayload<CoreControlConfigDto>(response);
+    this.coreConfigTag = this.resolveConfigTag(response.headers);
+    return config;
   }
 
-  async getRuntimeState(): Promise<CoreRuntimeStateDto | null> {
-    return this.request<CoreRuntimeStateDto | null>('/core-state');
+  getCoreConfigTag(): string | null {
+    return this.coreConfigTag;
+  }
+
+  async getRecordingRooms(): Promise<number[]> {
+    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, '/recording-rooms', {
+      method: 'GET'
+    });
+    const roomIds = await this.parseResponsePayload<number[]>(response);
+    this.recordingRoomsTag = this.normalizeTag(response.headers.get(RECORDING_ROOMS_TAG_HEADER));
+    return Array.from(new Set(
+      (Array.isArray(roomIds) ? roomIds : [])
+        .map((roomId) => Number(roomId))
+        .filter((roomId) => Number.isFinite(roomId) && roomId > 0)
+    ));
+  }
+
+  getRecordingRoomsTag(): string | null {
+    return this.recordingRoomsTag;
   }
 
   async syncRuntimeState(
@@ -24,30 +63,68 @@ export class AccountApiClient {
     options?: { force?: boolean }
   ): Promise<CoreRuntimeStateDto> {
     const suffix = options?.force ? '?force=true' : '';
-    return this.request<CoreRuntimeStateDto>(`/core-state/sync${suffix}` , {
+    return this.requestRuntime<CoreRuntimeStateDto>(`/sync${suffix}`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  }
+
+  async heartbeatRuntimeState(
+    payload: Partial<CoreRuntimeStateDto> & { clientId: string },
+    options?: { force?: boolean }
+  ): Promise<HeartbeatRuntimeStateResult> {
+    const suffix = options?.force ? '?force=true' : '';
+    return this.requestRuntimeSignal(`/heartbeat${suffix}`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
   }
 
   async releaseRuntimeState(clientId: string): Promise<void> {
-    await this.request(`/core-state?clientId=${encodeURIComponent(clientId)}`, {
+    await this.requestRuntime(`/state?clientId=${encodeURIComponent(clientId)}`, {
       method: 'DELETE'
     });
   }
 
-  private async request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  private requestRuntime<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+    return this.requestWithBase(this.coreRuntimeBaseUrl, path, init);
+  }
+
+  private async requestRuntimeSignal(path: string, init?: RequestInit): Promise<HeartbeatRuntimeStateResult> {
+    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, init);
+    const assignmentTag = this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER));
+    const configTag = this.normalizeTag(response.headers.get(CONFIG_TAG_HEADER));
+    const recordingRoomsTag = this.normalizeTag(response.headers.get(RECORDING_ROOMS_TAG_HEADER));
+    if (recordingRoomsTag !== null) {
+      this.recordingRoomsTag = recordingRoomsTag;
+    }
+    if (response.status === 204) {
+      return { assignmentTag, configTag, recordingRoomsTag };
+    }
+
+    await this.parseResponsePayload(response);
+    return { assignmentTag, configTag, recordingRoomsTag };
+  }
+
+  private async requestWithBase<T = unknown>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+    const response = await this.fetchWithBase(baseUrl, path, init);
+    return this.parseResponsePayload<T>(response);
+  }
+
+  private async fetchWithBase(baseUrl: string, path: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers ?? {});
     headers.set('Token', this.token);
     if (init?.body && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
 
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+    return this.fetchImpl(`${baseUrl}${path}`, {
       ...init,
       headers
     });
+  }
 
+  private async parseResponsePayload<T>(response: Response): Promise<T> {
     const contentType = response.headers.get('content-type');
     const isJson = contentType?.includes('application/json');
     const payload: ResponseValue<T> | T = isJson ? await response.json() : await response.text() as any;
@@ -68,5 +145,48 @@ export class AccountApiClient {
     }
 
     return payload as T;
+  }
+
+  private resolveConfigTag(headers: Headers): string | null {
+    return this.normalizeTag(headers.get(CONFIG_TAG_HEADER));
+  }
+
+  private normalizeTag(value: string | null): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeBaseUrl(url: string): string {
+    return url.replace(/\/+$/, '');
+  }
+
+  private resolveCoreRuntimeBaseUrl(accountBaseUrl: string): string {
+    const normalized = this.normalizeBaseUrl(accountBaseUrl);
+    try {
+      const parsed = new URL(normalized);
+      const path = parsed.pathname.replace(/\/+$/, '');
+      if (/\/account$/i.test(path)) {
+        parsed.pathname = path.replace(/\/account$/i, '/core-runtime');
+      } else if (/\/api\/v2(\/|$)/i.test(path)) {
+        parsed.pathname = '/api/v2/core-runtime';
+      } else {
+        parsed.pathname = `${path}/core-runtime`;
+      }
+      parsed.search = '';
+      parsed.hash = '';
+      return this.normalizeBaseUrl(parsed.toString());
+    } catch {
+      if (/\/account$/i.test(normalized)) {
+        return normalized.replace(/\/account$/i, '/core-runtime');
+      }
+      if (/\/api\/v2(\/|$)/i.test(normalized)) {
+        return normalized.replace(/\/api\/v2(?:\/.*)?$/i, '/api/v2/core-runtime');
+      }
+      return `${normalized}/core-runtime`;
+    }
   }
 }

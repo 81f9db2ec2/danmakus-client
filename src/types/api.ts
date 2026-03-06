@@ -8,7 +8,7 @@ export interface CoreStreamerConfigDto {
 
 export interface CoreControlConfigDto {
   maxConnections: number;
-  signalrUrl: string;
+  runtimeUrl: string;
   autoReconnect: boolean;
   reconnectInterval: number;
   statusCheckInterval: number;
@@ -20,6 +20,12 @@ export interface CoreControlConfigDto {
   requestServerRooms: boolean;
   allowedAreas: string[];
   allowedParentAreas: string[];
+}
+
+export interface LocalAppConfigDto {
+  autoStart: boolean;
+  startMinimized: boolean;
+  minimizeToTray: boolean;
 }
 
 export interface UserInfo {
@@ -62,7 +68,7 @@ export interface CoreRuntimeStateDto {
   clientVersion?: string | null;
   ip?: string | null;
   isRunning: boolean;
-  signalrConnected: boolean;
+  runtimeConnected: boolean;
   cookieValid: boolean;
   connectedRooms: number[];
   connectionInfo: CoreConnectionInfoDto[];

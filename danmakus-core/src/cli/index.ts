@@ -5,7 +5,7 @@ import { DanmakuClient } from '../core/DanmakuClient';
 import { CliOptions } from '../types';
 
 const program = new Command();
-const DEFAULT_SIGNALR_HUB_URL = process.env.DANMAKUS_SIGNALR_URL || 'https://ukamnads.icu/api/v2/user-hub';
+const DEFAULT_RUNTIME_URL = process.env.DANMAKUS_RUNTIME_URL || 'https://ukamnads.icu/api/v2/core-runtime';
 const DEFAULT_ACCOUNT_API_BASE = process.env.DANMAKUS_ACCOUNT_API || 'https://ukamnads.icu/api/v2/account';
 
 program
@@ -17,7 +17,7 @@ program
   .option('-m, --max-connections <number>', '最大连接数 (1-10)', '5')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
   .option('--account-api <url>', '账号 API 地址', DEFAULT_ACCOUNT_API_BASE)
-  .option('-s, --signalr-url <url>', 'SignalR Hub 地址（本地调试可覆盖）', DEFAULT_SIGNALR_HUB_URL)
+  .option('-s, --runtime-url <url>', 'Runtime API 地址（本地调试可覆盖）', DEFAULT_RUNTIME_URL)
   .option('-k, --cookie-key <key>', 'CookieCloud密钥')
   .option('-p, --cookie-password <password>', 'CookieCloud密码')
   .option('--cookie-host <host>', 'CookieCloud服务器地址', 'http://localhost:8088')
@@ -38,7 +38,7 @@ program
       const statusCheckInterval = parseInt(String(options.statusCheckInterval || '30'));
       const accountToken = options.token || process.env.DANMAKUS_TOKEN;
       const accountApiBase = options.accountApi || DEFAULT_ACCOUNT_API_BASE;
-      const signalrUrl = options.signalrUrl || DEFAULT_SIGNALR_HUB_URL;
+      const runtimeUrl = options.runtimeUrl || DEFAULT_RUNTIME_URL;
       const logLevel = options.logLevel || (options.verbose ? 'debug' : 'info');
 
       if (!accountToken) {
@@ -49,7 +49,7 @@ program
       // 显示启动信息
       console.log('=== 弹幕采集客户端 ===');
       console.log(`最大连接数: ${maxConnections}`);
-      console.log(`SignalR服务器: ${signalrUrl}`);
+      console.log(`Runtime服务器: ${runtimeUrl}`);
       console.log(`账号 API: ${accountApiBase}`);
       console.log(`状态检查间隔: ${statusCheckInterval}秒`);
       console.log(`日志级别: ${logLevel}`);
@@ -70,7 +70,7 @@ program
         cookieCloudKey: options.cookieKey,
         cookieCloudPassword: options.cookiePassword,
         cookieCloudHost: options.cookieHost,
-        signalrUrl,
+        runtimeUrl,
         statusCheckInterval,
         cookieRefreshInterval: 3600,
         autoReconnect: true,
@@ -180,7 +180,7 @@ program
               const status = client.getStatus();
               console.log('\n=== 客户端状态 ===');
               console.log(`运行中: ${status.isRunning}`);
-              console.log(`SignalR连接: ${status.signalrConnected}`);
+              console.log(`Runtime连接: ${status.runtimeConnected}`);
               console.log(`Cookie有效: ${status.cookieValid}`);
               console.log(`连接房间数: ${status.connectedRooms.length}`);
               console.log('==================\n');
@@ -243,13 +243,13 @@ program
     console.log('   danmakus --token "your-account-token" -k "your-key" -p "your-password"');
 
     console.log('');
-    console.log('4. 本地联调覆盖 SignalR 地址:');
-    console.log('   danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/user-hub"');
+    console.log('4. 本地联调覆盖 Runtime 地址:');
+    console.log('   danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runtime"');
 
     console.log('');
     console.log('5. 完整示例:');
     console.log('   danmakus --token "your-account-token" --account-api "https://api.example.com/api/v2/account" \\');
-    console.log('     -s "https://api.example.com/api/v2/user-hub" -k "your-key" -p "your-password" \\');
+    console.log('     -s "https://api.example.com/api/v2/core-runtime" -k "your-key" -p "your-password" \\');
     console.log('     --cookie-host "http://192.168.1.100:8088" --status-check-interval 30 -m 3 -v');
 
   });

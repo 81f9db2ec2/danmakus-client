@@ -59,7 +59,7 @@ type RemoteClientSnapshot = {
   clientId: string;
   ip: string | null;
   isRunning: boolean;
-  signalrConnected: boolean;
+  runtimeConnected: boolean;
   connectedRooms: number[];
   messageCount: number;
   lastHeartbeat: number | null;
@@ -67,7 +67,7 @@ type RemoteClientSnapshot = {
 
 type RuntimeStateSnapshot = {
   isRunning: boolean;
-  signalrConnected: boolean;
+  runtimeConnected: boolean;
   connectedRooms: number[];
   connectionInfo: ConnectionInfo[];
   messageCount: number;
@@ -196,11 +196,21 @@ const connectionRoomCards = computed(() => {
     const sessionMessageCount = Number.isFinite(Number(sessionMessageCountRaw))
       ? Number(sessionMessageCountRaw)
       : 0;
-    const sourceText = isRecording || (connection && priority !== 'server')
-      ? '关注录制'
+    const sourceKind = isRecording || (connection && priority !== 'server')
+      ? 'recording'
       : serverAssignedSet.has(roomId)
+        ? 'assigned'
+        : 'unknown';
+    const sourceText = sourceKind === 'recording'
+      ? '关注录制'
+      : sourceKind === 'assigned'
         ? '本站分配'
         : '未知来源';
+    const sourceClass = sourceKind === 'recording'
+      ? 'text-sky-500/70 dark:text-sky-400/70'
+      : sourceKind === 'assigned'
+        ? 'text-emerald-500/70 dark:text-emerald-400/70'
+        : 'text-muted-foreground';
 
     return {
       roomId,
@@ -213,6 +223,7 @@ const connectionRoomCards = computed(() => {
         ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
         : 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
       sourceText,
+      sourceClass,
       connectedAt: connection?.connectedAt ?? null,
       sessionMessageCount,
       todayDanmakusCount: Number(recordingMeta?.todayDanmakusCount ?? 0),
@@ -388,7 +399,7 @@ onBeforeUnmount(() => {
           <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span class="flex items-center gap-1">
               <PlugZap class="h-3 w-3" />
-              {{ runtimeState.signalrConnected ? 'SignalR 已连接' : 'SignalR 断开' }}
+              {{ runtimeState.runtimeConnected ? 'Runtime 已连接' : 'Runtime 断开' }}
             </span>
             <span class="flex items-center gap-1">
               <TvMinimal class="h-3 w-3" />
@@ -458,91 +469,55 @@ onBeforeUnmount(() => {
       </Card>
     </div>
 
-    <!-- Two columns: Message distribution + Clients -->
-    <div class="grid gap-4 lg:grid-cols-2">
-      <!-- Message type distribution bar chart -->
-      <Card class="bg-card/60">
-        <CardHeader class="pb-3">
-          <CardTitle class="text-sm">消息类型分布</CardTitle>
-          <CardDescription>{{ messageCmdRows.length }} 种类型，共 {{ runtimeState.messageCount.toLocaleString() }} 条消息</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div v-if="topMessageTypes.length > 0" class="space-y-2">
-            <div
-              v-for="row in topMessageTypes"
-              :key="row.cmd"
-              class="group flex items-center gap-2"
-              :title="`${row.cmd}: ${row.count.toLocaleString()} 条 (${row.percentage.toFixed(1)}%)`"
-            >
-              <span class="w-28 truncate text-xs text-muted-foreground" :title="row.cmd">{{ row.cmd }}</span>
-              <div class="h-5 flex-1 overflow-hidden rounded-sm bg-muted/50">
-                <div
-                  class="bar-fill h-full rounded-sm"
-                  :class="barColors[row.colorIndex] || barColors[8]"
-                  :style="{ width: Math.max(row.percentage, 0.5) + '%' }"
-                />
-              </div>
-              <span class="w-14 text-right text-xs tabular-nums text-muted-foreground">
-                {{ row.count.toLocaleString() }}
-              </span>
-            </div>
-          </div>
-          <div v-else class="flex h-32 items-center justify-center">
-            <p class="text-sm text-muted-foreground">暂无消息数据</p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- Online clients -->
-      <Card class="bg-card/60">
-        <CardHeader class="pb-3">
-          <div class="flex items-center justify-between">
-            <CardTitle class="text-sm">在线客户端</CardTitle>
-            <Badge variant="secondary" class="text-[10px]">{{ remoteClients.length }} 个</Badge>
-          </div>
-          <CardDescription>
-            账户: {{ accountName }}<span v-if="accountId !== null"> #{{ accountId }}</span>
-            · 本机: <code class="text-[11px]">{{ localClientId.slice(0, 8) }}...</code>
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div v-if="remoteClients.length > 0" class="space-y-2">
-            <div
-              v-for="client in remoteClients"
-              :key="client.clientId"
-              class="flex items-center justify-between rounded-lg border bg-background/40 p-2.5 transition-colors hover:bg-background/70"
-              :title="`${client.clientId === localClientId ? '本机客户端' : '远程客户端'} - ${client.isRunning ? '运行中' : '已停止'}`"
-            >
-              <div class="flex items-center gap-2.5">
-                <div :class="[
-                  'h-2 w-2 shrink-0 rounded-full',
-                  client.isRunning ? 'bg-emerald-500 animate-pulse-dot' : 'bg-muted-foreground/40'
-                ]" />
-                <div class="min-w-0">
-                  <div class="flex items-center gap-1.5">
-                    <span class="truncate text-xs font-medium">
-                      {{ client.clientId === localClientId ? '本机' : client.clientId.slice(0, 8) + '...' }}
-                    </span>
-                    <Badge v-if="client.clientId === localClientId" class="h-4 px-1 text-[9px]">本机</Badge>
-                    <Badge v-if="client.signalrConnected" variant="outline" class="h-4 px-1 text-[9px]">SR</Badge>
-                  </div>
-                  <p class="mt-0.5 text-[11px] text-muted-foreground">
-                    {{ client.connectedRooms.length }} 房间 · {{ client.messageCount.toLocaleString() }} 消息
-                    <span v-if="client.ip"> · {{ client.ip }}</span>
-                  </p>
+    <!-- Online clients -->
+    <Card class="bg-card/60">
+      <CardHeader class="pb-3">
+        <div class="flex items-center justify-between">
+          <CardTitle class="text-sm">在线客户端</CardTitle>
+          <Badge variant="secondary" class="text-[10px]">{{ remoteClients.length }} 个</Badge>
+        </div>
+        <CardDescription>
+          账户: {{ accountName }}<span v-if="accountId !== null"> #{{ accountId }}</span>
+          · 本机: <code class="text-[11px]">{{ localClientId.slice(0, 8) }}...</code>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div v-if="remoteClients.length > 0" class="space-y-2">
+          <div
+            v-for="client in remoteClients"
+            :key="client.clientId"
+            class="flex items-center justify-between rounded-lg border bg-background/40 p-2.5 transition-colors hover:bg-background/70"
+            :title="`${client.clientId === localClientId ? '本机客户端' : '远程客户端'} - ${client.isRunning ? '运行中' : '已停止'}`"
+          >
+            <div class="flex items-center gap-2.5">
+              <div :class="[
+                'h-2 w-2 shrink-0 rounded-full',
+                client.isRunning ? 'bg-emerald-500 animate-pulse-dot' : 'bg-muted-foreground/40'
+              ]" />
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <span class="truncate text-xs font-medium">
+                    {{ client.clientId === localClientId ? '本机' : client.clientId.slice(0, 8) + '...' }}
+                  </span>
+                  <Badge v-if="client.clientId === localClientId" class="h-4 px-1 text-[9px]">本机</Badge>
+                  <Badge v-if="client.runtimeConnected" variant="outline" class="h-4 px-1 text-[9px]">RT</Badge>
                 </div>
+                <p class="mt-0.5 text-[11px] text-muted-foreground">
+                  {{ client.connectedRooms.length }} 房间 · {{ client.messageCount.toLocaleString() }} 消息
+                  <span v-if="client.ip"> · {{ client.ip }}</span>
+                </p>
               </div>
-              <span v-if="client.lastHeartbeat" class="shrink-0 text-[10px] text-muted-foreground">
-                {{ new Date(client.lastHeartbeat).toLocaleTimeString() }}
-              </span>
             </div>
+            <span v-if="client.lastHeartbeat" class="shrink-0 text-[10px] text-muted-foreground">
+              {{ new Date(client.lastHeartbeat).toLocaleTimeString() }}
+            </span>
           </div>
-          <div v-else class="flex h-32 items-center justify-center rounded-lg border border-dashed">
-            <p class="text-sm text-muted-foreground">暂无在线客户端</p>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+        <div v-else class="flex h-32 items-center justify-center rounded-lg border border-dashed">
+          <p class="text-sm text-muted-foreground">暂无在线客户端</p>
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- Connection details -->
     <Card v-if="connectionRoomCards.length > 0" class="bg-card/60">
@@ -581,7 +556,9 @@ onBeforeUnmount(() => {
               <span class="rounded px-1.5 py-0.5 text-[10px] font-medium" :class="room.stateClass">
                 {{ room.stateText }}
               </span>
-              <span class="text-[10px] text-muted-foreground">{{ room.sourceText }}</span>
+              <span class="text-[10px] font-medium" :class="room.sourceClass">
+                {{ room.sourceText }}
+              </span>
               <span class="text-[10px] text-muted-foreground">本次 {{ room.sessionMessageCount.toLocaleString() }} 条</span>
               <span v-if="room.connectedAt" class="text-[10px] text-muted-foreground">
                 {{ new Date(room.connectedAt).toLocaleTimeString() }}
@@ -606,6 +583,39 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- Message type distribution bar chart -->
+    <Card class="bg-card/60">
+      <CardHeader class="pb-3">
+        <CardTitle class="text-sm">消息类型分布</CardTitle>
+        <CardDescription>{{ messageCmdRows.length }} 种类型，共 {{ runtimeState.messageCount.toLocaleString() }} 条消息</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div v-if="topMessageTypes.length > 0" class="space-y-2">
+          <div
+            v-for="row in topMessageTypes"
+            :key="row.cmd"
+            class="group flex items-center gap-2"
+            :title="`${row.cmd}: ${row.count.toLocaleString()} 条 (${row.percentage.toFixed(1)}%)`"
+          >
+            <span class="w-28 truncate text-xs text-muted-foreground" :title="row.cmd">{{ row.cmd }}</span>
+            <div class="h-5 flex-1 overflow-hidden rounded-sm bg-muted/50">
+              <div
+                class="bar-fill h-full rounded-sm"
+                :class="barColors[row.colorIndex] || barColors[8]"
+                :style="{ width: Math.max(row.percentage, 0.5) + '%' }"
+              />
+            </div>
+            <span class="w-14 text-right text-xs tabular-nums text-muted-foreground">
+              {{ row.count.toLocaleString() }}
+            </span>
+          </div>
+        </div>
+        <div v-else class="flex h-32 items-center justify-center">
+          <p class="text-sm text-muted-foreground">暂无消息数据</p>
         </div>
       </CardContent>
     </Card>

@@ -69,7 +69,7 @@ export class ScopedLogger {
     const prefix = this.scope ? `[${this.scope}]` : '';
 
     if (method === 'debug') {
-      console.debug(prefix, ...args);
+      console.log(prefix, ...args);
       return;
     }
     if (method === 'info') {
