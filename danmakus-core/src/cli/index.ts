@@ -16,6 +16,7 @@ program
 
 program
   .option('-m, --max-connections <number>', '最大连接数 (1-10)', '5')
+  .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
   .option('--account-api <url>', '账号 API 地址', DEFAULT_ACCOUNT_API_BASE)
   .option('-s, --runtime-url <url>', 'Runtime API 地址（本地调试可覆盖）', DEFAULT_RUNTIME_URL)
@@ -37,10 +38,18 @@ program
       }
 
       const statusCheckInterval = parseInt(String(options.statusCheckInterval || '30'));
+      const capacityOverride = options.capacityOverride !== undefined
+        ? parseInt(String(options.capacityOverride))
+        : undefined;
       const accountToken = options.token || process.env.DANMAKUS_TOKEN;
       const accountApiBase = options.accountApi || DEFAULT_ACCOUNT_API_BASE;
       const runtimeUrl = options.runtimeUrl || DEFAULT_RUNTIME_URL;
       const logLevel = options.logLevel || (options.verbose ? 'debug' : 'info');
+
+      if (capacityOverride !== undefined && (isNaN(capacityOverride) || capacityOverride < 1 || capacityOverride > 100)) {
+        console.error('错误: 槽位覆盖数必须在1-100之间');
+        process.exit(1);
+      }
 
       if (!accountToken) {
         console.error('错误: 必须提供账号 Token (--token)');
@@ -54,6 +63,9 @@ program
       console.log(`账号 API: ${accountApiBase}`);
       console.log(`状态检查间隔: ${statusCheckInterval}秒`);
       console.log(`日志级别: ${logLevel}`);
+      if (capacityOverride !== undefined) {
+        console.log(`槽位覆盖数: ${capacityOverride}`);
+      }
 
       console.log('账号配置: 自动从远端账号中心加载');
 
@@ -73,6 +85,7 @@ program
         cookieCloudHost: options.cookieHost,
         runtimeUrl,
         statusCheckInterval,
+        capacityOverride,
         cookieRefreshInterval: 3600,
         autoReconnect: true,
         reconnectInterval: 5000,
@@ -196,7 +209,7 @@ program
     console.log('5. 完整示例:');
     console.log('   danmakus --token "your-account-token" --account-api "https://api.example.com/api/v2/account" \\');
     console.log('     -s "https://api.example.com/api/v2/core-runtime" -k "your-key" -p "your-password" \\');
-    console.log('     --cookie-host "http://192.168.1.100:8088" --status-check-interval 30 -m 3 -v');
+    console.log('     --cookie-host "http://192.168.1.100:8088" --status-check-interval 30 -m 5 --capacity-override 3 -v');
 
   });
 

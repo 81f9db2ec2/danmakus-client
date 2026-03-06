@@ -37,7 +37,4 @@ export function attachCliEventListeners(
     }
   });
 
-  client.on('roomAssigned', (roomId) => {
-    logger.log(`🎯 服务器分配房间: ${roomId}`);
-  });
 }

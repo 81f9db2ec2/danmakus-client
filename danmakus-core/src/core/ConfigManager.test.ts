@@ -60,4 +60,17 @@ describe('ConfigManager CookieCloud overrides', () => {
     expect(manager.getConfig().cookieCloudHost).toBe('https://cookie.danmakus.com');
     expect(manager.getConfig().cookieRefreshInterval).toBe(3600);
   });
+
+  test('keeps local capacityOverride from cli options', () => {
+    const manager = new ConfigManager({
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5
+    });
+
+    manager.updateFromCliOptions({
+      capacityOverride: 3
+    });
+
+    expect(manager.getConfig().capacityOverride).toBe(3);
+  });
 });

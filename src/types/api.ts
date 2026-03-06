@@ -26,6 +26,7 @@ export interface LocalAppConfigDto {
   cookieCloudPassword: string;
   cookieCloudHost: string;
   cookieRefreshInterval: number;
+  capacityOverride: number | null;
 }
 
 export interface UserInfo {
@@ -72,7 +73,7 @@ export interface CoreRuntimeStateDto {
   cookieValid: boolean;
   connectedRooms: number[];
   connectionInfo: CoreConnectionInfoDto[];
-  serverAssignedRooms: number[];
+  holdingRooms: number[];
   messageCount: number;
   lastRoomAssigned?: number | null;
   lastError?: string | null;

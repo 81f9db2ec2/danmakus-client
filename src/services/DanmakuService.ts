@@ -18,7 +18,7 @@ type RemoteClientSnapshot = {
   cookieValid: boolean;
   connectedRooms: number[];
   connectionInfo: ConnectionInfoSnapshot[];
-  serverAssignedRooms: number[];
+  holdingRooms: number[];
   messageCount: number;
   lastRoomAssigned: number | null;
   lastError: string | null;
@@ -148,7 +148,7 @@ class DanmakuService {
     messageCmdCountMap: {} as Record<string, number>,
     roomMessageCountMap: {} as Record<string, number>,
     streamerStatuses: [] as StreamerStatus[],
-    serverAssignedRooms: [] as number[],
+    holdingRooms: [] as number[],
     lastError: null as string | null,
     lastRoomAssigned: null as number | null,
     cookieValid: false,
@@ -169,7 +169,7 @@ class DanmakuService {
     return DanmakuService.instance;
   }
 
-  public async initialize(localConfig?: Pick<LocalAppConfigDto, 'cookieCloudKey' | 'cookieCloudPassword' | 'cookieCloudHost' | 'cookieRefreshInterval'>): Promise<void> {
+  public async initialize(localConfig?: Pick<LocalAppConfigDto, 'cookieCloudKey' | 'cookieCloudPassword' | 'cookieCloudHost' | 'cookieRefreshInterval' | 'capacityOverride'>): Promise<void> {
     await this.disposeExistingClient();
 
     const token = getAuthToken();
@@ -187,6 +187,7 @@ class DanmakuService {
       cookieCloudPassword: localConfig?.cookieCloudPassword?.trim() || undefined,
       cookieCloudHost: localConfig?.cookieCloudHost?.trim() || undefined,
       cookieRefreshInterval: localConfig?.cookieRefreshInterval,
+      capacityOverride: localConfig?.capacityOverride ?? undefined,
       runtimeHeaders: this.buildRuntimeHeaders(),
       accountToken: token,
       clientVersion: 'desktop',
@@ -222,9 +223,9 @@ class DanmakuService {
         connectedAt: string | number;
       }>(getRemoteField(raw, 'connectionInfo', 'ConnectionInfo'), 'connectionInfo').map(normalizeConnectionInfo);
 
-      const serverAssignedRooms = ensureNumberArray(
-        getRemoteField(raw, 'serverAssignedRooms', 'ServerAssignedRooms'),
-        'serverAssignedRooms'
+      const holdingRooms = ensureNumberArray(
+        getRemoteField(raw, 'holdingRooms', 'HoldingRooms'),
+        'holdingRooms'
       );
 
       const messageCountRaw = getRemoteField(raw, 'messageCount', 'MessageCount');
@@ -245,7 +246,7 @@ class DanmakuService {
         cookieValid: getRemoteBoolean(raw, 'cookieValid', 'CookieValid'),
         connectedRooms,
         connectionInfo,
-        serverAssignedRooms,
+        holdingRooms,
         messageCount: Number.isFinite(messageCount) ? messageCount : 0,
         lastRoomAssigned: Number.isFinite(lastRoomAssigned) ? lastRoomAssigned : null,
         lastError: typeof lastError === 'string' ? lastError : (lastError == null ? null : String(lastError)),
@@ -272,7 +273,7 @@ class DanmakuService {
       this.state.runtimeConnected = false;
       this.state.connectedRooms = [];
       this.state.connectionInfo = [];
-      this.state.serverAssignedRooms = [];
+      this.state.holdingRooms = [];
       this.state.messageCount = 0;
       this.state.messageCmdCountMap = {};
       this.state.lastRoomAssigned = null;
@@ -340,7 +341,7 @@ class DanmakuService {
     this.state.messageCmdCountMap = {};
     this.state.roomMessageCountMap = {};
     this.state.streamerStatuses = [];
-    this.state.serverAssignedRooms = [];
+    this.state.holdingRooms = [];
     this.state.lastError = null;
     this.state.lastRoomAssigned = null;
     this.state.cookieValid = false;
@@ -365,23 +366,7 @@ class DanmakuService {
       this.state.streamerStatuses = statuses.map(status => ({ ...status }));
     });
 
-    this.client.on('roomAssigned', (roomId: number) => {
-      if (!this.state.serverAssignedRooms.includes(roomId)) {
-        this.state.serverAssignedRooms = [...this.state.serverAssignedRooms, roomId];
-      }
-      this.state.lastRoomAssigned = roomId;
-      this.applyStatusSnapshot();
-    });
 
-    this.client.on('roomReplaced', ({ oldRoomId, newRoomId }) => {
-      const nextRooms = this.state.serverAssignedRooms.filter(roomId => roomId !== oldRoomId);
-      if (!nextRooms.includes(newRoomId)) {
-        nextRooms.push(newRoomId);
-      }
-      this.state.serverAssignedRooms = nextRooms;
-      this.state.lastRoomAssigned = newRoomId;
-      this.applyStatusSnapshot();
-    });
 
     this.client.on('msg', (message: DanmakuMessage) => {
       this.state.messageCount += 1;
@@ -409,7 +394,7 @@ class DanmakuService {
     this.state.cookieValid = status.cookieValid;
     
     // Update extended state
-    this.state.serverAssignedRooms = [...status.serverAssignedRooms];
+    this.state.holdingRooms = [...status.holdingRooms];
     this.state.messageCount = status.messageCount;
     this.state.lastRoomAssigned = status.lastRoomAssigned ?? null;
     this.state.lastError = status.lastError ?? null;

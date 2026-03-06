@@ -645,7 +645,7 @@ const handleForceTakeover = async () => {
       cookieValid: false,
       connectedRooms: [],
       connectionInfo: [],
-      serverAssignedRooms: [],
+      holdingRooms: [],
       messageCount: 0,
       lastRoomAssigned: null,
       lastError: null

@@ -43,7 +43,7 @@ export class StreamerStatusManager {
   private checkTimer?: ReturnType<typeof setInterval>;
   private fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   private statusApiUrl: string;
-  private serverRooms: number[] = [];
+  private holdingRooms: number[] = [];
   private recordingRooms: number[] = [];
   private lastManualRefreshAt = 0;
 
@@ -265,7 +265,7 @@ export class StreamerStatusManager {
    */
   getRoomsToConnect(
     recordingRooms: number[],
-    serverAssignedRooms: number[],
+    holdingRooms: number[],
     maxConnections: number
   ): { roomId: number; priority: 'high' | 'server' }[] {
     const rooms: { roomId: number; priority: 'high' | 'server' }[] = [];
@@ -273,7 +273,7 @@ export class StreamerStatusManager {
       recordingRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
     ));
     const normalizedServerRooms = Array.from(new Set(
-      serverAssignedRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
+      holdingRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
     ));
 
     for (const roomId of normalizedRecordingRooms) {
@@ -302,11 +302,11 @@ export class StreamerStatusManager {
     return rooms;
   }
 
-  updateServerRooms(rooms: number[]): void {
+  updateHoldingRooms(rooms: number[]): void {
     const normalized = rooms
       .map(r => Number(r))
       .filter(r => Number.isFinite(r) && r > 0);
-    this.serverRooms = Array.from(new Set(normalized));
+    this.holdingRooms = Array.from(new Set(normalized));
   }
 
   updateRecordingRooms(rooms: number[]): void {
@@ -317,7 +317,7 @@ export class StreamerStatusManager {
   }
 
   private getTrackedRoomIds(): number[] {
-    const all = [...this.recordingRooms, ...this.serverRooms]
+    const all = [...this.recordingRooms, ...this.holdingRooms]
       .map(r => Number(r))
       .filter(r => Number.isFinite(r) && r > 0);
     return Array.from(new Set(all));

@@ -34,7 +34,8 @@ const DEFAULT_LOCAL_APP_CONFIG: LocalAppConfigDto = {
   cookieCloudKey: '',
   cookieCloudPassword: '',
   cookieCloudHost: '',
-  cookieRefreshInterval: 3600
+  cookieRefreshInterval: 3600,
+  capacityOverride: null
 };
 
 const normalizeCookieText = (value: unknown): string => {
@@ -57,6 +58,17 @@ const normalizeCookieRefreshInterval = (value: unknown): number => {
   return Math.max(60, Math.floor(next));
 };
 
+const normalizeCapacityOverride = (value: unknown): number | null => {
+  if (value === '' || value === null || value === undefined) {
+    return null;
+  }
+  const next = Number(value);
+  if (!Number.isFinite(next) || next <= 0) {
+    return null;
+  }
+  return Math.min(100, Math.floor(next));
+};
+
 const normalizeConfig = (value: unknown): LocalAppConfigDto => {
   if (!value || typeof value !== 'object') {
     return { ...DEFAULT_LOCAL_APP_CONFIG };
@@ -69,7 +81,8 @@ const normalizeConfig = (value: unknown): LocalAppConfigDto => {
     cookieCloudKey: normalizeCookieText(raw.cookieCloudKey),
     cookieCloudPassword: normalizeCookieText(raw.cookieCloudPassword),
     cookieCloudHost: normalizeCookieHost(raw.cookieCloudHost),
-    cookieRefreshInterval: normalizeCookieRefreshInterval(raw.cookieRefreshInterval)
+    cookieRefreshInterval: normalizeCookieRefreshInterval(raw.cookieRefreshInterval),
+    capacityOverride: normalizeCapacityOverride(raw.capacityOverride)
   };
 };
 

@@ -70,6 +70,7 @@ export interface LiveWsConnection {
 // 配置类型
 export interface DanmakuConfig {
   maxConnections: number;
+  capacityOverride?: number;
   streamers: StreamerConfig[]; // 替换原来的 roomIds
   cookieCloudKey?: string;
   cookieCloudPassword?: string;
@@ -141,8 +142,6 @@ export interface DanmakuClientEvents {
   'disconnected': (roomId: number) => void;
   'error': (error: Error, roomId?: number) => void;
   'cookieUpdated': () => void;
-  'roomAssigned': (roomId: number) => void;
-  'roomReplaced': (payload: { oldRoomId: number; newRoomId: number }) => void;
   'streamerStatusUpdated': (statuses: StreamerStatus[]) => void;
 }
 
@@ -188,11 +187,27 @@ export interface CoreRuntimeStateDto {
   cookieValid: boolean;
   connectedRooms: number[];
   connectionInfo: CoreConnectionInfoDto[];
-  serverAssignedRooms: number[];
+  holdingRooms: number[];
   messageCount: number;
   lastRoomAssigned?: number | null;
   lastError?: string | null;
   lastHeartbeat: string | number;
+}
+
+export interface RuntimeRoomPullRequestDto {
+  holdingRooms: number[];
+  connectedRooms: number[];
+  desiredCount: number;
+  capacityOverride?: number;
+  reason?: string;
+}
+
+export interface RuntimeRoomPullResponseDto {
+  holdingRooms: number[];
+  newlyAssignedRooms: number[];
+  droppedRooms: number[];
+  effectiveCapacity: number;
+  nextRequestAfter?: number | null;
 }
 
 // 动态事件类型，支持特定cmd的订阅
@@ -203,6 +218,7 @@ export type DanmakuEventMap = DanmakuClientEvents & {
 // CLI选项类型
 export interface CliOptions {
   maxConnections?: number;
+  capacityOverride?: number;
   cookieKey?: string;
   cookiePassword?: string;
   cookieHost?: string;

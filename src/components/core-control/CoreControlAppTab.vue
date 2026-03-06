@@ -52,6 +52,19 @@ const assignCookieRefreshInterval = (raw: string | number) => {
   }
   props.localConfig.cookieRefreshInterval = Math.max(60, Math.floor(value));
 };
+
+const assignCapacityOverride = (raw: string | number) => {
+  const text = String(raw).trim();
+  if (!text) {
+    props.localConfig.capacityOverride = null;
+    return;
+  }
+  const value = Number(text);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+  props.localConfig.capacityOverride = Math.min(100, Math.max(1, Math.floor(value)));
+};
 </script>
 
 <template>
@@ -138,6 +151,30 @@ const assignCookieRefreshInterval = (raw: string | number) => {
           <Switch
             v-model:model-value="props.localConfig.minimizeToTray"
             :disabled="!isDesktopRuntime"
+          />
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card class="bg-card/60">
+      <CardHeader class="pb-3">
+        <CardTitle class="text-sm">本地核心覆盖</CardTitle>
+        <CardDescription>仅保存在当前客户端本地，不会上传到服务器；修改后重启核心生效</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div class="rounded-lg border bg-background/30 px-3 py-2 text-xs text-muted-foreground space-y-1">
+          <p>留空表示跟随服务端 `maxConnections`；填写后会以更小的值作为当前客户端可申请槽位上限。</p>
+          <p>CLI 模式可继续使用启动参数 `--capacity-override` 直接设置。</p>
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-muted-foreground">槽位覆盖数（可选，1-100）</label>
+          <Input
+            :model-value="props.localConfig.capacityOverride ?? ''"
+            type="number"
+            min="1"
+            max="100"
+            placeholder="留空表示跟随服务端"
+            @update:model-value="assignCapacityOverride"
           />
         </div>
       </CardContent>

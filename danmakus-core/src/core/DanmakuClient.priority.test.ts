@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { DanmakuClient } from "./DanmakuClient";
 
 describe("DanmakuClient room connect queue", () => {
-  it("waits 10 seconds before the first queued room connect", () => {
+  it("starts the first queued room connect immediately", () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",
       maxConnections: 5,
@@ -19,7 +19,7 @@ describe("DanmakuClient room connect queue", () => {
     try {
       client.isRunning = true;
       client.queueRoomConnect(6154037, "high");
-      expect(delays[0]).toBe(10_000);
+      expect(delays[0]).toBe(0);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
       client.roomConnectQueueTimer = undefined;
@@ -27,8 +27,8 @@ describe("DanmakuClient room connect queue", () => {
   });
 });
 
-describe("DanmakuClient recording priority", () => {
-  it("drops server-assigned rooms when recording rooms already fill capacity", () => {
+describe("DanmakuClient room pull flow", () => {
+  it("requests rooms with current holding state and applies the returned holding rooms", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",
       maxConnections: 5,
@@ -36,24 +36,60 @@ describe("DanmakuClient recording priority", () => {
       streamers: [],
     });
 
-    client.recordingRoomIds = [101, 102, 103, 104, 105];
-    client.serverAssignedRooms = [201, 202];
-    client.connections = new Map();
+    const closedRooms: number[] = [];
+    client.holdingRoomIds = [101, 102];
+    client.connections = new Map([
+      [101, { roomId: 101, priority: "server", connectedAt: 1, connection: { close: () => closedRooms.push(101) } }],
+      [999, { roomId: 999, priority: "high", connectedAt: 1, connection: { close: () => closedRooms.push(999) } }],
+    ]);
     client.statusManager = {
-      updateServerRooms: (rooms: number[]) => {
-        client._updatedServerRooms = rooms;
+      updateHoldingRooms: (rooms: number[]) => {
+        client._updatedRooms = rooms;
       },
-      updateRecordingRooms: () => undefined,
-      getStreamerStatus: (roomId: number) => ({ roomId, isLive: true }),
+      refreshNow: () => {
+        client._refreshed = true;
+      },
+    };
+    client.updateConnections = () => {
+      client._connectionsUpdated = true;
+    };
+    client.syncRuntimeState = async () => {
+      client._synced = true;
+    };
+    client.runtimeConnection = {
+      getConnectionState: () => true,
+      requestRooms: async (payload: unknown) => {
+        client._requestPayload = payload;
+        return {
+          holdingRooms: [102, 103],
+          newlyAssignedRooms: [103],
+          droppedRooms: [101],
+          effectiveCapacity: 5,
+          nextRequestAfter: null,
+        };
+      },
     };
 
-    client.trimServerAssignedRoomsToCapacity(5);
+    const success = await client.refreshHoldingRoomsIfNeeded(5, "manual-refresh");
 
-    expect(client.serverAssignedRooms).toEqual([]);
-    expect(client._updatedServerRooms).toEqual([]);
+    expect(success).toBe(true);
+    expect(client._requestPayload).toEqual({
+      reason: "manual-refresh",
+      holdingRooms: [101, 102],
+      connectedRooms: [101],
+      desiredCount: 3,
+      capacityOverride: undefined,
+    });
+    expect(client.holdingRoomIds).toEqual([102, 103]);
+    expect(client._updatedRooms).toEqual([102, 103]);
+    expect(client.connections.has(101)).toBe(false);
+    expect(client.connections.has(999)).toBe(true);
+    expect(closedRooms).toEqual([101]);
+    expect(client._connectionsUpdated).toBe(true);
+    expect(client._synced).toBe(true);
   });
 
-  it("prefers non-recording server rooms when only one extra slot remains", () => {
+  it("forces a room request during reconnect even when cooldown is active and desiredCount is zero", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",
       maxConnections: 5,
@@ -61,20 +97,37 @@ describe("DanmakuClient recording priority", () => {
       streamers: [],
     });
 
-    client.recordingRoomIds = [101, 102, 103, 104];
-    client.serverAssignedRooms = [101, 102, 103, 104, 201];
-    client.connections = new Map();
+    client.holdingRoomIds = [101, 102, 103, 104, 105];
+    client.nextHoldingRoomRequestAt = Date.now() + 60_000;
     client.statusManager = {
-      updateServerRooms: (rooms: number[]) => {
-        client._updatedServerRooms = rooms;
+      updateHoldingRooms: () => undefined,
+      refreshNow: () => undefined,
+    };
+    client.updateConnections = () => undefined;
+    client.syncRuntimeState = async () => undefined;
+    client.runtimeConnection = {
+      getConnectionState: () => true,
+      requestRooms: async (payload: unknown) => {
+        client._requestPayload = payload;
+        return {
+          holdingRooms: [101, 102, 103, 104, 105],
+          newlyAssignedRooms: [],
+          droppedRooms: [],
+          effectiveCapacity: 5,
+          nextRequestAfter: null,
+        };
       },
-      updateRecordingRooms: () => undefined,
-      getStreamerStatus: (roomId: number) => ({ roomId, isLive: true }),
     };
 
-    client.trimServerAssignedRoomsToCapacity(5);
+    const success = await client.refreshHoldingRoomsIfNeeded(5, "runtime-reconnect", { force: true });
 
-    expect(client.serverAssignedRooms).toEqual([201]);
-    expect(client._updatedServerRooms).toEqual([201]);
+    expect(success).toBe(true);
+    expect(client._requestPayload).toEqual({
+      reason: "runtime-reconnect",
+      holdingRooms: [101, 102, 103, 104, 105],
+      connectedRooms: [],
+      desiredCount: 0,
+      capacityOverride: undefined,
+    });
   });
 });

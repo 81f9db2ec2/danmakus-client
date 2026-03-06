@@ -79,8 +79,9 @@ client.on('msg', (message) => {
   console.log(`[${message.roomId}] ${message.cmd}`);
 });
 
-client.on('roomAssigned', (roomId) => {
-  console.log('server assigned room:', roomId);
+client.on('streamerStatusUpdated', () => {
+  const status = client.getStatus();
+  console.log('holding rooms:', status.holdingRooms);
 });
 
 await client.start();
@@ -114,8 +115,7 @@ interface DanmakuConfig {
 - `connected`: 房间连接成功
 - `disconnected`: 房间断开
 - `error`: 客户端或房间错误
-- `roomAssigned`: 服务端分配新房间
-- `streamerStatusUpdated`: 主播状态刷新
+- `streamerStatusUpdated`: 主播状态刷新，可结合 `getStatus().holdingRooms` 读取当前持有房间
 
 ## 开发说明
 

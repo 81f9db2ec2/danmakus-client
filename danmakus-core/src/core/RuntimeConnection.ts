@@ -8,9 +8,20 @@ type RuntimeEnvelope<T> = {
   message?: string;
 };
 
-type RoomAssignmentResponse = {
-  roomIds?: number[];
-  assignmentTag?: string | null;
+type RequestRoomPayload = {
+  reason?: string;
+  holdingRooms: number[];
+  connectedRooms: number[];
+  desiredCount: number;
+  capacityOverride?: number;
+};
+
+type RequestRoomResponse = {
+  holdingRooms: number[];
+  newlyAssignedRooms: number[];
+  droppedRooms: number[];
+  effectiveCapacity: number;
+  nextRequestAfter?: number | null;
 };
 
 type UploadDanmakusResponse = {
@@ -25,8 +36,6 @@ export class RuntimeConnection {
   private readonly token?: string;
   private readonly clientId?: string;
   private readonly passthroughHeaders?: Record<string, string>;
-  private assignedRoomIds: number[] = [];
-  private assignmentTag: string | null = null;
 
   constructor(
     url: string,
@@ -64,7 +73,6 @@ export class RuntimeConnection {
 
   async disconnect(): Promise<void> {
     this.isConnected = false;
-    this.assignmentTag = null;
     this.logger.info('核心运行态接口连接已断开');
   }
 
@@ -104,55 +112,35 @@ export class RuntimeConnection {
     }
   }
 
-  async registerClient(roomIds: number[]): Promise<boolean> {
-    if (!this.isConnected) {
-      this.logger.warn('核心运行态接口未连接，无法注册客户端');
-      return false;
-    }
-
-    this.assignedRoomIds = roomIds
-      .map((id) => Number(id))
-      .filter((id) => Number.isFinite(id) && id > 0);
-
-    try {
-      const assigned = await this.requestRoomAssignment('client-register');
-      if (!assigned) {
-        return false;
-      }
-      this.logger.info('客户端注册成功');
-      return true;
-    } catch (error) {
-      this.logger.error('客户端注册失败:', error);
-      return false;
-    }
-  }
-
-  async requestRoomAssignment(reason: string = 'assignment-sync'): Promise<boolean> {
+  async requestRooms(payload: RequestRoomPayload): Promise<RequestRoomResponse | null> {
     if (!this.isConnected) {
       this.logger.warn('核心运行态接口未连接，无法请求房间分配');
-      return false;
+      return null;
     }
 
     try {
-      const result = await this.requestRuntime<RoomAssignmentResponse>('/request-room-assignment', {
+      const result = await this.requestRuntime<RequestRoomResponse>('/request-room', {
         method: 'POST',
         body: JSON.stringify({
           clientId: this.clientId,
-          reason
+          reason: payload.reason,
+          holdingRooms: payload.holdingRooms,
+          connectedRooms: payload.connectedRooms,
+          desiredCount: payload.desiredCount,
+          capacityOverride: payload.capacityOverride,
         })
       });
 
-      const roomIds = Array.isArray(result?.roomIds)
-        ? result.roomIds
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id) && id > 0)
-        : [];
-      this.assignmentTag = this.normalizeAssignmentTag(result?.assignmentTag);
-      this.applyRoomAssignmentDiff(roomIds);
-      return true;
+      return {
+        holdingRooms: this.normalizeRoomIds(result?.holdingRooms),
+        newlyAssignedRooms: this.normalizeRoomIds(result?.newlyAssignedRooms),
+        droppedRooms: this.normalizeRoomIds(result?.droppedRooms),
+        effectiveCapacity: this.normalizeCapacity(result?.effectiveCapacity),
+        nextRequestAfter: this.normalizeUnixTime(result?.nextRequestAfter),
+      };
     } catch (error) {
       this.logger.error('请求房间分配失败:', error);
-      return false;
+      return null;
     }
   }
 
@@ -162,32 +150,6 @@ export class RuntimeConnection {
 
   getConnectionId(): string | null {
     return this.clientId ?? null;
-  }
-
-  getAssignmentTag(): string | null {
-    return this.assignmentTag;
-  }
-
-  private applyRoomAssignmentDiff(nextAssignedRooms: number[]): void {
-    const previous = Array.from(new Set(this.assignedRoomIds));
-    const next = Array.from(new Set(nextAssignedRooms));
-    this.assignedRoomIds = next;
-
-    const removed = previous.filter((roomId) => !next.includes(roomId));
-    const added = next.filter((roomId) => !previous.includes(roomId));
-
-    const replaceCount = Math.min(removed.length, added.length);
-    for (let i = 0; i < replaceCount; i++) {
-      this.onRoomReplaced?.(removed[i], added[i]);
-    }
-
-    for (let i = replaceCount; i < removed.length; i++) {
-      this.onRoomUnassigned?.(removed[i]);
-    }
-
-    for (let i = replaceCount; i < added.length; i++) {
-      this.onRoomAssigned?.(added[i]);
-    }
   }
 
   private async requestRuntime<T>(path: string, init?: RequestInit): Promise<T> {
@@ -331,13 +293,22 @@ export class RuntimeConnection {
     }
   }
 
-  private normalizeAssignmentTag(value: string | null | undefined): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
+  private normalizeRoomIds(value: number[] | undefined): number[] {
+    return Array.from(new Set(
+      (Array.isArray(value) ? value : [])
+        .map((roomId) => Number(roomId))
+        .filter((roomId) => Number.isFinite(roomId) && roomId > 0)
+    ));
+  }
 
-    const normalized = value.trim();
-    return normalized.length > 0 ? normalized : null;
+  private normalizeCapacity(value: number | undefined): number {
+    const normalized = Number(value);
+    return Number.isFinite(normalized) && normalized > 0 ? Math.floor(normalized) : 0;
+  }
+
+  private normalizeUnixTime(value: number | null | undefined): number | null {
+    const normalized = Number(value);
+    return Number.isFinite(normalized) && normalized > 0 ? Math.floor(normalized) : null;
   }
 
   private resolveRawPayload(message: DanmakuMessage): string {
@@ -369,9 +340,6 @@ export class RuntimeConnection {
     return `[Unserializable Message][cmd=${message.cmd}]`;
   }
 
-  onRoomAssigned?: (roomId: number) => void;
-  onRoomReplaced?: (oldRoomId: number, newRoomId: number) => void;
-  onRoomUnassigned?: (roomId: number) => void;
   onServerDisconnect?: (reason?: string) => void;
   onConnected?: () => void;
   onDisconnected?: (error?: Error) => void;

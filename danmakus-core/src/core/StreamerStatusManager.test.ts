@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { StreamerStatusManager } from "./StreamerStatusManager";
 
 describe("StreamerStatusManager room priority", () => {
-  it("prioritizes recording rooms over server-assigned rooms", () => {
+  it("prioritizes recording rooms over holding rooms", () => {
     const manager: any = new StreamerStatusManager(30, "https://example.com/api/v2/core-runtime");
-    manager.updateServerRooms([301, 302, 303]);
+    manager.updateHoldingRooms([301, 302, 303]);
     manager.updateRecordingRooms([201, 202]);
     manager.statusCache = new Map([
       [201, { roomId: 201, isLive: true }],

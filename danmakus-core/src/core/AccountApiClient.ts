@@ -1,21 +1,16 @@
 import { CoreControlConfigDto, CoreRuntimeStateDto, ResponseValue } from '../types';
 
 type HeartbeatRuntimeStateResult = {
-  assignmentTag: string | null;
   configTag: string | null;
-  recordingRoomsTag: string | null;
 };
 
-const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
 const CONFIG_TAG_HEADER = 'X-Core-Config-Tag';
-const RECORDING_ROOMS_TAG_HEADER = 'X-Core-Recording-Rooms-Tag';
 
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   private accountBaseUrl: string;
   private coreRuntimeBaseUrl: string;
   private coreConfigTag: string | null = null;
-  private recordingRoomsTag: string | null = null;
 
   constructor(
     private token: string,
@@ -39,23 +34,6 @@ export class AccountApiClient {
 
   getCoreConfigTag(): string | null {
     return this.coreConfigTag;
-  }
-
-  async getRecordingRooms(): Promise<number[]> {
-    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, '/recording-rooms', {
-      method: 'GET'
-    });
-    const roomIds = await this.parseResponsePayload<number[]>(response);
-    this.recordingRoomsTag = this.normalizeTag(response.headers.get(RECORDING_ROOMS_TAG_HEADER));
-    return Array.from(new Set(
-      (Array.isArray(roomIds) ? roomIds : [])
-        .map((roomId) => Number(roomId))
-        .filter((roomId) => Number.isFinite(roomId) && roomId > 0)
-    ));
-  }
-
-  getRecordingRoomsTag(): string | null {
-    return this.recordingRoomsTag;
   }
 
   async syncRuntimeState(
@@ -92,18 +70,13 @@ export class AccountApiClient {
 
   private async requestRuntimeSignal(path: string, init?: RequestInit): Promise<HeartbeatRuntimeStateResult> {
     const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, init);
-    const assignmentTag = this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER));
     const configTag = this.normalizeTag(response.headers.get(CONFIG_TAG_HEADER));
-    const recordingRoomsTag = this.normalizeTag(response.headers.get(RECORDING_ROOMS_TAG_HEADER));
-    if (recordingRoomsTag !== null) {
-      this.recordingRoomsTag = recordingRoomsTag;
-    }
     if (response.status === 204) {
-      return { assignmentTag, configTag, recordingRoomsTag };
+      return { configTag };
     }
 
     await this.parseResponsePayload(response);
-    return { assignmentTag, configTag, recordingRoomsTag };
+    return { configTag };
   }
 
   private async requestWithBase<T = unknown>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {

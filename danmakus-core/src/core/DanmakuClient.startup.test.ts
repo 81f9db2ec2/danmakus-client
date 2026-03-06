@@ -46,13 +46,6 @@ describe('DanmakuClient startup', () => {
         });
       }
 
-      if (url === 'https://example.com/api/v2/core-runtime/recording-rooms') {
-        return new Response(JSON.stringify({ code: 200, data: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
       if (url === 'https://example.com/api/v2/core-runtime/sync') {
         return new Response(JSON.stringify({ code: 200, data: {} }), {
           status: 200,
@@ -83,7 +76,6 @@ describe('DanmakuClient startup', () => {
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
     expect(requests).toEqual([
       'GET https://example.com/api/v2/account/core-config',
-      'GET https://example.com/api/v2/core-runtime/recording-rooms',
       'POST https://example.com/api/v2/core-runtime/sync',
       'DELETE https://example.com/api/v2/core-runtime/state?clientId=client-id'
     ]);

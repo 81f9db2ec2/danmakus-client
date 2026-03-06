@@ -73,7 +73,7 @@ type RuntimeStateSnapshot = {
   messageCount: number;
   messageCmdCountMap: Record<string, number>;
   roomMessageCountMap: Record<string, number>;
-  serverAssignedRooms: number[];
+  holdingRooms: number[];
   streamerStatuses: StreamerStatus[];
   lockedByOther: boolean;
   ownerClientId: string | null;
@@ -168,7 +168,7 @@ const connectionRoomCards = computed(() => {
       .filter((id): id is number => id !== null)
   );
   const serverAssignedSet = new Set(
-    props.runtimeState.serverAssignedRooms
+    props.runtimeState.holdingRooms
       .map(normalizeRoomId)
       .filter((id): id is number => id !== null)
   );
@@ -464,7 +464,7 @@ onBeforeUnmount(() => {
             <p class="text-xs font-medium text-muted-foreground">服务器分配</p>
             <Server class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
-          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.serverAssignedRooms.length }}</p>
+          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.holdingRooms.length }}</p>
         </CardContent>
       </Card>
     </div>
