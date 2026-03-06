@@ -2,9 +2,11 @@ import { CoreControlConfigDto, CoreRuntimeStateDto, ResponseValue } from '../typ
 
 type HeartbeatRuntimeStateResult = {
   configTag: string | null;
+  assignmentTag: string | null;
 };
 
 const CONFIG_TAG_HEADER = 'X-Core-Config-Tag';
+const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
 
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -71,12 +73,13 @@ export class AccountApiClient {
   private async requestRuntimeSignal(path: string, init?: RequestInit): Promise<HeartbeatRuntimeStateResult> {
     const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, init);
     const configTag = this.normalizeTag(response.headers.get(CONFIG_TAG_HEADER));
+    const assignmentTag = this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER));
     if (response.status === 204) {
-      return { configTag };
+      return { configTag, assignmentTag };
     }
 
     await this.parseResponsePayload(response);
-    return { configTag };
+    return { configTag, assignmentTag };
   }
 
   private async requestWithBase<T = unknown>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {

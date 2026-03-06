@@ -28,6 +28,43 @@ describe("DanmakuClient room connect queue", () => {
 });
 
 describe("DanmakuClient room pull flow", () => {
+  it("forces a room request on heartbeat when assignment tag changes", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    const refreshCalls: Array<{ maxConnections: number; reason: string; options?: { force?: boolean } }> = [];
+    client.accountClient = {
+      heartbeatRuntimeState: async () => ({
+        configTag: null,
+        assignmentTag: "assignment-tag-v2",
+      }),
+    };
+    client.handleAccountConfigTagChange = async () => undefined;
+    client.refreshHoldingRoomsIfNeeded = async (
+      maxConnections: number,
+      reason: string,
+      options?: { force?: boolean }
+    ) => {
+      refreshCalls.push({ maxConnections, reason, options });
+      return true;
+    };
+
+    await client.heartbeatRuntimeState();
+
+    expect(refreshCalls).toEqual([
+      {
+        maxConnections: 5,
+        reason: "assignment-tag-changed",
+        options: { force: true },
+      },
+    ]);
+    expect(client.assignmentTag).toBe("assignment-tag-v2");
+  });
+
   it("requests rooms with current holding state and applies the returned holding rooms", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",

@@ -104,6 +104,7 @@ export class DanmakuClient extends EventEmitter {
   private heartbeatTimer?: ReturnType<typeof setTimeout>;
   private accountConfigRefreshing = false;
   private accountConfigTag: string | null = null;
+  private assignmentTag: string | null = null;
   private recordingRoomIds: number[] = [];
   private recordingSessions: Set<number> = new Set();
   private lastStreamerLiveStates: Map<number, boolean> = new Map();
@@ -372,6 +373,7 @@ export class DanmakuClient extends EventEmitter {
     this.statusManager?.updateHoldingRooms([]);
     this.recordingSessions.clear();
     this.lastStreamerLiveStates.clear();
+    this.assignmentTag = null;
     this.messageCount = 0;
     this.lastRoomAssigned = undefined;
     this.lastError = undefined;
@@ -1216,6 +1218,12 @@ export class DanmakuClient extends EventEmitter {
       });
       this.lastHeartbeat = Date.now();
       await this.handleAccountConfigTagChange(result.configTag);
+      if (this.consumeAssignmentTag(result.assignmentTag)) {
+        await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'assignment-tag-changed', {
+          force: true,
+        });
+        return;
+      }
       await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'heartbeat');
     } catch (error) {
       this.recordError(error, { category: 'runtime-sync', code: 'RUNTIME_HEARTBEAT_FAILED', recoverable: true });
@@ -1373,6 +1381,15 @@ export class DanmakuClient extends EventEmitter {
     }
 
     await this.refreshAccountConfig(nextTag);
+  }
+
+  private consumeAssignmentTag(nextTag: string | null): boolean {
+    if (nextTag === null || nextTag === this.assignmentTag) {
+      return false;
+    }
+
+    this.assignmentTag = nextTag;
+    return true;
   }
 
   private resetAccountConfigSyncState(): void {
