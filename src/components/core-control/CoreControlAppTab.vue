@@ -23,6 +23,7 @@ const props = defineProps<{
   localConfig: LocalAppConfigDto;
   isDesktopRuntime: boolean;
   updaterSupported: boolean;
+  appUpdateBusy: boolean;
   checkingAppUpdate: boolean;
   installingAppUpdate: boolean;
   availableUpdateVersion: string | null;
@@ -84,7 +85,7 @@ const assignCapacityOverride = (raw: string | number) => {
       <CardContent class="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
-          :disabled="!updaterSupported || checkingAppUpdate || installingAppUpdate"
+          :disabled="!updaterSupported || appUpdateBusy"
           :title="updaterSupported ? '检查是否有可用新版本' : '仅 Tauri 桌面端可检查更新'"
           @click="emit('check-app-update')"
         >
@@ -95,7 +96,7 @@ const assignCapacityOverride = (raw: string | number) => {
         <Button
           v-if="availableUpdateVersion"
           variant="secondary"
-          :disabled="installingAppUpdate || checkingAppUpdate"
+          :disabled="appUpdateBusy"
           :title="`安装已发现的新版本 ${availableUpdateVersion}`"
           @click="emit('install-app-update')"
         >

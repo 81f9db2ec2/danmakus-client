@@ -30,7 +30,13 @@ import {
   setupTrayInTs,
   showMainWindow
 } from '../services/localApp';
-import { checkForUpdate, installLatestUpdate, updaterEnabled } from '../services/updater';
+import {
+  APP_UPDATE_CHECK_INTERVAL_MS,
+  checkForUpdate,
+  installLatestUpdate,
+  updaterEnabled,
+  type AvailableUpdate
+} from '../services/updater';
 import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
 import AppSidebar from './AppSidebar.vue';
 import BilibiliLogin from './BilibiliLogin.vue';
@@ -81,9 +87,15 @@ const updatingRecordingUid = ref<number | null>(null);
 const isUpdaterSupported = updaterEnabled();
 const checkingAppUpdate = ref(false);
 const installingAppUpdate = ref(false);
+const autoCheckingAppUpdate = ref(false);
+const appUpdateBusy = computed(() =>
+  checkingAppUpdate.value || installingAppUpdate.value || autoCheckingAppUpdate.value
+);
 const availableUpdateVersion = ref<string | null>(null);
 const showingMainWindow = ref(false);
 const hidingToTray = ref(false);
+let autoAppUpdateTimer: number | undefined;
+let announcedAppUpdateVersion: string | null = null;
 let remotePollTimer: number | undefined;
 let remoteHeartbeatPolling = false;
 const remoteConfigTag = ref<string | null>(null);
@@ -143,6 +155,54 @@ const ensureToken = () => {
     return false;
   }
   return true;
+};
+
+const isAppUpdateBusy = () => appUpdateBusy.value;
+
+const applyAvailableUpdate = (update: AvailableUpdate | null) => {
+  availableUpdateVersion.value = update?.version ?? null;
+};
+
+const startAutoAppUpdatePoll = () => {
+  if (!isUpdaterSupported || autoAppUpdateTimer !== undefined) {
+    return;
+  }
+
+  void runAutoAppUpdateCheck();
+  autoAppUpdateTimer = window.setInterval(() => {
+    void runAutoAppUpdateCheck();
+  }, APP_UPDATE_CHECK_INTERVAL_MS);
+};
+
+const stopAutoAppUpdatePoll = () => {
+  if (autoAppUpdateTimer === undefined) {
+    return;
+  }
+
+  clearInterval(autoAppUpdateTimer);
+  autoAppUpdateTimer = undefined;
+};
+
+const runAutoAppUpdateCheck = async () => {
+  if (!isUpdaterSupported || isAppUpdateBusy()) {
+    return;
+  }
+
+  autoCheckingAppUpdate.value = true;
+  try {
+    const update = await checkForUpdate();
+    applyAvailableUpdate(update);
+    if (!update || announcedAppUpdateVersion === update.version) {
+      return;
+    }
+
+    announcedAppUpdateVersion = update.version;
+    toast.info(`发现新版本 ${update.version}`);
+  } catch (error) {
+    console.error(error);
+  } finally {
+    autoCheckingAppUpdate.value = false;
+  }
 };
 
 const startRemotePoll = () => {
@@ -425,7 +485,7 @@ const handleCheckAppUpdate = async () => {
     toast.info('仅 Tauri 桌面客户端支持检查更新');
     return;
   }
-  if (checkingAppUpdate.value || installingAppUpdate.value) {
+  if (isAppUpdateBusy()) {
     return;
   }
 
@@ -433,12 +493,13 @@ const handleCheckAppUpdate = async () => {
   try {
     const update = await checkForUpdate();
     if (!update) {
-      availableUpdateVersion.value = null;
+      applyAvailableUpdate(null);
       toast.success('当前已是最新版本');
       return;
     }
 
-    availableUpdateVersion.value = update.version;
+    applyAvailableUpdate(update);
+    announcedAppUpdateVersion = update.version;
     toast.info(`发现新版本 ${update.version}`);
   } catch (error) {
     console.error(error);
@@ -453,7 +514,7 @@ const handleInstallAppUpdate = async () => {
     toast.info('仅 Tauri 桌面客户端支持安装更新');
     return;
   }
-  if (installingAppUpdate.value || checkingAppUpdate.value) {
+  if (isAppUpdateBusy()) {
     return;
   }
 
@@ -461,12 +522,13 @@ const handleInstallAppUpdate = async () => {
   try {
     const update = await installLatestUpdate();
     if (!update) {
-      availableUpdateVersion.value = null;
+      applyAvailableUpdate(null);
       toast.success('当前已是最新版本');
       return;
     }
 
-    availableUpdateVersion.value = null;
+    applyAvailableUpdate(null);
+    announcedAppUpdateVersion = update.version;
     toast.success(`更新 ${update.version} 已安装，请手动重启应用`);
   } catch (error) {
     console.error(error);
@@ -771,6 +833,7 @@ onMounted(async () => {
       console.error(error);
       toast.error(error instanceof Error ? error.message : '初始化托盘失败');
     }
+    startAutoAppUpdatePoll();
     closeToTrayUnlisten = await registerCloseToTrayHandler(() => localConfig.minimizeToTray);
     await syncDesktopLocalConfig();
     if (localConfig.startMinimized) {
@@ -789,6 +852,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  stopAutoAppUpdatePoll();
   stopRemotePoll();
   stopNavProfileAutoRefresh();
   clearCoreConfigAutoSaveTimer();
@@ -875,6 +939,7 @@ onBeforeUnmount(() => {
               :local-config="localConfig"
               :is-desktop-runtime="isDesktopApp"
               :updater-supported="isUpdaterSupported"
+              :app-update-busy="appUpdateBusy"
               :checking-app-update="checkingAppUpdate"
               :installing-app-update="installingAppUpdate"
               :available-update-version="availableUpdateVersion"

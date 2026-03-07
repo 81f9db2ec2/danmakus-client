@@ -1,6 +1,8 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { check } from '@tauri-apps/plugin-updater';
 
+export const APP_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
 export type AvailableUpdate = {
   version: string;
   notes: string | null;

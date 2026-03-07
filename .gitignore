@@ -28,5 +28,6 @@ dist-ssr
 !.github/workflows/
 !.github/workflows/*.yml
 doc/
+docs/
 bun.lock
 bun.lock
