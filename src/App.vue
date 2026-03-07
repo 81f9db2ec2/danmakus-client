@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core';
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import IndexPage from './pages/Index.vue';
 import 'vue-sonner/style.css';
@@ -16,13 +17,24 @@ const handleColorSchemeChange = (event: MediaQueryListEvent) => {
   applyTheme(event.matches);
 };
 
+const handleKeydown = (event: KeyboardEvent) => {
+  if (event.repeat || (event.key !== 'F12' && event.code !== 'F12')) {
+    return;
+  }
+
+  event.preventDefault();
+  void invoke('open_devtools');
+};
+
 onMounted(() => {
   applyTheme(prefersDark.value);
   colorSchemeQuery.addEventListener('change', handleColorSchemeChange);
+  window.addEventListener('keydown', handleKeydown);
 });
 
 onBeforeUnmount(() => {
   colorSchemeQuery.removeEventListener('change', handleColorSchemeChange);
+  window.removeEventListener('keydown', handleKeydown);
 });
 </script>
 
