@@ -156,6 +156,8 @@ const emit = defineEmits<{
                       </TooltipTrigger>
                       <TooltipContent class="max-w-xs">
                         <p>启用后可以让你用空闲的录制位置让本站来分配大家都在查询的主播，提高大家的体验。感谢你做出的贡献！</p>
+                        <br>
+                        <p>这不会挤占你添加到录制列表里的主播, 当他们开播时会自动关闭掉分配的直播间, 优先连接你关注的</p>
                       </TooltipContent>
                     </Tooltip>
                   </div>
