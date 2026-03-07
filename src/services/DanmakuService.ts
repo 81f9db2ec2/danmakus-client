@@ -138,7 +138,7 @@ class DanmakuService {
   private localClientId: string;
   private lastNavCookieCheckAt = 0;
   private lastInitializationSignature: string | null = null;
-  private readonly navCookieCheckIntervalMs = 30_000;
+  private readonly navCookieCheckIntervalMs = 5 * 60_000;
 
   public state = reactive({
     userInfo: null as UserInfo | null,

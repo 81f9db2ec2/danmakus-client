@@ -368,7 +368,7 @@ type BiliNavResponse = {
   }
 }
 
-const navProfileCacheTtlMs = 30_000
+const navProfileCacheTtlMs = 5 * 60_000
 let navProfileInflight: Promise<BiliNavProfile | null> | null = null
 let navProfileRefreshTimer: number | undefined
 let navProfileRefreshRefCount = 0

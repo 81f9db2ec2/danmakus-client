@@ -41,6 +41,8 @@ describe("DanmakuClient room pull flow", () => {
       heartbeatRuntimeState: async () => ({
         configTag: null,
         assignmentTag: "assignment-tag-v2",
+        clientsTag: null,
+        recordingTag: null,
       }),
     };
     client.handleAccountConfigTagChange = async () => undefined;
@@ -63,6 +65,41 @@ describe("DanmakuClient room pull flow", () => {
       },
     ]);
     expect(client.assignmentTag).toBe("assignment-tag-v2");
+  });
+
+  it("does not request rooms on heartbeat when assignment tag is unchanged", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    const refreshCalls: Array<{ maxConnections: number; reason: string; options?: { force?: boolean } }> = [];
+    client.assignmentTag = "assignment-tag-v2";
+    client.accountClient = {
+      heartbeatRuntimeState: async () => ({
+        configTag: null,
+        assignmentTag: "assignment-tag-v2",
+        clientsTag: null,
+        recordingTag: null,
+      }),
+    };
+    client.handleAccountConfigTagChange = async () => undefined;
+    client.handleClientsTagChange = async () => undefined;
+    client.handleRecordingTagChange = async () => undefined;
+    client.refreshHoldingRoomsIfNeeded = async (
+      maxConnections: number,
+      reason: string,
+      options?: { force?: boolean }
+    ) => {
+      refreshCalls.push({ maxConnections, reason, options });
+      return true;
+    };
+
+    await client.heartbeatRuntimeState();
+
+    expect(refreshCalls).toEqual([]);
   });
 
   it("requests rooms with current holding state and applies the returned holding rooms", async () => {
@@ -166,5 +203,108 @@ describe("DanmakuClient room pull flow", () => {
       desiredCount: 0,
       capacityOverride: undefined,
     });
+  });
+
+  it("refreshes statuses and connections immediately when recording rooms change", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: false,
+      streamers: [],
+    });
+
+    const updatedRooms: number[][] = [];
+    let refreshNowCount = 0;
+    let updateConnectionsCount = 0;
+    client.isRunning = true;
+    client.statusManager = {
+      updateRecordingRooms: (rooms: number[]) => {
+        updatedRooms.push([...rooms]);
+      },
+      refreshNow: () => {
+        refreshNowCount += 1;
+      },
+    };
+    client.updateConnections = () => {
+      updateConnectionsCount += 1;
+    };
+    client.accountClient = {
+      getRecordingList: async () => ({
+        data: [
+          {
+            channel: { roomId: 2233 },
+          },
+        ],
+        tags: { recordingTag: "recording-tag-v2", configTag: null, clientsTag: null },
+      }),
+    };
+
+    await client.refreshRecordingList(true);
+
+    expect(client.recordingRoomIds).toEqual([2233]);
+    expect(updatedRooms).toEqual([[2233]]);
+    expect(refreshNowCount).toBe(1);
+    expect(updateConnectionsCount).toBe(1);
+  });
+
+  it("skips duplicate connections that resolve to the same actual room", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    let factoryCallCount = 0;
+    client.isRunning = true;
+    client.resolveLiveWsConnectionOptions = async (roomId: number) => ({
+      roomId: 5566,
+      address: "wss://example.com/sub",
+      key: `key-${roomId}`,
+      uid: 1,
+      protover: 3,
+    });
+    client.liveWsConnectionFactory = async () => {
+      factoryCallCount += 1;
+      return {
+        addEventListener: () => undefined,
+        close: () => undefined,
+      };
+    };
+    client.syncRuntimeState = async () => undefined;
+
+    await client.connectToRoom(1001, "high");
+    await client.connectToRoom(1002, "server");
+
+    expect(factoryCallCount).toBe(1);
+    expect(client.connections.size).toBe(1);
+    expect(client.connections.get(1001)?.resolvedRoomId).toBe(5566);
+    expect(client.connections.has(1002)).toBe(false);
+  });
+
+  it("drops identical incoming messages within the dedup window", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    client.isRunning = true;
+    client.messageQueue.scheduleMessageDispatch = () => undefined;
+
+    const message = {
+      roomId: 7788,
+      cmd: "DANMU_MSG",
+      raw: '{"cmd":"DANMU_MSG","info":[1,2,3]}',
+      timestamp: Date.now(),
+      data: { cmd: "DANMU_MSG" },
+    };
+
+    await client.handleMessage(message);
+    await client.handleMessage({ ...message, timestamp: message.timestamp + 1 });
+
+    expect(client.messageCount).toBe(1);
+    expect(client.messageQueue.getPendingCount()).toBe(1);
   });
 });

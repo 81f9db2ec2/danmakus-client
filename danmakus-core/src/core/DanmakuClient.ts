@@ -6,6 +6,10 @@ import { RuntimeConnection } from './RuntimeConnection';
 import { StreamerStatusManager } from './StreamerStatusManager';
 import { AccountApiClient } from './AccountApiClient';
 import { wrapBilibiliFetch } from './BilibiliUserAgent';
+import { DanmakuMessageQueue } from './DanmakuMessageQueue';
+import { DanmakuRuntimeSync } from './DanmakuRuntimeSync';
+import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator';
+import { DanmakuControlState } from './DanmakuControlState';
 import {
   DanmakuMessage,
   DanmakuClientEvents,
@@ -27,19 +31,8 @@ import {
 } from '../types';
 import { ScopedLogger, normalizeLogLevel } from './Logger';
 
-const HEARTBEAT_MIN_INTERVAL = 2000;
-const MESSAGE_QUEUE_MIN_SIZE = 100;
-const MESSAGE_RETRY_MIN_DELAY = 200;
-const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
-const MESSAGE_BATCH_MIN_SIZE = 1;
-const MESSAGE_BATCH_MAX_SIZE = 500;
-const MESSAGE_UPLOAD_INTERVAL_MS = 1000;
-const LOCK_RETRY_MIN_COUNT = 1;
-const LOCK_RETRY_MIN_DELAY = 200;
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
-const QUEUE_OVERFLOW_LOG_INTERVAL_MS = 10_000;
-const CONTROL_SYNC_INTERVAL_MS = 5000;
 
 function generateClientId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -52,14 +45,9 @@ function generateClientId(): string {
 interface ConnectionInfo {
   connection: LiveWsConnection;
   roomId: number;
+  resolvedRoomId: number;
   priority: 'high' | 'normal' | 'low' | 'server';
   connectedAt: number;
-}
-
-interface QueuedMessage {
-  message: DanmakuMessage;
-  retryCount: number;
-  nextRetryAt: number;
 }
 
 interface QueuedRoomConnect {
@@ -106,10 +94,10 @@ export class DanmakuClient extends EventEmitter {
   private holdingRoomIds: number[] = [];
   private holdingRoomRequestRefreshing = false;
   private nextHoldingRoomRequestAt = 0;
+  private holdingRoomCoordinator: DanmakuHoldingRoomCoordinator;
+  private controlState: DanmakuControlState;
   private isRunning: boolean = false;
   private updateConnectionsTimer?: ReturnType<typeof setTimeout>;
-  private heartbeatTimer?: ReturnType<typeof setTimeout>;
-  private accountConfigRefreshing = false;
   private accountConfigTag: string | null = null;
   private assignmentTag: string | null = null;
   private clientsTag: string | null = null;
@@ -118,41 +106,23 @@ export class DanmakuClient extends EventEmitter {
   private remoteClients: CoreRuntimeStateDto[] = [];
   private recordings: RecordingInfoDto[] = [];
   private recordingRoomIds: number[] = [];
+  private messageQueue: DanmakuMessageQueue;
   private recordingSessions: Set<number> = new Set();
   private lastStreamerLiveStates: Map<number, boolean> = new Map();
   private isStopping = false;
   private messageCount = 0;
   private lastRoomAssigned?: number;
   private lastError?: string;
-  private lastHeartbeat = 0;
-  private pendingMessages: QueuedMessage[] = [];
-  private messageDispatchTimer?: ReturnType<typeof setTimeout>;
-  private messageDispatching = false;
+  private runtimeSync: DanmakuRuntimeSync;
   private roomConnectStartInterval = ROOM_CONNECT_START_INTERVAL;
   private queuedRoomConnects: QueuedRoomConnect[] = [];
   private queuedRoomIds: Set<number> = new Set();
   private roomConnectQueueTimer?: ReturnType<typeof setTimeout>;
   private lastRoomConnectStartAt = 0;
-  private messageQueueMaxSize = 2000;
-  private queueOverflowLastLogAt = 0;
-  private queueOverflowSuppressedCount = 0;
-  private messageRetryBaseDelay = 1000;
-  private messageRetryMaxDelay = 30_000;
-  private messageRetryMaxAttempts = 6;
-  private messageBatchSize = 500;
-  private messageUploadInterval = MESSAGE_UPLOAD_INTERVAL_MS;
-  private heartbeatInterval = 5000;
-  private lockAcquireRetryCount = 4;
-  private lockAcquireRetryDelay = 1200;
-  private lockAcquireForceTakeover = false;
   private errorHistoryLimit = 50;
   private recentErrors: ClientErrorRecord[] = [];
-  private runtimeClientRegistering = false;
-  private lastRuntimeClientRegisterAt = 0;
   private suppressRuntimeAutoRegister = false;
   private runtimeGeneration = 0;
-  private controlSyncTimer?: ReturnType<typeof setTimeout>;
-  private controlSyncRefreshing = false;
 
   constructor(config: Partial<DanmakuConfig> = {}) {
     super();
@@ -162,6 +132,145 @@ export class DanmakuClient extends EventEmitter {
     this.cookieProvider = config.cookieProvider;
     this.liveWsConfigProvider = config.liveWsConfigProvider;
     this.liveWsConnectionFactory = config.liveWsConnectionFactory;
+    this.messageQueue = new DanmakuMessageQueue({
+      isRunning: () => this.isRunning,
+      isStopping: () => this.isStopping,
+      getRuntimeConnection: () => this.runtimeConnection,
+      logger: this.logger.child('Queue'),
+      recordError: (error, context) => this.recordError(error, context),
+      emitError: (error, roomId) => {
+        this.emit('error', error, roomId);
+      },
+      emitQueueChanged: (pendingCount) => {
+        this.emit('queueChanged', pendingCount);
+      },
+    });
+    this.runtimeSync = new DanmakuRuntimeSync({
+      getAccountClient: () => this.accountClient,
+      getRuntimeConnection: () => this.runtimeConnection,
+      getConfig: () => this.configManager.getConfig(),
+      getClientId: () => this.clientId,
+      isRunning: () => this.isRunning,
+      isStopping: () => this.isStopping,
+      isAutoRegisterSuppressed: () => this.suppressRuntimeAutoRegister,
+      logger: this.logger.child('RuntimeSync'),
+      recordError: (error, context) => this.recordError(error, context),
+      buildRuntimeStateSnapshot: () => this.buildRuntimeStateSnapshot(),
+      buildRuntimeHeartbeatPayload: () => this.buildRuntimeHeartbeatPayload(),
+      handleAccountConfigTagChange: (nextTag) => this.handleAccountConfigTagChange(nextTag),
+      handleClientsTagChange: (nextTag) => this.handleClientsTagChange(nextTag),
+      handleRecordingTagChange: (nextTag) => this.handleRecordingTagChange(nextTag),
+      consumeAssignmentTag: (nextTag) => this.consumeAssignmentTag(nextTag),
+      refreshHoldingRoomsIfNeeded: (maxConnections, reason, options) => this.refreshHoldingRoomsIfNeeded(maxConnections, reason, options),
+      clearHoldingRooms: () => this.clearHoldingRooms(),
+      updateConnections: () => this.updateConnections(),
+    });
+    this.holdingRoomCoordinator = new DanmakuHoldingRoomCoordinator({
+      isRunning: () => this.isRunning,
+      isStopping: () => this.isStopping,
+      getConfig: () => this.configManager.getConfig(),
+      getRuntimeConnection: () => this.runtimeConnection,
+      getStatusManager: () => this.statusManager,
+      getRecordingRoomIds: () => this.recordingRoomIds,
+      getConnections: () => this.connections,
+      disconnectFromRoom: (roomId) => this.disconnectFromRoom(roomId),
+      connectToRoom: (roomId, priority) => this.connectToRoom(roomId, priority),
+      updateConnections: () => this.updateConnections(),
+      syncRuntimeState: () => {
+        void this.syncRuntimeState();
+      },
+      refreshStatusNow: () => {
+        this.statusManager?.refreshNow();
+      },
+      updateHoldingRooms: (roomIds) => {
+        this.statusManager?.updateHoldingRooms(roomIds);
+      },
+      getHoldingRoomIds: () => this.holdingRoomIds,
+      setHoldingRoomIds: (roomIds) => {
+        this.holdingRoomIds = roomIds;
+      },
+      getHoldingRoomRequestRefreshing: () => this.holdingRoomRequestRefreshing,
+      setHoldingRoomRequestRefreshing: (value) => {
+        this.holdingRoomRequestRefreshing = value;
+      },
+      getNextHoldingRoomRequestAt: () => this.nextHoldingRoomRequestAt,
+      setNextHoldingRoomRequestAt: (value) => {
+        this.nextHoldingRoomRequestAt = value;
+      },
+      getQueuedRoomConnects: () => this.queuedRoomConnects,
+      setQueuedRoomConnects: (value) => {
+        this.queuedRoomConnects = value;
+      },
+      getQueuedRoomIds: () => this.queuedRoomIds,
+      getRoomConnectQueueTimer: () => this.roomConnectQueueTimer,
+      setRoomConnectQueueTimer: (value) => {
+        this.roomConnectQueueTimer = value;
+      },
+      getLastRoomConnectStartAt: () => this.lastRoomConnectStartAt,
+      setLastRoomConnectStartAt: (value) => {
+        this.lastRoomConnectStartAt = value;
+      },
+      getRoomConnectStartInterval: () => this.roomConnectStartInterval,
+      getLastRoomAssigned: () => this.lastRoomAssigned,
+      setLastRoomAssigned: (value) => {
+        this.lastRoomAssigned = value;
+      },
+      logger: this.logger.child('HoldingRooms'),
+    });
+    this.controlState = new DanmakuControlState({
+      requireAccountClient: () => this.ensureAccountClient(),
+      getOptionalAccountClient: () => this.accountClient,
+      isRunning: () => this.isRunning,
+      isStopping: () => this.isStopping,
+      logger: this.logger.child('ControlState'),
+      emitError: (error) => {
+        this.emit('error', error);
+      },
+      emitControlStateChanged: () => this.emitControlStateChanged(),
+      getControlState: () => this.getControlState(),
+      applyAccountConfigSnapshot: (remoteConfig, nextTag) => this.applyAccountConfigSnapshot(remoteConfig, nextTag),
+      recordError: (error, context) => this.recordError(error, context),
+      syncRuntimeState: (overrides, options) => this.syncRuntimeState(overrides, options),
+      updateConnections: () => this.updateConnections(),
+      refreshStatusNow: () => {
+        this.statusManager?.refreshNow();
+      },
+      updateRecordingRooms: (roomIds) => {
+        this.statusManager?.updateRecordingRooms(roomIds);
+      },
+      getUserInfo: () => this.userInfo,
+      setUserInfo: (userInfo) => {
+        this.userInfo = userInfo;
+      },
+      getRemoteClients: () => this.remoteClients,
+      setRemoteClients: (remoteClients) => {
+        this.remoteClients = remoteClients;
+      },
+      getRecordings: () => this.recordings,
+      setRecordings: (recordings) => {
+        this.recordings = recordings;
+      },
+      getRecordingRoomIds: () => this.recordingRoomIds,
+      setRecordingRoomIds: (roomIds) => {
+        this.recordingRoomIds = roomIds;
+      },
+      getAccountConfigTag: () => this.accountConfigTag,
+      setAccountConfigTag: (tag) => {
+        this.accountConfigTag = tag;
+      },
+      getClientsTag: () => this.clientsTag,
+      setClientsTag: (tag) => {
+        this.clientsTag = tag;
+      },
+      getRecordingTag: () => this.recordingTag,
+      setRecordingTag: (tag) => {
+        this.recordingTag = tag;
+      },
+      cloneUserInfo: (userInfo) => this.cloneUserInfo(userInfo),
+      cloneRemoteClients: (remoteClients) => this.cloneRemoteClients(remoteClients),
+      cloneRecordingList: (recordings) => this.cloneRecordingList(recordings),
+      areRoomIdsEqual: (left, right) => this.areRoomIdsEqual(left, right),
+    });
 
     this.configManager = new ConfigManager({
       ...config,
@@ -247,12 +356,12 @@ export class DanmakuClient extends EventEmitter {
 
     this.runtimeConnection.onConnected = () => {
       this.triggerRuntimeClientRegistration('connected');
-      this.scheduleMessageDispatch(this.messageUploadInterval);
+      this.messageQueue.scheduleMessageDispatch();
     };
 
     this.runtimeConnection.onReconnected = () => {
       this.triggerRuntimeClientRegistration('reconnected');
-      this.scheduleMessageDispatch(this.messageUploadInterval);
+      this.messageQueue.scheduleMessageDispatch();
     };
 
     this.runtimeConnection.onSessionInvalid = (reason: string) => {
@@ -289,8 +398,9 @@ export class DanmakuClient extends EventEmitter {
       this.runtimeGeneration += 1;
       this.isStopping = false;
       this.recordingSessions.clear();
+      this.messageQueue.clearRecentMessageDedup();
       this.lastStreamerLiveStates.clear();
-      this.logger.info('正在启动弹幕客户端... (v_hot_reload)');
+      this.logger.info('正在启动弹幕客户端...');
 
       await this.prepareAccountConfig();
       await this.ensureCookieReadyForStartup();
@@ -333,7 +443,7 @@ export class DanmakuClient extends EventEmitter {
       this.logger.info('弹幕客户端启动成功');
       await this.syncRuntimeState();
       this.ensureHeartbeat();
-      this.scheduleMessageDispatch(this.messageUploadInterval);
+      this.messageQueue.scheduleMessageDispatch();
 
     } catch (error) {
       this.logger.error('启动弹幕客户端失败:', error);
@@ -392,10 +502,7 @@ export class DanmakuClient extends EventEmitter {
     this.lastRoomAssigned = undefined;
     this.lastError = undefined;
     this.recentErrors = [];
-    this.clearMessageDispatch();
-    this.clearPendingMessages();
-    this.queueOverflowLastLogAt = 0;
-    this.queueOverflowSuppressedCount = 0;
+    this.messageQueue.resetState();
     this.clearHeartbeat();
     await this.syncRuntimeState();
     if (this.accountClient) {
@@ -434,219 +541,39 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private applyConnectionsUpdate(): void {
-    if (!this.isRunning || this.isStopping) {
-      return;
-    }
-
-    const config = this.configManager.getConfig();
-    const statusManager = this.ensureStatusManager();
-    const runtimeConnected = this.runtimeConnection?.getConnectionState() ?? false;
-
-    this.pruneOfflineHoldingRooms(statusManager);
-    this.trimHoldingRoomsToCapacity(config.maxConnections);
-
-    const roomsToConnect = statusManager.getRoomsToConnect(
-      this.recordingRoomIds,
-      this.holdingRoomIds,
-      config.maxConnections
-    );
-    const currentConnections = Array.from(this.connections.keys());
-    const targetRooms = roomsToConnect.map((room) => room.roomId);
-
-    if (!runtimeConnected) {
-      for (const roomId of currentConnections) {
-        if (!targetRooms.includes(roomId)) {
-          targetRooms.push(roomId);
-        }
-      }
-    }
-
-    for (const queuedRoomId of Array.from(this.queuedRoomIds)) {
-      if (!targetRooms.includes(queuedRoomId)) {
-        this.removeQueuedRoomConnect(queuedRoomId);
-      }
-    }
-
-    for (const roomId of currentConnections) {
-      if (!targetRooms.includes(roomId)) {
-        this.disconnectFromRoom(roomId);
-      }
-    }
-
-    for (const roomConfig of roomsToConnect) {
-      if (!this.connections.has(roomConfig.roomId)) {
-        this.queueRoomConnect(roomConfig.roomId, roomConfig.priority);
-      }
-    }
-
-    if (runtimeConnected) {
-      void this.refreshHoldingRoomsIfNeeded(config.maxConnections);
-    }
-
-    void this.syncRuntimeState();
+    this.holdingRoomCoordinator.applyConnectionsUpdate();
   }
 
   private pruneOfflineHoldingRooms(statusManager: StreamerStatusManager): void {
-    if (this.holdingRoomIds.length === 0) {
-      return;
-    }
-
-    const keep: number[] = [];
-    const removed: number[] = [];
-
-    for (const roomId of this.holdingRoomIds) {
-      if (!Number.isFinite(roomId) || roomId <= 0) {
-        continue;
-      }
-
-      const status = statusManager.getStreamerStatus(roomId);
-      if (status?.isLive === false) {
-        removed.push(roomId);
-        continue;
-      }
-
-      keep.push(roomId);
-    }
-
-    if (removed.length === 0 && this.areRoomIdsEqual(keep, this.holdingRoomIds)) {
-      return;
-    }
-
-    this.holdingRoomIds = keep;
-    this.statusManager?.updateHoldingRooms(this.holdingRoomIds);
-    for (const roomId of removed) {
-      this.removeQueuedRoomConnect(roomId);
-      this.disconnectFromRoom(roomId);
-    }
-    if (removed.length > 0) {
-      this.logger.info(`移除已下播持有房间: ${removed.join(',')}`);
-    }
+    this.holdingRoomCoordinator.pruneOfflineHoldingRooms(statusManager);
   }
 
   private trimHoldingRoomsToCapacity(maxConnections: number): void {
-    const uniqueRooms = Array.from(new Set(
-      this.holdingRoomIds.filter((roomId) => Number.isFinite(roomId) && roomId > 0)
-    ));
-    const capacity = Math.max(0, Math.min(100, Math.floor(maxConnections)));
-    const targetSize = capacity;
-
-    if (uniqueRooms.length <= targetSize) {
-      if (!this.areRoomIdsEqual(uniqueRooms, this.holdingRoomIds)) {
-        this.holdingRoomIds = uniqueRooms;
-        this.statusManager?.updateHoldingRooms(this.holdingRoomIds);
-      }
-      return;
-    }
-
-    const connectedSet = new Set(this.getConnectedHoldingRoomIds());
-    const prioritizedRooms = [
-      ...uniqueRooms.filter((roomId) => connectedSet.has(roomId)),
-      ...uniqueRooms.filter((roomId) => !connectedSet.has(roomId)),
-    ];
-    const keep = prioritizedRooms.slice(0, targetSize);
-    const dropped = uniqueRooms.filter((roomId) => !keep.includes(roomId));
-
-    this.holdingRoomIds = keep;
-    this.statusManager?.updateHoldingRooms(this.holdingRoomIds);
-    for (const roomId of dropped) {
-      this.removeQueuedRoomConnect(roomId);
-      this.disconnectFromRoom(roomId);
-    }
-    if (dropped.length > 0) {
-      this.logger.info(`本地持有房间超出剩余槽位，已释放: max=${targetSize}, droppedRooms=${dropped.join(',')}`);
-    }
+    this.holdingRoomCoordinator.trimHoldingRoomsToCapacity(maxConnections);
   }
 
   private queueRoomConnect(roomId: number, priority: 'high' | 'normal' | 'low' | 'server'): void {
-    if (!this.isRunning || this.isStopping || roomId <= 0) {
-      return;
-    }
-
-    if (this.connections.has(roomId)) {
-      return;
-    }
-
-    if (this.queuedRoomIds.has(roomId)) {
-      const queued = this.queuedRoomConnects.find(item => item.roomId === roomId);
-      if (queued) {
-        queued.priority = priority;
-      }
-      return;
-    }
-
-    this.queuedRoomConnects.push({ roomId, priority });
-    this.queuedRoomIds.add(roomId);
-    this.scheduleQueuedRoomConnect();
+    this.holdingRoomCoordinator.queueRoomConnect(roomId, priority);
   }
 
   private removeQueuedRoomConnect(roomId: number): void {
-    if (!this.queuedRoomIds.delete(roomId)) {
-      return;
-    }
-    this.queuedRoomConnects = this.queuedRoomConnects.filter(item => item.roomId !== roomId);
+    this.holdingRoomCoordinator.removeQueuedRoomConnect(roomId);
   }
 
   private clearQueuedRoomConnects(): void {
-    if (this.roomConnectQueueTimer) {
-      clearTimeout(this.roomConnectQueueTimer);
-      this.roomConnectQueueTimer = undefined;
-    }
-    this.queuedRoomConnects = [];
-    this.queuedRoomIds.clear();
-    this.lastRoomConnectStartAt = 0;
+    this.holdingRoomCoordinator.clearQueuedRoomConnects();
   }
 
   private scheduleQueuedRoomConnect(): void {
-    if (this.roomConnectQueueTimer || this.queuedRoomConnects.length === 0 || !this.isRunning || this.isStopping) {
-      return;
-    }
-
-    const now = Date.now();
-    const elapsed = now - this.lastRoomConnectStartAt;
-    const waitMs = this.lastRoomConnectStartAt === 0
-      ? 0
-      : Math.max(0, this.roomConnectStartInterval - elapsed);
-
-    this.roomConnectQueueTimer = setTimeout(() => {
-      this.roomConnectQueueTimer = undefined;
-      void this.processQueuedRoomConnect();
-    }, waitMs);
+    this.holdingRoomCoordinator.scheduleQueuedRoomConnect();
   }
 
   private async processQueuedRoomConnect(): Promise<void> {
-    if (!this.isRunning || this.isStopping) {
-      this.clearQueuedRoomConnects();
-      return;
-    }
-
-    const next = this.queuedRoomConnects.shift();
-    if (!next) {
-      return;
-    }
-    this.queuedRoomIds.delete(next.roomId);
-
-    if (!this.connections.has(next.roomId) && this.isRoomStillDesired(next.roomId)) {
-      this.lastRoomConnectStartAt = Date.now();
-      await this.connectToRoom(next.roomId, next.priority);
-    }
-
-    if (this.queuedRoomConnects.length > 0) {
-      this.scheduleQueuedRoomConnect();
-    }
+    await this.holdingRoomCoordinator.processQueuedRoomConnect();
   }
 
   private isRoomStillDesired(roomId: number): boolean {
-    if (roomId <= 0 || !this.statusManager) {
-      return false;
-    }
-
-    const config = this.configManager.getConfig();
-    const roomsToConnect = this.statusManager.getRoomsToConnect(
-      this.recordingRoomIds,
-      this.holdingRoomIds,
-      config.maxConnections
-    );
-    return roomsToConnect.some(item => item.roomId === roomId);
+    return this.holdingRoomCoordinator.isRoomStillDesired(roomId);
   }
 
   /**
@@ -673,6 +600,13 @@ export class DanmakuClient extends EventEmitter {
       const targetRoomId = typeof connectionOptions.roomId === 'number' && connectionOptions.roomId > 0
         ? connectionOptions.roomId
         : roomId;
+      const duplicateConnection = this.findConnectionByResolvedRoomId(targetRoomId, roomId);
+      if (duplicateConnection) {
+        this.logger.warn(
+          `房间 ${roomId} 解析到实际房间 ${targetRoomId}，但该房间已由 ${duplicateConnection.roomId} 占用，跳过重复连接`
+        );
+        return;
+      }
       const { roomId: _resolvedRoomId, ...liveOptions } = connectionOptions;
       const keyLength = typeof liveOptions.key === 'string' ? liveOptions.key.length : 0;
       const addressHost = typeof liveOptions.address === 'string'
@@ -707,6 +641,7 @@ export class DanmakuClient extends EventEmitter {
       const connectionInfo: ConnectionInfo = {
         connection: liveWS,
         roomId,
+        resolvedRoomId: targetRoomId,
         priority,
         connectedAt: Date.now()
       };
@@ -867,28 +802,38 @@ export class DanmakuClient extends EventEmitter {
     return undefined;
   }
 
-  private static waitMs(delayMs: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, delayMs));
-  }
-
   /**
    * 设置LiveWS事件监听
    */
   private setupLiveWSEvents(liveWS: LiveWsConnection, roomId: number): void {
+    const isCurrentConnection = (): boolean => this.connections.get(roomId)?.connection === liveWS;
+
     liveWS.addEventListener('open', () => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       this.logger.info(`房间 ${roomId} WebSocket连接已建立`);
     });
 
     liveWS.addEventListener('CONNECT_SUCCESS', ({ data }: any) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       this.logger.debug(`房间 ${roomId} CONNECT_SUCCESS`, data);
       this.markRecordingSessionStarted(roomId);
     });
 
     liveWS.addEventListener('HEARTBEAT_REPLY', ({ data }: any) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       this.logger.debug(`房间 ${roomId} HEARTBEAT_REPLY`, data);
     });
 
     liveWS.addEventListener('error:decode', (event: any) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       const reason = event?.error instanceof Error ? event.error.message : String(event?.error ?? 'unknown');
       const decodeError = new Error(`房间 ${roomId} 消息解码失败: ${reason}`);
       this.logger.error(decodeError.message, event?.error ?? event);
@@ -897,6 +842,9 @@ export class DanmakuClient extends EventEmitter {
     });
 
     liveWS.addEventListener('close', (event: any) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       const connectionInfo = this.connections.get(roomId);
       const code = typeof event?.code === 'number' ? event.code : -1;
       const reason = typeof event?.reason === 'string' ? event.reason : '';
@@ -927,6 +875,9 @@ export class DanmakuClient extends EventEmitter {
     });
 
     liveWS.addEventListener('error', (event: any) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       this.logger.error(`房间 ${roomId} WebSocket错误:`, event);
       const error = new Error(`房间 ${roomId} WebSocket错误`);
       this.recordError(error, { category: 'livews', code: 'LIVEWS_RUNTIME_ERROR', roomId, recoverable: true });
@@ -935,6 +886,9 @@ export class DanmakuClient extends EventEmitter {
 
     // 监听所有消息，统一处理
     liveWS.addEventListener('MESSAGE', ({ data }: any) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
       const message = this.parseMessage(data, roomId);
       this.logger.debug(`房间 ${roomId} 收到消息 cmd=${message.cmd}`);
       this.handleMessage(message).catch(error => {
@@ -993,6 +947,10 @@ export class DanmakuClient extends EventEmitter {
       return;
     }
 
+    if (this.messageQueue.isDuplicateIncomingMessage(message)) {
+      return;
+    }
+
     this.messageCount += 1;
     // 发射 'msg' 事件（所有消息）
     this.emit('msg', message);
@@ -1000,7 +958,7 @@ export class DanmakuClient extends EventEmitter {
     // 发射特定cmd的事件
     this.emit(message.cmd, message);
 
-    this.enqueueMessage(message);
+    this.messageQueue.enqueueMessage(message);
   }
 
   /**
@@ -1022,6 +980,24 @@ export class DanmakuClient extends EventEmitter {
    */
   getConnectedRooms(): number[] {
     return Array.from(this.connections.keys());
+  }
+
+  private findConnectionByResolvedRoomId(resolvedRoomId: number, excludeRoomId?: number): ConnectionInfo | undefined {
+    if (!Number.isFinite(resolvedRoomId) || resolvedRoomId <= 0) {
+      return undefined;
+    }
+
+    for (const connection of this.connections.values()) {
+      if (connection.resolvedRoomId !== resolvedRoomId) {
+        continue;
+      }
+      if (excludeRoomId !== undefined && connection.roomId === excludeRoomId) {
+        continue;
+      }
+      return connection;
+    }
+
+    return undefined;
   }
 
   /**
@@ -1057,11 +1033,11 @@ export class DanmakuClient extends EventEmitter {
       holdingRooms: [...this.holdingRoomIds],
       recordingRoomIds: [...this.recordingRoomIds],
       messageCount: this.messageCount,
-      pendingMessageCount: this.pendingMessages.length,
+      pendingMessageCount: this.messageQueue.getPendingCount(),
       recentErrors: this.recentErrors.map(item => ({ ...item })),
       lastRoomAssigned: this.lastRoomAssigned,
       lastError: this.lastError,
-      lastHeartbeat: this.lastHeartbeat,
+      lastHeartbeat: this.runtimeSync.getLastHeartbeat(),
       config: this.configManager.getConfig()
     };
   }
@@ -1077,107 +1053,43 @@ export class DanmakuClient extends EventEmitter {
   }
 
   async refreshControlState(): Promise<CoreControlStateSnapshot> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    await this.refreshUserInfo();
-    await this.pullAccountConfig();
-    await this.refreshRecordingList(true);
-    await this.refreshRemoteClients(true);
-    this.emitControlStateChanged();
-    return this.getControlState();
+    return this.controlState.refreshControlState();
   }
 
   async refreshRuntimeControlState(): Promise<CoreControlStateSnapshot> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    await this.refreshRemoteClients(true);
-    return this.getControlState();
+    return this.controlState.refreshRuntimeControlState();
   }
 
   async refreshRecordingControlState(): Promise<CoreControlStateSnapshot> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    await this.refreshRecordingList(true);
-    return this.getControlState();
+    return this.controlState.refreshRecordingControlState();
   }
 
   startControlSync(): void {
-    this.scheduleControlSync(0);
+    this.controlState.startControlSync();
   }
 
   stopControlSync(): void {
-    if (!this.controlSyncTimer) {
-      return;
-    }
-
-    clearTimeout(this.controlSyncTimer);
-    this.controlSyncTimer = undefined;
+    this.controlState.stopControlSync();
   }
 
   async saveCoreConfig(config: CoreControlConfigDto): Promise<CoreControlStateSnapshot> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    const result = await this.accountClient.updateCoreConfig(config);
-    await this.applyAccountConfigSnapshot(result.data, result.tags.configTag);
-    this.updateSyncTags(result.tags);
-    this.emitControlStateChanged();
-    return this.getControlState();
+    return this.controlState.saveCoreConfig(config);
   }
 
   async addRecording(uid: number): Promise<RecordingInfoDto> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    const result = await this.accountClient.addRecording(uid);
-    this.updateSyncTags(result.tags);
-    await this.refreshRecordingList(true);
-    return result.data;
+    return this.controlState.addRecording(uid);
   }
 
   async removeRecording(uid: number): Promise<void> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    const result = await this.accountClient.removeRecording(uid);
-    this.updateSyncTags(result.tags);
-    await this.refreshRecordingList(true);
+    await this.controlState.removeRecording(uid);
   }
 
   async updateRecordingPublic(uid: number, isPublic: boolean): Promise<void> {
-    if (!this.accountClient) {
-      throw new Error('账号中心客户端尚未初始化');
-    }
-
-    const result = await this.accountClient.updateRecordingSetting([
-      {
-        id: uid,
-        setting: { isPublic },
-      },
-    ]);
-
-    if (!result.data.includes(uid)) {
-      throw new Error('更新录制公开状态失败');
-    }
-
-    this.updateSyncTags(result.tags);
-    await this.refreshRecordingList(true);
+    await this.controlState.updateRecordingPublic(uid, isPublic);
   }
 
   async forceTakeoverRuntimeState(): Promise<CoreControlStateSnapshot> {
-    await this.syncRuntimeState({}, { strict: true, force: true });
-    await this.refreshRemoteClients(true);
-    this.emitControlStateChanged();
-    return this.getControlState();
+    return this.controlState.forceTakeoverRuntimeState();
   }
 
   private buildCoreControlConfigSnapshot(): CoreControlConfigDto {
@@ -1235,109 +1147,24 @@ export class DanmakuClient extends EventEmitter {
     this.emit('controlStateChanged', this.getControlState());
   }
 
-  private scheduleControlSync(delayMs: number): void {
-    if (this.controlSyncTimer || !this.accountClient || this.isStopping) {
-      return;
-    }
-
-    const delay = Math.max(0, Math.floor(delayMs));
-    this.controlSyncTimer = setTimeout(() => {
-      this.controlSyncTimer = undefined;
-      void this.pollControlState();
-    }, delay);
-  }
-
-  private async pollControlState(): Promise<void> {
-    if (!this.accountClient || this.controlSyncRefreshing || this.isStopping) {
-      return;
-    }
-
-    this.controlSyncRefreshing = true;
-    try {
-      if (!this.isRunning) {
-        const tags = await this.accountClient.getCoreHeartbeatTags();
-        await this.handleAccountConfigTagChange(tags.configTag);
-        await this.handleClientsTagChange(tags.clientsTag);
-        await this.handleRecordingTagChange(tags.recordingTag);
-      }
-    } catch (error) {
-      this.recordError(error, { category: 'runtime-sync', code: 'CONTROL_SYNC_FAILED', recoverable: true });
-      this.logger.warn('同步控制面板数据失败', error);
-    } finally {
-      this.controlSyncRefreshing = false;
-      if (this.accountClient && !this.isStopping) {
-        this.scheduleControlSync(CONTROL_SYNC_INTERVAL_MS);
-      }
-    }
-  }
-
   private updateSyncTags(tags: CoreSyncTagSnapshot): void {
-    if (tags.configTag !== null) {
-      this.accountConfigTag = tags.configTag;
-    }
-    if (tags.clientsTag !== null) {
-      this.clientsTag = tags.clientsTag;
-    }
-    if (tags.recordingTag !== null) {
-      this.recordingTag = tags.recordingTag;
-    }
+    this.controlState.updateSyncTags(tags);
   }
 
   private async refreshUserInfo(): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-
-    this.userInfo = this.cloneUserInfo(await this.accountClient.getUserInfo());
-    this.emitControlStateChanged();
+    await this.controlState.refreshUserInfo();
   }
 
   private async pullAccountConfig(): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-
-    const remoteConfig = await this.accountClient.getCoreConfig();
-    await this.applyAccountConfigSnapshot(remoteConfig, this.accountClient.getCoreConfigTag());
+    await this.controlState.pullAccountConfig();
   }
 
   private async refreshRemoteClients(force: boolean, nextTag: string | null = null): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-    if (!force && (nextTag === null || nextTag === this.clientsTag)) {
-      return;
-    }
-
-    const result = await this.accountClient.getCoreClients();
-    this.remoteClients = this.cloneRemoteClients(result.data);
-    this.updateSyncTags(result.tags);
-    if (nextTag !== null) {
-      this.clientsTag = nextTag;
-    }
-    this.emitControlStateChanged();
+    await this.controlState.refreshRemoteClients(force, nextTag);
   }
 
   private async refreshRecordingList(force: boolean, nextTag: string | null = null): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-    if (!force && (nextTag === null || nextTag === this.recordingTag)) {
-      return;
-    }
-
-    const result = await this.accountClient.getRecordingList();
-    this.recordings = this.cloneRecordingList(result.data);
-    this.recordingRoomIds = this.recordings
-      .map(item => Number(item.channel.roomId))
-      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
-      .map(roomId => Math.floor(roomId));
-    this.statusManager?.updateRecordingRooms(this.recordingRoomIds);
-    this.updateSyncTags(result.tags);
-    if (nextTag !== null) {
-      this.recordingTag = nextTag;
-    }
-    this.emitControlStateChanged();
+    await this.controlState.refreshRecordingList(force, nextTag);
   }
 
   private ensureRuntimeConnection(): RuntimeConnection {
@@ -1345,6 +1172,13 @@ export class DanmakuClient extends EventEmitter {
       throw new Error('Runtime连接尚未初始化');
     }
     return this.runtimeConnection;
+  }
+
+  private ensureAccountClient(): AccountApiClient {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+    return this.accountClient;
   }
 
   private ensureStatusManager(): StreamerStatusManager {
@@ -1383,89 +1217,32 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private async acquireRuntimeLock(): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= this.lockAcquireRetryCount; attempt++) {
-      try {
-        await this.syncRuntimeState({}, { strict: true });
-        if (attempt > 1) {
-          this.logger.info(`核心锁获取成功 (attempt=${attempt})`);
-        }
-        return;
-      } catch (error) {
-        lastError = error;
-        if (!this.isLockConflictError(error)) {
-          throw error;
-        }
-
-        this.recordError(error, {
-          category: 'lock',
-          code: 'LOCK_CONFLICT',
-          recoverable: true
-        });
-
-        if (attempt >= this.lockAcquireRetryCount) {
-          break;
-        }
-
-        const delay = this.lockAcquireRetryDelay * attempt + Math.floor(Math.random() * 300);
-        this.logger.warn(`核心锁冲突，${delay}ms 后重试 (attempt=${attempt}/${this.lockAcquireRetryCount})`);
-        await DanmakuClient.waitMs(delay);
-      }
-    }
-
-    if (this.lockAcquireForceTakeover && this.isLockConflictError(lastError)) {
-      this.logger.warn('核心锁冲突持续存在，执行 force 接管');
-      await this.syncRuntimeState({}, { strict: true, force: true });
-      return;
-    }
-
-    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? '核心锁获取失败'));
+    await this.runtimeSync.acquireRuntimeLock();
   }
 
   private ensureHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      return;
-    }
-
-    const beat = async () => {
-      this.heartbeatTimer = undefined;
-      await this.heartbeatRuntimeState();
-      this.ensureHeartbeat();
-    };
-
-    this.heartbeatTimer = setTimeout(beat, this.heartbeatInterval);
-  }
-
-  private isLockConflictError(error: unknown): boolean {
-    const message = this.getErrorMessage(error);
-    return message.includes('同一 IP 已存在其他客户端连接')
-      || message.includes('客户端未持有锁')
-      || message.includes('423');
+    this.runtimeSync.ensureHeartbeat();
   }
 
   private clearHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearTimeout(this.heartbeatTimer);
-      this.heartbeatTimer = undefined;
-    }
+    this.runtimeSync.clearHeartbeat();
   }
 
   private buildRuntimeStateSnapshot(): CoreRuntimeStateDto {
-    const status = this.getStatus();
     const now = Date.now();
+    const runtimeConnected = this.runtimeConnection?.getConnectionState() ?? false;
+    const connectionInfo = this.getConnectionInfo();
+    const connectedRooms = this.getConnectedRooms();
+    const config = this.configManager.getConfig();
 
     return {
       clientId: this.clientId,
-      clientVersion: status.config.clientVersion ?? 'core',
-      isRunning: status.isRunning,
-      runtimeConnected: status.runtimeConnected,
-      cookieValid: status.cookieValid,
-      connectedRooms: status.connectedRooms,
-      connectionInfo: status.connectionInfo.map<CoreConnectionInfoDto>(info => ({
+      clientVersion: config.clientVersion ?? 'core',
+      isRunning: this.isRunning,
+      runtimeConnected,
+      cookieValid: this.hasAvailableCookie(),
+      connectedRooms,
+      connectionInfo: connectionInfo.map<CoreConnectionInfoDto>(info => ({
         roomId: info.roomId,
         priority: info.priority,
         connectedAt: new Date(info.connectedAt).toISOString()
@@ -1474,81 +1251,33 @@ export class DanmakuClient extends EventEmitter {
       messageCount: this.messageCount,
       lastRoomAssigned: this.lastRoomAssigned ?? null,
       lastError: this.lastError ?? null,
-      lastHeartbeat: new Date(this.lastHeartbeat || now).toISOString()
+      lastHeartbeat: new Date(this.runtimeSync.getLastHeartbeat() || now).toISOString()
     };
   }
 
   private buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string } {
-    const status = this.getStatus();
+    const config = this.configManager.getConfig();
     return {
       clientId: this.clientId,
-      clientVersion: status.config.clientVersion ?? 'core',
-      isRunning: status.isRunning,
-      runtimeConnected: status.runtimeConnected,
-      cookieValid: status.cookieValid,
-      messageCount: status.messageCount,
-      lastRoomAssigned: status.lastRoomAssigned ?? null,
-      lastError: status.lastError ?? null
+      clientVersion: config.clientVersion ?? 'core',
+      isRunning: this.isRunning,
+      runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
+      cookieValid: this.hasAvailableCookie(),
+      messageCount: this.messageCount,
+      lastRoomAssigned: this.lastRoomAssigned ?? null,
+      lastError: this.lastError ?? null
     };
   }
 
   private async heartbeatRuntimeState(options?: { force?: boolean; strict?: boolean }): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-
-    try {
-      const result = await this.accountClient.heartbeatRuntimeState(this.buildRuntimeHeartbeatPayload(), {
-        force: options?.force
-      });
-      this.lastHeartbeat = Date.now();
-      await this.handleAccountConfigTagChange(result.configTag);
-      await this.handleClientsTagChange(result.clientsTag);
-      await this.handleRecordingTagChange(result.recordingTag);
-      if (this.consumeAssignmentTag(result.assignmentTag)) {
-        await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'assignment-tag-changed', {
-          force: true,
-        });
-        return;
-      }
-      await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'heartbeat');
-    } catch (error) {
-      this.recordError(error, { category: 'runtime-sync', code: 'RUNTIME_HEARTBEAT_FAILED', recoverable: true });
-      this.logger.warn('同步核心心跳失败', error);
-      if (options?.strict) {
-        throw error;
-      }
-    }
+    await this.runtimeSync.heartbeatRuntimeState(options);
   }
 
   private async syncRuntimeState(
     overrides: Partial<CoreRuntimeStateDto> = {},
     options?: { force?: boolean; strict?: boolean }
   ): Promise<void> {
-    if (!this.accountClient) {
-      return;
-    }
-
-    const fullState = {
-      ...this.buildRuntimeStateSnapshot(),
-      ...overrides,
-      clientId: this.clientId
-    };
-    
-    // 剔除后端不需要的字段，防止 500 错误
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { lastHeartbeat, ...payload } = fullState;
-
-    try {
-      await this.accountClient.syncRuntimeState(payload as any, { force: options?.force });
-      this.lastHeartbeat = Date.now();
-    } catch (error) {
-      this.recordError(error, { category: 'runtime-sync', code: 'RUNTIME_SYNC_FAILED', recoverable: true });
-      this.logger.warn('同步核心运行状态失败', error);
-      if (options?.strict) {
-        throw error;
-      }
-    }
+    await this.runtimeSync.syncRuntimeState(overrides, options);
   }
 
   private isHoldingRoomRequestEnabled(config: DanmakuConfig = this.configManager.getConfig()): boolean {
@@ -1556,28 +1285,11 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private clearHoldingRooms(): void {
-    if (this.holdingRoomIds.length === 0) {
-      return;
-    }
-
-    const removedRooms = [...this.holdingRoomIds];
-    this.holdingRoomIds = [];
-    for (const roomId of removedRooms) {
-      this.removeQueuedRoomConnect(roomId);
-      this.disconnectFromRoom(roomId);
-    }
-
-    this.statusManager?.updateHoldingRooms([]);
-    this.statusManager?.refreshNow();
-    this.updateConnections();
-    void this.syncRuntimeState();
+    this.holdingRoomCoordinator.clearHoldingRooms();
   }
 
   private getConnectedHoldingRoomIds(): number[] {
-    return Array.from(this.connections.values())
-      .filter((connection) => connection.priority === 'server')
-      .map((connection) => connection.roomId)
-      .filter((roomId) => Number.isFinite(roomId) && roomId > 0);
+    return this.holdingRoomCoordinator.getConnectedHoldingRoomIds();
   }
 
   private async refreshHoldingRoomsIfNeeded(
@@ -1585,46 +1297,7 @@ export class DanmakuClient extends EventEmitter {
     reason: string = 'capacity-refresh',
     options?: { force?: boolean }
   ): Promise<boolean> {
-    const runtimeConnection = this.runtimeConnection;
-    if (!runtimeConnection?.getConnectionState()) {
-      return false;
-    }
-    if (!this.isHoldingRoomRequestEnabled()) {
-      this.clearHoldingRooms();
-      return false;
-    }
-    if (this.holdingRoomRequestRefreshing || (!options?.force && Date.now() < this.nextHoldingRoomRequestAt)) {
-      return false;
-    }
-
-    const config = this.configManager.getConfig();
-    const overrideValue = Number(config.capacityOverride);
-    const capacityOverride = Number.isFinite(overrideValue) && overrideValue > 0
-      ? Math.min(100, Math.floor(overrideValue))
-      : undefined;
-    const capacity = Math.max(0, Math.min(Math.floor(maxConnections), capacityOverride ?? Math.floor(maxConnections), 100));
-    const desiredCount = Math.max(0, capacity - this.holdingRoomIds.length);
-    if (desiredCount <= 0 && !options?.force) {
-      return false;
-    }
-
-    this.holdingRoomRequestRefreshing = true;
-    try {
-      const result = await runtimeConnection.requestRooms({
-        reason,
-        holdingRooms: [...this.holdingRoomIds],
-        connectedRooms: this.getConnectedHoldingRoomIds(),
-        desiredCount,
-        capacityOverride,
-      });
-      if (!result) {
-        return false;
-      }
-      this.applyHoldingRoomResult(result);
-      return true;
-    } finally {
-      this.holdingRoomRequestRefreshing = false;
-    }
+    return this.holdingRoomCoordinator.refreshHoldingRoomsIfNeeded(maxConnections, reason, options);
   }
 
   private applyHoldingRoomResult(result: {
@@ -1634,56 +1307,19 @@ export class DanmakuClient extends EventEmitter {
     effectiveCapacity: number;
     nextRequestAfter?: number | null;
   }): void {
-    const previous = Array.from(new Set(this.holdingRoomIds.filter((roomId) => Number.isFinite(roomId) && roomId > 0)));
-    const next = Array.from(new Set(result.holdingRooms.filter((roomId) => Number.isFinite(roomId) && roomId > 0)));
-    const removedRooms = previous.filter((roomId) => !next.includes(roomId));
-    const addedRooms = next.filter((roomId) => !previous.includes(roomId));
-
-    this.holdingRoomIds = next;
-    this.nextHoldingRoomRequestAt = typeof result.nextRequestAfter === 'number' && result.nextRequestAfter > 0
-      ? result.nextRequestAfter
-      : 0;
-
-    const lastAssignedRoom = addedRooms.length > 0
-      ? addedRooms[addedRooms.length - 1]
-      : (result.newlyAssignedRooms.length > 0 ? result.newlyAssignedRooms[result.newlyAssignedRooms.length - 1] : undefined);
-    if (typeof lastAssignedRoom === 'number' && lastAssignedRoom > 0) {
-      this.lastRoomAssigned = lastAssignedRoom;
-    }
-
-    for (const roomId of removedRooms) {
-      this.removeQueuedRoomConnect(roomId);
-      this.disconnectFromRoom(roomId);
-    }
-
-    this.statusManager?.updateHoldingRooms(this.holdingRoomIds);
-    this.statusManager?.refreshNow();
-    this.updateConnections();
-    void this.syncRuntimeState();
+    this.holdingRoomCoordinator.applyHoldingRoomResult(result);
   }
 
   private async handleAccountConfigTagChange(nextTag: string | null): Promise<void> {
-    if (nextTag === null || nextTag === this.accountConfigTag) {
-      return;
-    }
-
-    await this.refreshAccountConfig(nextTag);
+    await this.controlState.handleAccountConfigTagChange(nextTag);
   }
 
   private async handleClientsTagChange(nextTag: string | null): Promise<void> {
-    if (nextTag === null || nextTag === this.clientsTag) {
-      return;
-    }
-
-    await this.refreshRemoteClients(true, nextTag);
+    await this.controlState.handleClientsTagChange(nextTag);
   }
 
   private async handleRecordingTagChange(nextTag: string | null): Promise<void> {
-    if (nextTag === null || nextTag === this.recordingTag) {
-      return;
-    }
-
-    await this.refreshRecordingList(true, nextTag);
+    await this.controlState.handleRecordingTagChange(nextTag);
   }
 
   private consumeAssignmentTag(nextTag: string | null): boolean {
@@ -1696,7 +1332,6 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private resetAccountConfigSyncState(): void {
-    this.accountConfigRefreshing = false;
     this.accountConfigTag = null;
     this.recordingRoomIds = [];
     this.statusManager?.updateRecordingRooms([]);
@@ -1755,7 +1390,7 @@ export class DanmakuClient extends EventEmitter {
       recorderEventMessage: eventMessage
     };
 
-    this.enqueueMessage(message);
+    this.messageQueue.enqueueMessage(message);
   }
 
   private async flushOpenRecordingSessionsOnStop(): Promise<void> {
@@ -1771,250 +1406,20 @@ export class DanmakuClient extends EventEmitter {
       return;
     }
 
-    const maxFlushRounds = Math.max(1, Math.ceil(this.pendingMessages.length / this.messageBatchSize) + 1);
+    const maxFlushRounds = Math.max(1, Math.ceil(this.messageQueue.getPendingCount() / this.messageQueue.getMessageBatchSize()) + 1);
     for (let i = 0; i < maxFlushRounds; i++) {
-      if (this.pendingMessages.length === 0) {
+      if (this.messageQueue.getPendingCount() === 0) {
         break;
       }
 
-      await this.flushPendingMessages();
+      await this.messageQueue.flushPendingMessages();
     }
-  }
-
-  private enqueueMessage(message: DanmakuMessage): void {
-    if (!this.isRunning || this.isStopping) {
-      return;
-    }
-
-    if (this.pendingMessages.length >= this.messageQueueMaxSize) {
-      const dropped = this.pendingMessages.shift();
-      const queueError = new Error(`消息队列已满(${this.messageQueueMaxSize})，最早消息已丢弃`);
-      this.recordError(queueError, { category: 'queue', code: 'QUEUE_OVERFLOW', recoverable: true, roomId: dropped?.message.roomId });
-      this.logQueueOverflow(queueError, dropped);
-      this.emit('error', queueError, dropped?.message.roomId);
-      this.releaseQueuedMessage(dropped);
-    }
-
-    const queuedMessage: DanmakuMessage = {
-      roomId: message.roomId,
-      cmd: message.cmd,
-      // 队列上行仅依赖 roomId/raw/timestamp，避免长时间持有原始 data 树导致内存上涨。
-      data: undefined,
-      raw: message.raw,
-      timestamp: message.timestamp,
-      recorderEventType: message.recorderEventType,
-      recorderEventMessage: message.recorderEventMessage
-    };
-
-    this.pendingMessages.push({
-      message: queuedMessage,
-      retryCount: 0,
-      nextRetryAt: Date.now()
-    });
-    this.emitQueueChanged();
-    this.scheduleMessageDispatch(this.messageUploadInterval);
-  }
-
-  private releaseQueuedMessage(queued?: QueuedMessage): void {
-    if (!queued) {
-      return;
-    }
-
-    queued.message.raw = '';
-    queued.message.data = undefined;
-  }
-
-  private clearPendingMessages(): void {
-    for (const queued of this.pendingMessages) {
-      this.releaseQueuedMessage(queued);
-    }
-    this.pendingMessages = [];
-    this.emitQueueChanged();
-  }
-
-  private emitQueueChanged(): void {
-    this.emit('queueChanged', this.pendingMessages.length);
-  }
-
-  private logQueueOverflow(queueError: Error, dropped?: QueuedMessage): void {
-    const now = Date.now();
-    if (now - this.queueOverflowLastLogAt < QUEUE_OVERFLOW_LOG_INTERVAL_MS) {
-      this.queueOverflowSuppressedCount += 1;
-      return;
-    }
-
-    const suppressed = this.queueOverflowSuppressedCount;
-    this.queueOverflowSuppressedCount = 0;
-    this.queueOverflowLastLogAt = now;
-    const throttleHint = suppressed > 0
-      ? `；过去 ${Math.floor(QUEUE_OVERFLOW_LOG_INTERVAL_MS / 1000)} 秒内省略 ${suppressed} 条同类日志`
-      : '';
-
-    this.logger.error(`${queueError.message}${throttleHint}`, {
-      roomId: dropped?.message.roomId,
-      cmd: dropped?.message.cmd
-    });
-  }
-
-  private scheduleMessageDispatch(delayMs: number): void {
-    if (this.pendingMessages.length === 0) {
-      if (this.messageDispatchTimer) {
-        clearTimeout(this.messageDispatchTimer);
-        this.messageDispatchTimer = undefined;
-      }
-      return;
-    }
-
-    const delay = Math.max(0, Math.floor(delayMs));
-    if (this.messageDispatchTimer) {
-      if (delay > 0) {
-        return;
-      }
-      clearTimeout(this.messageDispatchTimer);
-      this.messageDispatchTimer = undefined;
-    }
-
-    this.messageDispatchTimer = setTimeout(() => {
-      this.messageDispatchTimer = undefined;
-      void this.flushPendingMessages();
-    }, delay);
-  }
-
-  private clearMessageDispatch(): void {
-    if (this.messageDispatchTimer) {
-      clearTimeout(this.messageDispatchTimer);
-      this.messageDispatchTimer = undefined;
-    }
-    this.messageDispatching = false;
-  }
-
-  private async flushPendingMessages(): Promise<void> {
-    if (this.messageDispatching || this.isStopping || !this.isRunning) {
-      return;
-    }
-
-    this.messageDispatching = true;
-    try {
-      if (this.pendingMessages.length === 0) {
-        return;
-      }
-
-      const now = Date.now();
-      const queued = this.pendingMessages[0];
-
-      if (queued.nextRetryAt > now) {
-        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, queued.nextRetryAt - now));
-        return;
-      }
-
-      const runtimeConnection = this.runtimeConnection;
-      if (!runtimeConnection?.getConnectionState()) {
-        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
-        return;
-      }
-
-      const batch: QueuedMessage[] = [];
-      for (const item of this.pendingMessages) {
-        if (item.nextRetryAt > now || batch.length >= this.messageBatchSize) {
-          break;
-        }
-        batch.push(item);
-      }
-      if (batch.length === 0) {
-        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
-        return;
-      }
-
-      const sentCount = await runtimeConnection.sendMessages(batch.map(item => item.message));
-      if (sentCount > 0) {
-        const sentMessages = this.pendingMessages.splice(0, sentCount);
-        for (const sent of sentMessages) {
-          this.releaseQueuedMessage(sent);
-        }
-        this.emitQueueChanged();
-        return;
-      }
-
-      const failed = this.pendingMessages[0];
-      failed.retryCount += 1;
-      if (failed.retryCount >= this.messageRetryMaxAttempts) {
-        const dropped = this.pendingMessages.shift();
-        if (!dropped) {
-          return;
-        }
-        const { roomId, cmd } = dropped.message;
-        const sendError = new Error(
-          `消息上行失败: room=${roomId}, cmd=${cmd}, retry=${dropped.retryCount}`
-        );
-        this.recordError(sendError, {
-          category: 'runtime',
-          code: 'MESSAGE_UPLOAD_FAILED',
-          roomId,
-          recoverable: false
-        });
-        this.emit('error', sendError, roomId);
-        this.releaseQueuedMessage(dropped);
-        this.emitQueueChanged();
-        return;
-      }
-
-      const delay = this.calculateMessageRetryDelay(failed.retryCount);
-      failed.nextRetryAt = now + delay;
-      this.logger.warn(
-        `消息上行失败，${delay}ms 后重试 (room=${failed.message.roomId}, cmd=${failed.message.cmd}, retry=${failed.retryCount})`
-      );
-      this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, delay));
-      return;
-    } finally {
-      this.messageDispatching = false;
-      if (this.pendingMessages.length > 0 && !this.messageDispatchTimer && this.isRunning && !this.isStopping) {
-        this.scheduleMessageDispatch(this.messageUploadInterval);
-      }
-    }
-  }
-
-  private calculateMessageRetryDelay(retryCount: number): number {
-    const exponential = this.messageRetryBaseDelay * (2 ** Math.max(0, retryCount - 1));
-    return Math.min(exponential, this.messageRetryMaxDelay);
   }
 
   private applyRuntimeTunings(config: DanmakuConfig): void {
     this.logger.setLevel(normalizeLogLevel(config.logLevel, this.logger.getLevel()));
-
-    const queueSize = Math.floor(config.messageQueueMaxSize ?? 2000);
-    this.messageQueueMaxSize = Math.max(MESSAGE_QUEUE_MIN_SIZE, queueSize);
-    if (this.pendingMessages.length > this.messageQueueMaxSize) {
-      const overflowCount = this.pendingMessages.length - this.messageQueueMaxSize;
-      const dropped = this.pendingMessages.splice(0, overflowCount);
-      for (const item of dropped) {
-        this.releaseQueuedMessage(item);
-      }
-      this.emitQueueChanged();
-      this.logger.warn(`消息队列容量调整后丢弃 ${overflowCount} 条待发送消息`);
-    }
-
-    const retryBaseDelay = Math.floor(config.messageRetryBaseDelay ?? 1000);
-    this.messageRetryBaseDelay = Math.max(MESSAGE_RETRY_MIN_DELAY, retryBaseDelay);
-
-    const retryMaxDelay = Math.floor(config.messageRetryMaxDelay ?? 30_000);
-    this.messageRetryMaxDelay = Math.max(this.messageRetryBaseDelay, retryMaxDelay);
-
-    const retryMaxAttempts = Math.floor(config.messageRetryMaxAttempts ?? 6);
-    this.messageRetryMaxAttempts = Math.max(MESSAGE_RETRY_MIN_ATTEMPTS, retryMaxAttempts);
-
-    const batchSize = Math.floor(config.batchUploadSize ?? 500);
-    this.messageBatchSize = Math.min(MESSAGE_BATCH_MAX_SIZE, Math.max(MESSAGE_BATCH_MIN_SIZE, batchSize));
-
-    const heartbeat = Math.floor(config.heartbeatInterval ?? 5000);
-    this.heartbeatInterval = Math.max(HEARTBEAT_MIN_INTERVAL, heartbeat);
-
-    const lockRetryCount = Math.floor(config.lockAcquireRetryCount ?? 4);
-    this.lockAcquireRetryCount = Math.max(LOCK_RETRY_MIN_COUNT, lockRetryCount);
-
-    const lockRetryDelay = Math.floor(config.lockAcquireRetryDelay ?? 1200);
-    this.lockAcquireRetryDelay = Math.max(LOCK_RETRY_MIN_DELAY, lockRetryDelay);
-
-    this.lockAcquireForceTakeover = config.lockAcquireForceTakeover ?? false;
+    this.messageQueue.applyRuntimeTunings(config);
+    this.runtimeSync.applyRuntimeTunings(config);
 
     const errorLimit = Math.floor(config.errorHistoryLimit ?? 50);
     this.errorHistoryLimit = Math.max(ERROR_HISTORY_MIN_LIMIT, errorLimit);
@@ -2024,20 +1429,7 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private async refreshAccountConfig(nextTag: string): Promise<void> {
-    if (!this.accountClient || this.accountConfigRefreshing || this.isStopping) {
-      return;
-    }
-
-    this.accountConfigRefreshing = true;
-    try {
-      const remoteConfig = await this.accountClient.getCoreConfig();
-      await this.applyAccountConfigSnapshot(remoteConfig, this.accountClient.getCoreConfigTag() ?? nextTag);
-    } catch (error) {
-      this.recordError(error, { category: 'config', code: 'HOT_RELOAD_FAILED', recoverable: true });
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      this.accountConfigRefreshing = false;
-    }
+    await this.controlState.refreshAccountConfig(nextTag);
   }
 
   private async applyAccountConfigSnapshot(remoteConfig: CoreControlConfigDto, nextTag: string | null): Promise<void> {
@@ -2225,48 +1617,19 @@ export class DanmakuClient extends EventEmitter {
 
     this.updateConnections();
     void this.syncRuntimeState();
-    this.scheduleMessageDispatch(this.messageUploadInterval);
+    this.messageQueue.scheduleMessageDispatch();
   }
 
   private triggerRuntimeClientRegistration(reason: 'connected' | 'reconnected'): void {
-    if (!this.isRunning || this.isStopping || this.suppressRuntimeAutoRegister) {
-      return;
-    }
-
-    const now = Date.now();
-    if (this.runtimeClientRegistering || now - this.lastRuntimeClientRegisterAt < 1000) {
-      return;
-    }
-
-    this.runtimeClientRegistering = true;
-    this.lastRuntimeClientRegisterAt = now;
-    this.logger.info(`Runtime ${reason} 后重新注册客户端`);
-    void this.reRegisterRuntimeClient().finally(() => {
-      this.runtimeClientRegistering = false;
-    });
+    this.runtimeSync.triggerRuntimeClientRegistration(reason);
   }
 
   private handleRuntimeSessionInvalid(reason: string): void {
-    if (!this.isRunning || this.isStopping) {
-      return;
-    }
-
-    this.logger.warn(`检测到 Runtime 会话失效，准备重新注册客户端: ${reason}`);
-    this.triggerRuntimeClientRegistration('reconnected');
+    this.runtimeSync.handleRuntimeSessionInvalid(reason);
   }
 
   private async reRegisterRuntimeClient(): Promise<void> {
-    const runtimeConnection = this.runtimeConnection;
-    if (!runtimeConnection?.getConnectionState()) {
-      return;
-    }
-
-    const refreshed = await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'runtime-reconnect', { force: true });
-    if (!refreshed) {
-      this.clearHoldingRooms();
-    }
-    this.updateConnections();
-    void this.syncRuntimeState();
+    await this.runtimeSync.reRegisterRuntimeClient();
   }
 
   private normalizeCookieSecret(value?: string): string | undefined {
