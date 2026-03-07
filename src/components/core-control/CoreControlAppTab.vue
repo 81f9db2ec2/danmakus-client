@@ -1,10 +1,7 @@
 <script setup lang="ts">
 import {
-  AppWindow,
   Download,
   Loader2,
-  MonitorDown,
-  MonitorUp,
   RefreshCw
 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
@@ -27,15 +24,11 @@ const props = defineProps<{
   checkingAppUpdate: boolean;
   installingAppUpdate: boolean;
   availableUpdateVersion: string | null;
-  showingMainWindow: boolean;
-  hidingToTray: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'check-app-update'): void;
   (e: 'install-app-update'): void;
-  (e: 'show-main-window'): void;
-  (e: 'hide-to-tray'): void;
 }>();
 
 const assignLocalText = (field: 'cookieCloudKey' | 'cookieCloudPassword', raw: string | number) => {
@@ -160,13 +153,9 @@ const assignCapacityOverride = (raw: string | number) => {
     <Card class="bg-card/60">
       <CardHeader class="pb-3">
         <CardTitle class="text-sm">本地核心覆盖</CardTitle>
-        <CardDescription>仅保存在当前客户端本地，不会上传到服务器；修改后重启核心生效</CardDescription>
+        <CardDescription>仅保存在当前客户端本地，不会同步到全局配置；修改后重启核心生效</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
-        <div class="rounded-lg border bg-background/30 px-3 py-2 text-xs text-muted-foreground space-y-1">
-          <p>留空表示跟随服务端 `maxConnections`；填写后会以更小的值作为当前客户端可申请槽位上限。</p>
-          <p>CLI 模式可继续使用启动参数 `--capacity-override` 直接设置。</p>
-        </div>
         <div class="space-y-1">
           <label class="text-xs font-medium text-muted-foreground">槽位覆盖数（可选，1-100）</label>
           <Input
@@ -174,7 +163,7 @@ const assignCapacityOverride = (raw: string | number) => {
             type="number"
             min="1"
             max="100"
-            placeholder="留空表示跟随服务端"
+            placeholder="留空表示跟随全局设置"
             @update:model-value="assignCapacityOverride"
           />
         </div>
@@ -184,12 +173,9 @@ const assignCapacityOverride = (raw: string | number) => {
     <Card class="bg-card/60">
       <CardHeader class="pb-3">
         <CardTitle class="text-sm">CookieCloud</CardTitle>
-        <CardDescription>仅保存在当前客户端本地，不会上传到服务器；修改后重启核心生效</CardDescription>
+        <CardDescription>仅保存在当前客户端本地，不会上传到服务器</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
-        <div class="rounded-lg border bg-background/30 px-3 py-2 text-xs text-muted-foreground">
-          <p>CLI 模式可继续使用启动参数 `--cookie-key`、`--cookie-password`、`--cookie-host` 直接设置。</p>
-        </div>
         <div class="space-y-1">
           <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
           <Input
@@ -230,39 +216,5 @@ const assignCapacityOverride = (raw: string | number) => {
       </CardContent>
     </Card>
 
-    <Card class="bg-card/60">
-      <CardHeader class="pb-3">
-        <CardTitle class="text-sm">托盘操作</CardTitle>
-        <CardDescription>快速控制主窗口显示状态</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <div class="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            :disabled="!isDesktopRuntime || showingMainWindow"
-            @click="emit('show-main-window')"
-          >
-            <Loader2 v-if="showingMainWindow" class="h-4 w-4 animate-spin" />
-            <MonitorUp v-else class="h-4 w-4" />
-            显示主窗口
-          </Button>
-          <Button
-            variant="outline"
-            :disabled="!isDesktopRuntime || hidingToTray"
-            @click="emit('hide-to-tray')"
-          >
-            <Loader2 v-if="hidingToTray" class="h-4 w-4 animate-spin" />
-            <MonitorDown v-else class="h-4 w-4" />
-            隐藏到托盘
-          </Button>
-        </div>
-        <div class="rounded-lg border bg-background/30 px-3 py-2 text-xs text-muted-foreground">
-          <p class="flex items-center gap-1.5">
-            <AppWindow class="h-3.5 w-3.5" />
-            托盘图标左键可快速显示/隐藏主窗口，右键菜单可执行显示、隐藏与退出。
-          </p>
-        </div>
-      </CardContent>
-    </Card>
   </div>
 </template>

@@ -27,8 +27,7 @@ import {
   registerCloseToTrayHandler,
   saveLocalAppConfig,
   syncTrayHealthFromRuntime,
-  setupTrayInTs,
-  showMainWindow
+  setupTrayInTs
 } from '../services/localApp';
 import {
   APP_UPDATE_CHECK_INTERVAL_MS,
@@ -92,8 +91,6 @@ const appUpdateBusy = computed(() =>
   checkingAppUpdate.value || installingAppUpdate.value || autoCheckingAppUpdate.value
 );
 const availableUpdateVersion = ref<string | null>(null);
-const showingMainWindow = ref(false);
-const hidingToTray = ref(false);
 let autoAppUpdateTimer: number | undefined;
 let announcedAppUpdateVersion: string | null = null;
 let remotePollTimer: number | undefined;
@@ -736,44 +733,6 @@ const syncDesktopLocalConfig = async () => {
   syncingAutoStartFromDesktop = false;
 };
 
-const handleShowMainWindow = async () => {
-  if (!isDesktopApp) {
-    toast.info('仅桌面端支持托盘窗口操作');
-    return;
-  }
-  if (showingMainWindow.value) {
-    return;
-  }
-  showingMainWindow.value = true;
-  try {
-    await showMainWindow();
-  } catch (error) {
-    console.error(error);
-    toast.error(error instanceof Error ? error.message : '显示主窗口失败');
-  } finally {
-    showingMainWindow.value = false;
-  }
-};
-
-const handleHideToTray = async () => {
-  if (!isDesktopApp) {
-    toast.info('仅桌面端支持托盘窗口操作');
-    return;
-  }
-  if (hidingToTray.value) {
-    return;
-  }
-  hidingToTray.value = true;
-  try {
-    await hideMainWindow();
-  } catch (error) {
-    console.error(error);
-    toast.error(error instanceof Error ? error.message : '隐藏到托盘失败');
-  } finally {
-    hidingToTray.value = false;
-  }
-};
-
 watch(coreConfig, () => {
   if (syncingCoreConfigFromRemote) return;
   scheduleCoreConfigAutoSave();
@@ -943,12 +902,8 @@ onBeforeUnmount(() => {
               :checking-app-update="checkingAppUpdate"
               :installing-app-update="installingAppUpdate"
               :available-update-version="availableUpdateVersion"
-              :showing-main-window="showingMainWindow"
-              :hiding-to-tray="hidingToTray"
               @check-app-update="handleCheckAppUpdate"
               @install-app-update="handleInstallAppUpdate"
-              @show-main-window="handleShowMainWindow"
-              @hide-to-tray="handleHideToTray"
             />
 
             <div v-else-if="currentPage === 'bilibili'" key="bilibili">
