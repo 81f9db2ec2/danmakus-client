@@ -256,11 +256,11 @@ const setTrayHealthState = async (nextState: TrayHealthState): Promise<void> => 
 };
 
 const resolveTrayHealthState = (snapshot: TrayRuntimeSnapshot): TrayHealthState => {
-  if (snapshot.lastError) {
-    return 'error';
-  }
   if (snapshot.isRunning && snapshot.runtimeConnected) {
     return 'healthy';
+  }
+  if (snapshot.lastError) {
+    return 'error';
   }
   return 'disconnected';
 };
