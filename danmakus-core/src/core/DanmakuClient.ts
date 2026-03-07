@@ -544,17 +544,8 @@ export class DanmakuClient extends EventEmitter {
     this.holdingRoomCoordinator.applyConnectionsUpdate();
   }
 
-  private pruneOfflineHoldingRooms(statusManager: StreamerStatusManager): void {
-    this.holdingRoomCoordinator.pruneOfflineHoldingRooms(statusManager);
-  }
 
-  private trimHoldingRoomsToCapacity(maxConnections: number): void {
-    this.holdingRoomCoordinator.trimHoldingRoomsToCapacity(maxConnections);
-  }
 
-  private queueRoomConnect(roomId: number, priority: 'high' | 'normal' | 'low' | 'server'): void {
-    this.holdingRoomCoordinator.queueRoomConnect(roomId, priority);
-  }
 
   private removeQueuedRoomConnect(roomId: number): void {
     this.holdingRoomCoordinator.removeQueuedRoomConnect(roomId);
@@ -564,17 +555,8 @@ export class DanmakuClient extends EventEmitter {
     this.holdingRoomCoordinator.clearQueuedRoomConnects();
   }
 
-  private scheduleQueuedRoomConnect(): void {
-    this.holdingRoomCoordinator.scheduleQueuedRoomConnect();
-  }
 
-  private async processQueuedRoomConnect(): Promise<void> {
-    await this.holdingRoomCoordinator.processQueuedRoomConnect();
-  }
 
-  private isRoomStillDesired(roomId: number): boolean {
-    return this.holdingRoomCoordinator.isRoomStillDesired(roomId);
-  }
 
   /**
    * 连接到单个房间
@@ -1147,25 +1129,10 @@ export class DanmakuClient extends EventEmitter {
     this.emit('controlStateChanged', this.getControlState());
   }
 
-  private updateSyncTags(tags: CoreSyncTagSnapshot): void {
-    this.controlState.updateSyncTags(tags);
-  }
 
-  private async refreshUserInfo(): Promise<void> {
-    await this.controlState.refreshUserInfo();
-  }
 
-  private async pullAccountConfig(): Promise<void> {
-    await this.controlState.pullAccountConfig();
-  }
 
-  private async refreshRemoteClients(force: boolean, nextTag: string | null = null): Promise<void> {
-    await this.controlState.refreshRemoteClients(force, nextTag);
-  }
 
-  private async refreshRecordingList(force: boolean, nextTag: string | null = null): Promise<void> {
-    await this.controlState.refreshRecordingList(force, nextTag);
-  }
 
   private ensureRuntimeConnection(): RuntimeConnection {
     if (!this.runtimeConnection) {
@@ -1269,9 +1236,6 @@ export class DanmakuClient extends EventEmitter {
     };
   }
 
-  private async heartbeatRuntimeState(options?: { force?: boolean; strict?: boolean }): Promise<void> {
-    await this.runtimeSync.heartbeatRuntimeState(options);
-  }
 
   private async syncRuntimeState(
     overrides: Partial<CoreRuntimeStateDto> = {},
@@ -1288,9 +1252,6 @@ export class DanmakuClient extends EventEmitter {
     this.holdingRoomCoordinator.clearHoldingRooms();
   }
 
-  private getConnectedHoldingRoomIds(): number[] {
-    return this.holdingRoomCoordinator.getConnectedHoldingRoomIds();
-  }
 
   private async refreshHoldingRoomsIfNeeded(
     maxConnections: number,
@@ -1300,15 +1261,6 @@ export class DanmakuClient extends EventEmitter {
     return this.holdingRoomCoordinator.refreshHoldingRoomsIfNeeded(maxConnections, reason, options);
   }
 
-  private applyHoldingRoomResult(result: {
-    holdingRooms: number[];
-    newlyAssignedRooms: number[];
-    droppedRooms: number[];
-    effectiveCapacity: number;
-    nextRequestAfter?: number | null;
-  }): void {
-    this.holdingRoomCoordinator.applyHoldingRoomResult(result);
-  }
 
   private async handleAccountConfigTagChange(nextTag: string | null): Promise<void> {
     await this.controlState.handleAccountConfigTagChange(nextTag);
@@ -1428,9 +1380,6 @@ export class DanmakuClient extends EventEmitter {
     }
   }
 
-  private async refreshAccountConfig(nextTag: string): Promise<void> {
-    await this.controlState.refreshAccountConfig(nextTag);
-  }
 
   private async applyAccountConfigSnapshot(remoteConfig: CoreControlConfigDto, nextTag: string | null): Promise<void> {
     const previousConfig = this.configManager.getConfig();
@@ -1628,9 +1577,6 @@ export class DanmakuClient extends EventEmitter {
     this.runtimeSync.handleRuntimeSessionInvalid(reason);
   }
 
-  private async reRegisterRuntimeClient(): Promise<void> {
-    await this.runtimeSync.reRegisterRuntimeClient();
-  }
 
   private normalizeCookieSecret(value?: string): string | undefined {
     if (typeof value !== 'string') {
