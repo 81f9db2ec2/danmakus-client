@@ -15,7 +15,7 @@ program
   .version('1.0.0');
 
 program
-  .option('-m, --max-connections <number>', '最大连接数 (1-10)', '5')
+  .option('-m, --max-connections <number>', '最大连接数 (1-100)', '15')
   .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
   .option('--account-api <url>', '账号 API 地址', DEFAULT_ACCOUNT_API_BASE)
@@ -31,9 +31,9 @@ program
 
     try {
       // 解析参数
-      const maxConnections = parseInt(String(options.maxConnections || '5'));
-      if (isNaN(maxConnections) || maxConnections < 1 || maxConnections > 10) {
-        console.error('错误: 最大连接数必须在1-10之间');
+      const maxConnections = parseInt(String(options.maxConnections || '15'));
+      if (isNaN(maxConnections) || maxConnections < 1 || maxConnections > 100) {
+        console.error('错误: 最大连接数必须在1-100之间');
         process.exit(1);
       }
 

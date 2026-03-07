@@ -118,8 +118,8 @@ const emit = defineEmits<{
         <CardContent class="grid gap-4 sm:grid-cols-2">
           <div class="space-y-1.5">
             <label class="text-xs font-medium text-muted-foreground">最大连接数</label>
-            <Input :model-value="coreConfig.maxConnections" type="number" min="1" max="50" placeholder="5"
-              title="同时连接的直播间数量，建议不超过 20 个" @update:model-value="assignNumber('maxConnections', $event)" />
+            <Input :model-value="coreConfig.maxConnections" type="number" min="1" max="100" placeholder="15"
+              title="同时连接的直播间数量，上限 100，建议按机器和网络情况合理设置" @update:model-value="assignNumber('maxConnections', $event)" />
             <p class="text-[11px] text-muted-foreground">同时连接的房间数量</p>
           </div>
 

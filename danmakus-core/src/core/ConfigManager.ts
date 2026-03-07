@@ -41,7 +41,7 @@ export class ConfigManager {
 
   constructor(options: Partial<DanmakuConfig> = {}) {
     this.config = {
-      maxConnections: 10,
+      maxConnections: 15,
       cookieCloudHost: 'https://cookie.danmakus.com',
       runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
       runtimeHeaders: options.runtimeHeaders,
@@ -80,7 +80,7 @@ export class ConfigManager {
    */
   updateFromCliOptions(options: CliOptions): void {
     if (options.maxConnections !== undefined) {
-      this.config.maxConnections = Math.min(Math.max(1, options.maxConnections), 10);
+      this.config.maxConnections = Math.min(Math.max(1, options.maxConnections), 100);
     }
 
     if (options.capacityOverride !== undefined) {
@@ -149,8 +149,8 @@ export class ConfigManager {
       throw new Error('Runtime URL 必须设置');
     }
 
-    if (this.config.maxConnections < 1 || this.config.maxConnections > 10) {
-      throw new Error('最大连接数必须在1-10之间');
+    if (this.config.maxConnections < 1 || this.config.maxConnections > 100) {
+      throw new Error('最大连接数必须在1-100之间');
     }
 
     if (this.config.capacityOverride !== undefined && (this.config.capacityOverride < 1 || this.config.capacityOverride > 100)) {

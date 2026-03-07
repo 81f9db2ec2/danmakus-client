@@ -41,7 +41,7 @@ danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runt
 
 | 参数 | 简写 | 说明 | 默认值 |
 | --- | --- | --- | --- |
-| `--max-connections <number>` | `-m` | 最大连接数，范围 `1-10` | `5` |
+| `--max-connections <number>` | `-m` | 最大连接数，范围 `1-100` | `15` |
 | `--token <token>` | `-t` | 账号 Token（必填） | - |
 | `--account-api <url>` | - | 账号 API 地址 | `https://ukamnads.icu/api/v2/account` |
 | `--runtime-url <url>` | `-s` | Runtime API 地址 | `https://ukamnads.icu/api/v2/core-runtime` |
@@ -66,7 +66,7 @@ danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runt
 import { DanmakuClient } from 'danmakus-core';
 
 const client = new DanmakuClient({
-  maxConnections: 5,
+  maxConnections: 15,
   runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
   accountToken: process.env.DANMAKUS_TOKEN,
   accountApiBase: 'https://ukamnads.icu/api/v2/account',
