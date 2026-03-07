@@ -1,6 +1,7 @@
 import { StreamerStatus } from '../types';
 import { ScopedLogger } from './Logger';
 import { fetchBackendApiWithFallback } from './BackendApiFallback';
+import { wrapBilibiliFetch } from './BilibiliUserAgent';
 
 const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
   try {
@@ -54,7 +55,7 @@ export class StreamerStatusManager {
     fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
     private logger: ScopedLogger = new ScopedLogger('StreamerStatusManager')
   ) {
-    this.fetch = fetchImpl || globalThis.fetch.bind(globalThis);
+    this.fetch = wrapBilibiliFetch(fetchImpl);
     this.statusApiUrl = buildStreamerStatusApiUrl(runtimeUrl);
   }
 
@@ -149,9 +150,6 @@ export class StreamerStatusManager {
 
         try {
           const response = await this.fetch(`https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${roomId}`, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
             signal: controller.signal
           });
 

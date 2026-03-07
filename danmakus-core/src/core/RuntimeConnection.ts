@@ -28,8 +28,11 @@ type RequestRoomResponse = {
 type UploadDanmakusResponse = {
   acceptedCount?: number;
   failedCount?: number;
+  consumedCount?: number;
   firstError?: string | null;
 };
+
+const RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
 
 export class RuntimeConnection {
   private isConnected = false;
@@ -102,11 +105,15 @@ export class RuntimeConnection {
     try {
       const result = await this.requestRuntimeZstd<UploadDanmakusResponse>('/upload-danmakus', payload);
 
+      const consumedCountRaw = Number(result?.consumedCount);
+      if (Number.isFinite(consumedCountRaw)) {
+        return Math.max(0, Math.min(payload.length, Math.floor(consumedCountRaw)));
+      }
+
       const acceptedCountRaw = Number(result?.acceptedCount);
-      const acceptedCount = Number.isFinite(acceptedCountRaw)
+      return Number.isFinite(acceptedCountRaw)
         ? Math.max(0, Math.min(payload.length, Math.floor(acceptedCountRaw)))
         : payload.length;
-      return acceptedCount;
     } catch (error) {
       this.logger.error('批量上传弹幕失败:', error);
       return 0;
@@ -174,6 +181,8 @@ export class RuntimeConnection {
     const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
       ...init,
       headers
+    }, {
+      timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
     });
 
     return this.unwrapRuntimeResponse<T>(response);
@@ -205,6 +214,8 @@ export class RuntimeConnection {
       method: 'POST',
       headers,
       body: compressedBody as unknown as BodyInit
+    }, {
+      timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
     });
 
     return this.unwrapRuntimeResponse<T>(response);

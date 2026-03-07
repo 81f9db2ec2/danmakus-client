@@ -5,6 +5,7 @@ import { CookieManager } from './CookieManager';
 import { RuntimeConnection } from './RuntimeConnection';
 import { StreamerStatusManager } from './StreamerStatusManager';
 import { AccountApiClient } from './AccountApiClient';
+import { wrapBilibiliFetch } from './BilibiliUserAgent';
 import {
   DanmakuMessage,
   DanmakuClientEvents,
@@ -772,7 +773,7 @@ export class DanmakuClient extends EventEmitter {
     const currentConfig = this.configManager.getConfig();
     const apiClient = new BilibiliApiClient({
       cookie: normalizedCookie,
-      fetch: currentConfig.fetchImpl
+      fetch: wrapBilibiliFetch(currentConfig.fetchImpl)
     });
 
     const danmuInfo = await apiClient.xliveGetDanmuInfo({ id: roomId });

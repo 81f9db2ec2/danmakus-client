@@ -145,6 +145,7 @@ class DanmakuService {
     connectedRooms: [] as number[],
     connectionInfo: [] as ConnectionInfoSnapshot[],
     messageCount: 0,
+    pendingMessageCount: 0,
     messageCmdCountMap: {} as Record<string, number>,
     roomMessageCountMap: {} as Record<string, number>,
     streamerStatuses: [] as StreamerStatus[],
@@ -275,6 +276,7 @@ class DanmakuService {
       this.state.connectionInfo = [];
       this.state.holdingRooms = [];
       this.state.messageCount = 0;
+      this.state.pendingMessageCount = 0;
       this.state.messageCmdCountMap = {};
       this.state.lastRoomAssigned = null;
       this.state.lastError = null;
@@ -338,6 +340,7 @@ class DanmakuService {
     this.state.connectedRooms = [];
     this.state.connectionInfo = [];
     this.state.messageCount = 0;
+    this.state.pendingMessageCount = 0;
     this.state.messageCmdCountMap = {};
     this.state.roomMessageCountMap = {};
     this.state.streamerStatuses = [];
@@ -396,6 +399,7 @@ class DanmakuService {
     // Update extended state
     this.state.holdingRooms = [...status.holdingRooms];
     this.state.messageCount = status.messageCount;
+    this.state.pendingMessageCount = status.pendingMessageCount;
     this.state.lastRoomAssigned = status.lastRoomAssigned ?? null;
     this.state.lastError = status.lastError ?? null;
     this.state.lastHeartbeat = status.lastHeartbeat ?? null;

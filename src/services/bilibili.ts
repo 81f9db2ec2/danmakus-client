@@ -1,12 +1,12 @@
 import { reactive } from 'vue'
 import { fetchImpl } from './fetchImpl'
+import { getStartupBilibiliUserAgent } from './bilibiliUserAgent'
 
 const biliCookieKey = 'bili_cookie'
 const biliRefreshTokenKey = 'bili_refresh_token'
 const biliSessionWarmAtKey = 'bili_session_warmed_at'
 const biliBuvidKey = 'bili_buvid'
 
-const fallbackUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 const wbiKeyRefreshIntervalMs = 60 * 60 * 1000
 const wbiMixinKeyEncTab = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
@@ -18,14 +18,6 @@ const wbiMixinKeyEncTab = [
 let wbiImgKey = ''
 let wbiSubKey = ''
 let wbiKeyExpireAt = 0
-
-function getStableUserAgent(): string {
-  if (typeof navigator !== 'undefined') {
-    const ua = navigator.userAgent?.trim()
-    if (ua) return ua
-  }
-  return fallbackUserAgent
-}
 
 function getStoredCookieJar(): string {
   return localStorage.getItem(biliCookieKey) || ''
@@ -144,7 +136,7 @@ function tryPersistCookiesFromResponse(response: Response): void {
 
 function buildBiliHeaders(): Headers {
   const headers = new Headers()
-  headers.set('User-Agent', getStableUserAgent())
+  headers.set('User-Agent', getStartupBilibiliUserAgent())
   headers.set('Accept', 'application/json, text/plain, */*')
   headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8')
   headers.set('Origin', 'https://www.bilibili.com')

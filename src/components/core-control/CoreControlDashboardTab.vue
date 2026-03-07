@@ -71,6 +71,7 @@ type RuntimeStateSnapshot = {
   connectedRooms: number[];
   connectionInfo: ConnectionInfo[];
   messageCount: number;
+  pendingMessageCount: number;
   messageCmdCountMap: Record<string, number>;
   roomMessageCountMap: Record<string, number>;
   holdingRooms: number[];
@@ -458,13 +459,13 @@ onBeforeUnmount(() => {
         </CardContent>
       </Card>
 
-      <Card class="bg-card/60" title="服务器分配的直播间数量">
+      <Card class="bg-card/60" title="当前待上传的弹幕队列长度">
         <CardContent class="px-3 py-0">
           <div class="flex items-center justify-between">
-            <p class="text-xs font-medium text-muted-foreground">服务器分配</p>
-            <Server class="h-3.5 w-3.5 text-muted-foreground/60" />
+            <p class="text-xs font-medium text-muted-foreground">弹幕队列</p>
+            <MessageSquare class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
-          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.holdingRooms.length }}</p>
+          <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.pendingMessageCount }}</p>
         </CardContent>
       </Card>
     </div>
