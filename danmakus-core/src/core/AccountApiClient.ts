@@ -1,4 +1,5 @@
 import { CoreControlConfigDto, CoreRuntimeStateDto, ResponseValue } from '../types';
+import { fetchBackendApiWithFallback } from './BackendApiFallback';
 
 type HeartbeatRuntimeStateResult = {
   configTag: string | null;
@@ -94,7 +95,7 @@ export class AccountApiClient {
       headers.set('Content-Type', 'application/json');
     }
 
-    return this.fetchImpl(`${baseUrl}${path}`, {
+    return fetchBackendApiWithFallback(this.fetchImpl, `${baseUrl}${path}`, {
       ...init,
       headers
     });

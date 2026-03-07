@@ -657,6 +657,7 @@ export async function getLiveWsRoomConfigAsync(roomId: number): Promise<{
 
   const query = await buildWbiQueryString({
     id: String(roomId),
+    isGaiaAvoided: 'true',
     type: '0'
   })
   const url = `https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?${query}`

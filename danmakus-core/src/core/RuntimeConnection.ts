@@ -1,6 +1,7 @@
 import { DanmakuMessage, ClientDanmakuMessage } from '../types';
 import { ScopedLogger } from './Logger';
 import { encodeZstdJson } from './DanmakuUploadCodec';
+import { fetchBackendApiWithFallback } from './BackendApiFallback';
 
 type RuntimeEnvelope<T> = {
   code?: number;
@@ -170,7 +171,7 @@ export class RuntimeConnection {
       headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(`${this.runtimeBaseUrl}${path}`, {
+    const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
       ...init,
       headers
     });
@@ -200,7 +201,7 @@ export class RuntimeConnection {
     headers.set('Content-Encoding', 'zstd');
 
     const compressedBody = await encodeZstdJson(payload);
-    const response = await fetch(`${this.runtimeBaseUrl}${path}`, {
+    const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
       method: 'POST',
       headers,
       body: compressedBody as unknown as BodyInit

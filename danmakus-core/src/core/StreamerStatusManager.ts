@@ -1,5 +1,6 @@
 import { StreamerStatus } from '../types';
 import { ScopedLogger } from './Logger';
+import { fetchBackendApiWithFallback } from './BackendApiFallback';
 
 const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
   try {
@@ -105,7 +106,7 @@ export class StreamerStatusManager {
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       try {
-        const response = await this.fetch(this.statusApiUrl, {
+        const response = await fetchBackendApiWithFallback(this.fetch, this.statusApiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'

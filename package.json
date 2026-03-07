@@ -1,13 +1,14 @@
 {
   "name": "danmakus-client",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "sync:version": "bun run scripts/sync-version.ts",
+    "build": "bun run sync:version && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "bun run sync:version && tauri",
     "smoke:e2e": "bun run scripts/smoke-core-runtime.ts",
     "contract:check": "bun run scripts/contract-check.ts"
   },

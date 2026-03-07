@@ -1,6 +1,6 @@
-import { fetchImpl } from './fetchImpl';
 import { ref } from 'vue';
 import { API_BASE } from './env';
+import { fetchBackendApiWithFallback } from './backendApi';
 
 const authTokenRef = ref('');
 const serverLoggedInRef = ref(false);
@@ -56,7 +56,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     headers.set('Token', authTokenRef.value);
   }
 
-  const response = await fetchImpl(buildUrl(path), {
+  const response = await fetchBackendApiWithFallback(buildUrl(path), {
     ...init,
     headers
   });

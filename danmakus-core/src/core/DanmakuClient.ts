@@ -26,7 +26,7 @@ const MESSAGE_QUEUE_MIN_SIZE = 100;
 const MESSAGE_RETRY_MIN_DELAY = 200;
 const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
 const MESSAGE_BATCH_MIN_SIZE = 1;
-const MESSAGE_BATCH_MAX_SIZE = 200;
+const MESSAGE_BATCH_MAX_SIZE = 500;
 const MESSAGE_UPLOAD_INTERVAL_MS = 1000;
 const LOCK_RETRY_MIN_COUNT = 1;
 const LOCK_RETRY_MIN_DELAY = 200;
@@ -127,7 +127,7 @@ export class DanmakuClient extends EventEmitter {
   private messageRetryBaseDelay = 1000;
   private messageRetryMaxDelay = 30_000;
   private messageRetryMaxAttempts = 6;
-  private messageBatchSize = 20;
+  private messageBatchSize = 500;
   private messageUploadInterval = MESSAGE_UPLOAD_INTERVAL_MS;
   private heartbeatInterval = 5000;
   private lockAcquireRetryCount = 4;
@@ -1690,7 +1690,7 @@ export class DanmakuClient extends EventEmitter {
     const retryMaxAttempts = Math.floor(config.messageRetryMaxAttempts ?? 6);
     this.messageRetryMaxAttempts = Math.max(MESSAGE_RETRY_MIN_ATTEMPTS, retryMaxAttempts);
 
-    const batchSize = Math.floor(config.batchUploadSize ?? 100);
+    const batchSize = Math.floor(config.batchUploadSize ?? 500);
     this.messageBatchSize = Math.min(MESSAGE_BATCH_MAX_SIZE, Math.max(MESSAGE_BATCH_MIN_SIZE, batchSize));
 
     const heartbeat = Math.floor(config.heartbeatInterval ?? 5000);
@@ -1766,7 +1766,7 @@ export class DanmakuClient extends EventEmitter {
       || (previous.messageRetryBaseDelay ?? 1000) !== (next.messageRetryBaseDelay ?? 1000)
       || (previous.messageRetryMaxDelay ?? 30000) !== (next.messageRetryMaxDelay ?? 30000)
       || (previous.messageRetryMaxAttempts ?? 6) !== (next.messageRetryMaxAttempts ?? 6)
-      || (previous.batchUploadSize ?? 100) !== (next.batchUploadSize ?? 100)
+      || (previous.batchUploadSize ?? 500) !== (next.batchUploadSize ?? 500)
       || (previous.heartbeatInterval ?? 5000) !== (next.heartbeatInterval ?? 5000)
       || (previous.lockAcquireRetryCount ?? 4) !== (next.lockAcquireRetryCount ?? 4)
       || (previous.lockAcquireRetryDelay ?? 1200) !== (next.lockAcquireRetryDelay ?? 1200)

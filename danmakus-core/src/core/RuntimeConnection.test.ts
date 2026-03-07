@@ -62,4 +62,56 @@ describe("RuntimeConnection room pull", () => {
       nextRequestAfter: 1710000000000,
     });
   });
+
+  it("falls back to api.danmakus.com when primary runtime api fails", async () => {
+    const requests: Array<{ url: string; body: unknown; headers: Headers }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+        headers: new Headers(init?.headers),
+      });
+
+      if (url.startsWith('https://example.com/')) {
+        return new Response('bad gateway', { status: 502 });
+      }
+
+      return new Response(JSON.stringify({
+        code: 200,
+        data: {
+          holdingRooms: [401],
+          newlyAssignedRooms: [401],
+          droppedRooms: [],
+          effectiveCapacity: 1,
+          nextRequestAfter: 1710000001000,
+        },
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
+    await runtime.connect();
+
+    const result = await (runtime as any).requestRooms({
+      holdingRooms: [],
+      connectedRooms: [],
+      desiredCount: 1,
+      reason: "fallback-check",
+    });
+
+    expect(requests.map((item) => item.url)).toEqual([
+      'https://example.com/api/v2/core-runtime/request-room',
+      'https://api.danmakus.com/api/v2/core-runtime/request-room'
+    ]);
+    expect(result).toEqual({
+      holdingRooms: [401],
+      newlyAssignedRooms: [401],
+      droppedRooms: [],
+      effectiveCapacity: 1,
+      nextRequestAfter: 1710000001000,
+    });
+  });
 });

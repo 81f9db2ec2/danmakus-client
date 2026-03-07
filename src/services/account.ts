@@ -5,7 +5,7 @@ import type {
   UserInfo
 } from '../types/api';
 import { API_BASE } from './env';
-import { fetchImpl } from './fetchImpl';
+import { fetchBackendApiWithFallback } from './backendApi';
 import { apiFetch, getAuthToken } from './http';
 
 const ACCOUNT_PREFIX = '/api/v2/account';
@@ -62,7 +62,7 @@ const requestApi = async (path: string, init?: RequestInit): Promise<Response> =
     headers.set('Token', token);
   }
 
-  return fetchImpl(buildApiUrl(path), {
+  return fetchBackendApiWithFallback(buildApiUrl(path), {
     ...init,
     headers
   });
