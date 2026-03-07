@@ -57,6 +57,9 @@ jobs:
       - name: install frontend dependencies
         run: bun install --frozen-lockfile --no-cache
 
+      - name: sync tauri version
+        run: bun run sync:version
+
       - name: build and publish
         uses: tauri-apps/tauri-action@v0
         env:
