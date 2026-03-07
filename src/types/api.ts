@@ -22,6 +22,7 @@ export interface LocalAppConfigDto {
   autoStart: boolean;
   startMinimized: boolean;
   minimizeToTray: boolean;
+  autoStartRecording: boolean;
   cookieCloudKey: string;
   cookieCloudPassword: string;
   cookieCloudHost: string;

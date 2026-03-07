@@ -147,6 +147,20 @@ const assignCapacityOverride = (raw: string | number) => {
             :disabled="!isDesktopRuntime"
           />
         </div>
+
+        <div
+          class="sm:col-span-2 flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5"
+          title="应用启动完成后自动启动核心录制"
+        >
+          <div>
+            <p class="text-xs font-medium">启动后自动开始录制</p>
+            <p class="text-[11px] text-muted-foreground">登录成功后自动启动核心</p>
+          </div>
+          <Switch
+            v-model:model-value="props.localConfig.autoStartRecording"
+            :disabled="!isDesktopRuntime"
+          />
+        </div>
       </CardContent>
     </Card>
 

@@ -538,6 +538,7 @@ const handleInstallAppUpdate = async () => {
 const handleStartCore = async () => {
   try {
     if (!ensureToken()) return;
+    if (runtimeState.isRunning || startingCore.value) return;
     startingCore.value = true;
     await danmakuService.initialize(localConfig);
     await danmakuService.start();
@@ -806,6 +807,9 @@ onMounted(async () => {
 
   if (token.value) {
     await loadProfile();
+    if (isDesktopApp && localConfig.autoStartRecording && userInfo.value && !runtimeState.isRunning) {
+      await handleStartCore();
+    }
   }
   startRemotePoll();
 });
