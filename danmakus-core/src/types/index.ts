@@ -140,8 +140,10 @@ export interface DanmakuClientEvents {
   'msg': (message: DanmakuMessage) => void; // 订阅所有消息
   'connected': (roomId: number) => void;
   'disconnected': (roomId: number) => void;
+  'controlStateChanged': (state: CoreControlStateSnapshot) => void;
   'error': (error: Error, roomId?: number) => void;
   'cookieUpdated': () => void;
+  'queueChanged': (pendingMessageCount: number) => void;
   'streamerStatusUpdated': (statuses: StreamerStatus[]) => void;
 }
 
@@ -171,6 +173,51 @@ export interface CoreControlConfigDto {
   allowedParentAreas: string[];
 }
 
+export interface RecordingChannelDto {
+  uId: number;
+  uName: string;
+  roomId: number;
+  faceUrl: string;
+  isLiving: boolean;
+}
+
+export interface RecordingSettingDto {
+  isPublic: boolean;
+}
+
+export interface RecordingInfoDto {
+  channel: RecordingChannelDto;
+  setting: RecordingSettingDto;
+  todayDanmakusCount: number;
+  providedDanmakuDataCount?: number;
+  providedMessageCount?: number;
+}
+
+export interface UpdateRecordingSettingPayload {
+  id: number;
+  setting: {
+    isPublic: boolean;
+  };
+}
+
+export interface UserInfo {
+  id: number;
+  name: string;
+  bindedOAuth: string[];
+  recievedDanmakusCount: number;
+}
+
+export interface CoreSyncTagSnapshot {
+  configTag: string | null;
+  clientsTag: string | null;
+  recordingTag: string | null;
+}
+
+export interface CoreTaggedApiResult<T> {
+  data: T;
+  tags: CoreSyncTagSnapshot;
+}
+
 export type CoreConnectionPriority = 'high' | 'normal' | 'low' | 'server';
 
 export interface CoreConnectionInfoDto {
@@ -182,6 +229,7 @@ export interface CoreConnectionInfoDto {
 export interface CoreRuntimeStateDto {
   clientId: string;
   clientVersion?: string | null;
+  ip?: string | null;
   isRunning: boolean;
   runtimeConnected: boolean;
   cookieValid: boolean;
@@ -189,9 +237,18 @@ export interface CoreRuntimeStateDto {
   connectionInfo: CoreConnectionInfoDto[];
   holdingRooms: number[];
   messageCount: number;
+  pendingMessageCount?: number;
   lastRoomAssigned?: number | null;
   lastError?: string | null;
-  lastHeartbeat: string | number;
+  lastHeartbeat: string | number | null;
+}
+
+export interface CoreControlStateSnapshot {
+  userInfo: UserInfo | null;
+  config: CoreControlConfigDto;
+  recordings: RecordingInfoDto[];
+  remoteClients: CoreRuntimeStateDto[];
+  tags: CoreSyncTagSnapshot;
 }
 
 export interface RuntimeRoomPullRequestDto {

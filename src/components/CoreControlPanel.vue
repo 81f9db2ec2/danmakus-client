@@ -1,19 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
-import {
-  addRecording,
-  getCoreConfig,
-  getCoreHeartbeatTags,
-  getDanmakuAreas,
-  getRecordingList,
-  getUserInfo,
-  removeRecording,
-  syncCoreRuntimeState,
-  updateCoreConfig,
-  updateRecordingSetting,
-  type CoreSyncTagSnapshot
-} from '../services/account';
+import { getDanmakuAreas } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
 import { biliNavProfileState, startNavProfileAutoRefresh, stopNavProfileAutoRefresh } from '../services/bilibili';
 import { RUNTIME_URL } from '../services/env';
@@ -36,7 +24,7 @@ import {
   updaterEnabled,
   type AvailableUpdate
 } from '../services/updater';
-import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
+import type { CoreControlConfigDto, LocalAppConfigDto } from '../types/api';
 import AppSidebar from './AppSidebar.vue';
 import BilibiliLogin from './BilibiliLogin.vue';
 import CoreControlAccountTab from './core-control/CoreControlAccountTab.vue';
@@ -46,14 +34,6 @@ import CoreControlLoginCard from './core-control/CoreControlLoginCard.vue';
 import CoreControlSettingsTab from './core-control/CoreControlSettingsTab.vue';
 
 const token = ref(getAuthToken());
-const userInfo = ref<UserInfo | null>(null);
-const isLoggedIn = computed(() => !!userInfo.value);
-const accountNameForDisplay = computed(() => {
-  if (!userInfo.value) return '未知用户';
-  const name = userInfo.value.name?.trim();
-  return name ? name : `用户${userInfo.value.id}`;
-});
-const accountIdForDisplay = computed<number | null>(() => userInfo.value?.id ?? null);
 const currentPage = ref('dashboard');
 const isDesktopApp = isDesktopRuntime();
 const runtimeFixedUrl = RUNTIME_URL;
@@ -69,8 +49,15 @@ const coreConfig = reactive<CoreControlConfigDto>({
   allowedParentAreas: []
 });
 const localConfig = reactive<LocalAppConfigDto>(loadLocalAppConfig());
-
 const runtimeState = danmakuService.state;
+const userInfo = computed(() => runtimeState.userInfo);
+const isLoggedIn = computed(() => !!userInfo.value);
+const accountNameForDisplay = computed(() => {
+  if (!userInfo.value) return '未知用户';
+  const name = userInfo.value.name?.trim();
+  return name ? name : `用户${userInfo.value.id}`;
+});
+const accountIdForDisplay = computed<number | null>(() => userInfo.value?.id ?? null);
 const availableAreas = ref<Record<string, string[]>>({});
 const loadingProfile = ref(false);
 const savingConfig = ref(false);
@@ -78,7 +65,7 @@ const startingCore = ref(false);
 const stoppingCore = ref(false);
 const refreshingState = ref(false);
 const forcingLock = ref(false);
-const recordings = ref<RecordingInfoDto[]>([]);
+const recordings = computed(() => runtimeState.recordings);
 const refreshingRecordings = ref(false);
 const addingRecording = ref(false);
 const removingRecordingUid = ref<number | null>(null);
@@ -93,15 +80,11 @@ const appUpdateBusy = computed(() =>
 const availableUpdateVersion = ref<string | null>(null);
 let autoAppUpdateTimer: number | undefined;
 let announcedAppUpdateVersion: string | null = null;
-let remotePollTimer: number | undefined;
-let remoteHeartbeatPolling = false;
-const remoteConfigTag = ref<string | null>(null);
-const remoteClientsTag = ref<string | null>(null);
-const remoteRecordingTag = ref<string | null>(null);
 const coreConfigAutoSaveThrottleMs = 1_200;
 let coreConfigAutoSaveTimer: number | undefined;
 let coreConfigAutoSavePending = false;
 let syncingCoreConfigFromRemote = false;
+let pendingRemoteCoreConfigSyncCount = 0;
 let syncingAutoStartFromDesktop = false;
 let closeToTrayUnlisten: (() => void) | null = null;
 
@@ -202,21 +185,6 @@ const runAutoAppUpdateCheck = async () => {
   }
 };
 
-const startRemotePoll = () => {
-  if (remotePollTimer) return;
-  remotePollTimer = window.setInterval(() => {
-    if (!isLoggedIn.value || remoteHeartbeatPolling) return;
-    void pollRemoteHeartbeatTags();
-  }, 5000);
-};
-
-const stopRemotePoll = () => {
-  remoteHeartbeatPolling = false;
-  if (!remotePollTimer) return;
-  clearInterval(remotePollTimer);
-  remotePollTimer = undefined;
-};
-
 const clearCoreConfigAutoSaveTimer = () => {
   if (coreConfigAutoSaveTimer === undefined) return;
   clearTimeout(coreConfigAutoSaveTimer);
@@ -236,8 +204,8 @@ const persistCoreConfig = async (silentSuccess: boolean) => {
   if (savingConfig.value) return;
   try {
     savingConfig.value = true;
-    const result = await updateCoreConfig(buildCoreConfigPayload());
-    applyRemoteSyncTagSnapshot(result.tags);
+    await danmakuService.saveCoreConfig(buildCoreConfigPayload());
+    syncConfig(runtimeState.coreConfig);
     if (!silentSuccess) {
       toast.success('配置已保存');
     }
@@ -279,6 +247,7 @@ const scheduleCoreConfigAutoSave = () => {
 };
 
 const syncConfig = (config: CoreControlConfigDto) => {
+  pendingRemoteCoreConfigSyncCount += 1;
   syncingCoreConfigFromRemote = true;
   try {
     coreConfig.maxConnections = config.maxConnections;
@@ -291,63 +260,17 @@ const syncConfig = (config: CoreControlConfigDto) => {
     coreConfig.allowedParentAreas = Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [];
     coreConfig.streamers.splice(0);
   } finally {
-    syncingCoreConfigFromRemote = false;
+    queueMicrotask(() => {
+      pendingRemoteCoreConfigSyncCount = Math.max(0, pendingRemoteCoreConfigSyncCount - 1);
+      syncingCoreConfigFromRemote = pendingRemoteCoreConfigSyncCount > 0;
+    });
   }
 };
-
-const sortRecordings = (items: RecordingInfoDto[]) => {
-  return [...items].sort((a, b) => {
-    const liveA = a.channel?.isLiving ? 1 : 0;
-    const liveB = b.channel?.isLiving ? 1 : 0;
-    if (liveA !== liveB) {
-      return liveB - liveA;
-    }
-    const uidA = Number(a.channel?.uId ?? 0);
-    const uidB = Number(b.channel?.uId ?? 0);
-    return uidA - uidB;
-  });
-};
-
-const syncRecordingList = (items: RecordingInfoDto[]) => {
-  recordings.value = sortRecordings(items);
-};
-
-const applyRemoteSyncTagSnapshot = (tags: CoreSyncTagSnapshot) => {
-  if (tags.configTag !== null) {
-    remoteConfigTag.value = tags.configTag;
-  }
-  if (tags.clientsTag !== null) {
-    remoteClientsTag.value = tags.clientsTag;
-  }
-  if (tags.recordingTag !== null) {
-    remoteRecordingTag.value = tags.recordingTag;
-  }
-};
-
-const fetchRuntimeStateInternal = async () => {
-  const tags = await danmakuService.refreshRemoteState();
-  applyRemoteSyncTagSnapshot(tags);
-};
-
-const syncCoreConfigFromServer = async () => {
-  if (!token.value) return;
-  const result = await getCoreConfig();
-  syncConfig(result.data);
-  applyRemoteSyncTagSnapshot(result.tags);
-};
-
-const fetchRecordingListInternal = async () => {
-  if (!token.value) return;
-  const result = await getRecordingList();
-  syncRecordingList(result.data);
-  applyRemoteSyncTagSnapshot(result.tags);
-};
-
 const refreshRecordingList = async () => {
   if (!ensureToken()) return;
   refreshingRecordings.value = true;
   try {
-    await fetchRecordingListInternal();
+    await danmakuService.refreshRecordingState();
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? error.message : '刷新录制列表失败');
@@ -356,95 +279,15 @@ const refreshRecordingList = async () => {
   }
 };
 
-const pollRemoteHeartbeatTags = async () => {
-  if (!token.value || remoteHeartbeatPolling) {
-    return;
-  }
-
-  remoteHeartbeatPolling = true;
-  try {
-    const tags = await getCoreHeartbeatTags();
-
-    if (
-      tags.configTag !== null
-      && remoteConfigTag.value !== null
-      && tags.configTag !== remoteConfigTag.value
-      && !savingConfig.value
-      && !coreConfigAutoSavePending
-    ) {
-      try {
-        await syncCoreConfigFromServer();
-        remoteConfigTag.value = tags.configTag;
-      } catch (error) {
-        console.error(error);
-      }
-    } else if (remoteConfigTag.value === null && tags.configTag !== null) {
-      remoteConfigTag.value = tags.configTag;
-    }
-
-    if (
-      tags.clientsTag !== null
-      && remoteClientsTag.value !== null
-      && tags.clientsTag !== remoteClientsTag.value
-      && !refreshingState.value
-    ) {
-      refreshingState.value = true;
-      try {
-        await fetchRuntimeStateInternal();
-        remoteClientsTag.value = tags.clientsTag;
-      } catch (error) {
-        console.error(error);
-      } finally {
-        refreshingState.value = false;
-      }
-    } else if (remoteClientsTag.value === null && tags.clientsTag !== null) {
-      remoteClientsTag.value = tags.clientsTag;
-    }
-
-    if (
-      tags.recordingTag !== null
-      && remoteRecordingTag.value !== null
-      && tags.recordingTag !== remoteRecordingTag.value
-      && !refreshingRecordings.value
-      && !addingRecording.value
-      && removingRecordingUid.value === null
-      && updatingRecordingUid.value === null
-    ) {
-      refreshingRecordings.value = true;
-      try {
-        await fetchRecordingListInternal();
-        remoteRecordingTag.value = tags.recordingTag;
-      } catch (error) {
-        console.error(error);
-      } finally {
-        refreshingRecordings.value = false;
-      }
-    } else if (remoteRecordingTag.value === null && tags.recordingTag !== null) {
-      remoteRecordingTag.value = tags.recordingTag;
-    }
-  } catch (error) {
-    console.error(error);
-  } finally {
-    remoteHeartbeatPolling = false;
-  }
-};
-
 const loadProfile = async () => {
   if (!ensureToken()) return;
   try {
     loadingProfile.value = true;
     setAuthToken(token.value);
-    const [info, configResult, recordingResult] = await Promise.all([
-      getUserInfo(),
-      getCoreConfig(),
-      getRecordingList()
-    ]);
-    userInfo.value = info;
+    await danmakuService.initialize(localConfig);
+    await danmakuService.refreshControlState();
+    syncConfig(runtimeState.coreConfig);
     setServerLoggedIn(true);
-    syncConfig(configResult.data);
-    syncRecordingList(recordingResult.data);
-    applyRemoteSyncTagSnapshot(configResult.tags);
-    applyRemoteSyncTagSnapshot(recordingResult.tags);
     try {
       availableAreas.value = await getDanmakuAreas();
     } catch (error) {
@@ -453,17 +296,15 @@ const loadProfile = async () => {
       toast.warning(error instanceof Error ? `加载分区列表失败: ${error.message}` : '加载分区列表失败');
     }
     toast.success('已加载用户与配置');
-    await refreshRuntimeState();
-    startRemotePoll();
   } catch (error) {
     console.error(error);
-    userInfo.value = null;
-    recordings.value = [];
-    remoteConfigTag.value = null;
-    remoteClientsTag.value = null;
-    remoteRecordingTag.value = null;
+    availableAreas.value = {};
     setServerLoggedIn(false);
-    stopRemotePoll();
+    try {
+      await danmakuService.dispose();
+    } catch (disposeError) {
+      console.error(disposeError);
+    }
     toast.error(error instanceof Error ? error.message : '加载失败');
   } finally {
     loadingProfile.value = false;
@@ -574,15 +415,9 @@ const handleAddRecording = async (uid: number) => {
   }
   addingRecording.value = true;
   try {
-    const result = await addRecording(uid);
-    const added = result.data;
-    if (!recordings.value.some(item => item.channel.uId === added.channel.uId)) {
-      syncRecordingList([...recordings.value, added]);
-    } else {
-      await refreshRecordingList();
-    }
-    applyRemoteSyncTagSnapshot(result.tags);
-    toast.success(`已添加录制主播: ${added.channel.uName || added.channel.uId}`);
+    await danmakuService.addRecording(uid);
+    const added = recordings.value.find(item => item.channel.uId === uid);
+    toast.success(`已添加录制主播: ${added?.channel.uName || uid}`);
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? error.message : '添加录制主播失败');
@@ -599,9 +434,7 @@ const handleRemoveRecording = async (uid: number) => {
   }
   removingRecordingUid.value = uid;
   try {
-    const result = await removeRecording(uid);
-    syncRecordingList(recordings.value.filter(item => item.channel.uId !== uid));
-    applyRemoteSyncTagSnapshot(result.tags);
+    await danmakuService.removeRecording(uid);
     toast.success('已移除录制主播');
   } catch (error) {
     console.error(error);
@@ -620,33 +453,7 @@ const handleUpdateRecordingPublic = async (uid: number, isPublic: boolean) => {
 
   updatingRecordingUid.value = uid;
   try {
-    const result = await updateRecordingSetting([
-      {
-        id: uid,
-        setting: { isPublic }
-      }
-    ]);
-    const changed = result.data;
-
-    if (!changed.includes(uid)) {
-      throw new Error('更新录制公开状态失败');
-    }
-
-    const updated = recordings.value.map(item => {
-      if (item.channel.uId !== uid) {
-        return item;
-      }
-      return {
-        ...item,
-        setting: {
-          ...item.setting,
-          isPublic
-        }
-      };
-    });
-
-    syncRecordingList(updated);
-    applyRemoteSyncTagSnapshot(result.tags);
+    await danmakuService.updateRecordingPublic(uid, isPublic);
     toast.success(isPublic ? '已设为公开录制' : '已设为私有录制');
   } catch (error) {
     console.error(error);
@@ -657,11 +464,10 @@ const handleUpdateRecordingPublic = async (uid: number, isPublic: boolean) => {
 };
 
 const handleLogout = async () => {
-  stopRemotePoll();
   clearCoreConfigAutoSaveTimer();
   coreConfigAutoSavePending = false;
   try {
-    await danmakuService.stop();
+    await danmakuService.dispose();
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? `停止核心失败: ${error.message}` : '停止核心失败');
@@ -669,11 +475,7 @@ const handleLogout = async () => {
 
   token.value = '';
   setAuthToken('');
-  userInfo.value = null;
-  recordings.value = [];
-  remoteConfigTag.value = null;
-  remoteClientsTag.value = null;
-  remoteRecordingTag.value = null;
+  availableAreas.value = {};
   availableUpdateVersion.value = null;
   setServerLoggedIn(false);
   currentPage.value = 'dashboard';
@@ -683,7 +485,7 @@ const handleLogout = async () => {
 const refreshRuntimeState = async () => {
   refreshingState.value = true;
   try {
-    await fetchRuntimeStateInternal();
+    await danmakuService.refreshRuntimeState();
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? error.message : '刷新状态失败');
@@ -696,22 +498,8 @@ const handleForceTakeover = async () => {
   if (!ensureToken()) return;
   forcingLock.value = true;
   try {
-    setAuthToken(token.value);
-    await syncCoreRuntimeState({
-      clientId: danmakuService.getClientId(),
-      clientVersion: 'desktop',
-      isRunning: false,
-      runtimeConnected: false,
-      cookieValid: false,
-      connectedRooms: [],
-      connectionInfo: [],
-      holdingRooms: [],
-      messageCount: 0,
-      lastRoomAssigned: null,
-      lastError: null
-    }, { force: true });
+    await danmakuService.forceTakeoverRuntimeState();
     toast.success('已强制接管核心锁');
-    await refreshRuntimeState();
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? error.message : '强制接管失败');
@@ -738,6 +526,14 @@ watch(coreConfig, () => {
   if (syncingCoreConfigFromRemote) return;
   scheduleCoreConfigAutoSave();
 }, { deep: true });
+
+watch(
+  () => runtimeState.coreConfig,
+  (config) => {
+    syncConfig(config);
+  },
+  { deep: true, immediate: true }
+);
 
 watch(localConfig, () => {
   saveLocalAppConfig(localConfig);
@@ -811,12 +607,10 @@ onMounted(async () => {
       await handleStartCore();
     }
   }
-  startRemotePoll();
 });
 
 onBeforeUnmount(() => {
   stopAutoAppUpdatePoll();
-  stopRemotePoll();
   stopNavProfileAutoRefresh();
   clearCoreConfigAutoSaveTimer();
   coreConfigAutoSavePending = false;

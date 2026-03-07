@@ -1,13 +1,28 @@
-import { CoreControlConfigDto, CoreRuntimeStateDto, ResponseValue } from '../types';
+import {
+  CoreControlConfigDto,
+  CoreRuntimeStateDto,
+  CoreSyncTagSnapshot,
+  CoreTaggedApiResult,
+  RecordingInfoDto,
+  ResponseValue,
+  UpdateRecordingSettingPayload,
+  UserInfo,
+} from '../types';
 import { fetchBackendApiWithFallback } from './BackendApiFallback';
 
 type HeartbeatRuntimeStateResult = {
   configTag: string | null;
   assignmentTag: string | null;
+  clientsTag: string | null;
+  recordingTag: string | null;
 };
 
 const CONFIG_TAG_HEADER = 'X-Core-Config-Tag';
 const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
+const CLIENTS_TAG_HEADER = 'X-Core-Clients-Tag';
+const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
+const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
+const HEARTBEAT_FEATURES = 'clients,recording';
 
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -35,8 +50,68 @@ export class AccountApiClient {
     return config;
   }
 
+  async getUserInfo(): Promise<UserInfo> {
+    return this.requestWithBase<UserInfo>(this.accountBaseUrl, '/info', {
+      method: 'GET',
+    });
+  }
+
   getCoreConfigTag(): string | null {
     return this.coreConfigTag;
+  }
+
+  async getRecordingList(): Promise<CoreTaggedApiResult<RecordingInfoDto[]>> {
+    return this.requestTaggedAccount<RecordingInfoDto[]>('/recording', {
+      method: 'GET',
+    });
+  }
+
+  async addRecording(uid: number): Promise<CoreTaggedApiResult<RecordingInfoDto>> {
+    return this.requestTaggedAccount<RecordingInfoDto>(`/add-record?uId=${encodeURIComponent(String(uid))}`, {
+      method: 'GET',
+    });
+  }
+
+  async removeRecording(uid: number): Promise<CoreTaggedApiResult<unknown>> {
+    return this.requestTaggedAccount<unknown>(`/del-record?uId=${encodeURIComponent(String(uid))}`, {
+      method: 'GET',
+    });
+  }
+
+  async updateRecordingSetting(payload: UpdateRecordingSettingPayload[]): Promise<CoreTaggedApiResult<number[]>> {
+    return this.requestTaggedAccount<number[]>('/update-recording-setting', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateCoreConfig(config: CoreControlConfigDto): Promise<CoreTaggedApiResult<CoreControlConfigDto>> {
+    return this.requestTaggedAccount<CoreControlConfigDto>('/core-config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  }
+
+  async getCoreClients(): Promise<CoreTaggedApiResult<CoreRuntimeStateDto[]>> {
+    return this.requestTaggedRuntime<CoreRuntimeStateDto[]>('/clients', {
+      method: 'GET',
+    });
+  }
+
+  async getCoreHeartbeatTags(): Promise<CoreSyncTagSnapshot> {
+    const headers = new Headers();
+    headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
+
+    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, '/heartbeat', {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      await this.parseResponsePayload(response);
+    }
+
+    return this.readCoreSyncTags(response.headers);
   }
 
   async syncRuntimeState(
@@ -72,15 +147,47 @@ export class AccountApiClient {
   }
 
   private async requestRuntimeSignal(path: string, init?: RequestInit): Promise<HeartbeatRuntimeStateResult> {
-    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, init);
-    const configTag = this.normalizeTag(response.headers.get(CONFIG_TAG_HEADER));
+    const headers = new Headers(init?.headers ?? {});
+    headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
+
+    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, {
+      ...init,
+      headers,
+    });
+    const tags = this.readCoreSyncTags(response.headers);
     const assignmentTag = this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER));
     if (response.status === 204) {
-      return { configTag, assignmentTag };
+      return {
+        configTag: tags.configTag,
+        assignmentTag,
+        clientsTag: tags.clientsTag,
+        recordingTag: tags.recordingTag,
+      };
     }
 
     await this.parseResponsePayload(response);
-    return { configTag, assignmentTag };
+    return {
+      configTag: tags.configTag,
+      assignmentTag,
+      clientsTag: tags.clientsTag,
+      recordingTag: tags.recordingTag,
+    };
+  }
+
+  private async requestTaggedAccount<T>(path: string, init?: RequestInit): Promise<CoreTaggedApiResult<T>> {
+    return this.requestTaggedWithBase<T>(this.accountBaseUrl, path, init);
+  }
+
+  private async requestTaggedRuntime<T>(path: string, init?: RequestInit): Promise<CoreTaggedApiResult<T>> {
+    return this.requestTaggedWithBase<T>(this.coreRuntimeBaseUrl, path, init);
+  }
+
+  private async requestTaggedWithBase<T>(baseUrl: string, path: string, init?: RequestInit): Promise<CoreTaggedApiResult<T>> {
+    const response = await this.fetchWithBase(baseUrl, path, init);
+    return {
+      data: await this.parseResponsePayload<T>(response),
+      tags: this.readCoreSyncTags(response.headers),
+    };
   }
 
   private async requestWithBase<T = unknown>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
@@ -126,6 +233,14 @@ export class AccountApiClient {
 
   private resolveConfigTag(headers: Headers): string | null {
     return this.normalizeTag(headers.get(CONFIG_TAG_HEADER));
+  }
+
+  private readCoreSyncTags(headers: Headers): CoreSyncTagSnapshot {
+    return {
+      configTag: this.normalizeTag(headers.get(CONFIG_TAG_HEADER)),
+      clientsTag: this.normalizeTag(headers.get(CLIENTS_TAG_HEADER)),
+      recordingTag: this.normalizeTag(headers.get(RECORDING_TAG_HEADER)),
+    };
   }
 
   private normalizeTag(value: string | null): string | null {

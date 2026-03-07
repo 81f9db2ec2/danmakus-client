@@ -1,14 +1,19 @@
 import { DanmakuClient } from 'danmakus-core';
-import type { DanmakuMessage, StreamerStatus } from 'danmakus-core';
+import type {
+  CoreControlStateSnapshot as CoreClientControlStateSnapshot,
+  CoreRuntimeStateDto as CoreClientRuntimeStateDto,
+  DanmakuMessage,
+  StreamerStatus,
+} from 'danmakus-core';
 import { reactive } from 'vue';
-import { getCoreClients, type CoreSyncTagSnapshot } from './account';
 import { biliCookie, getLiveWsRoomConfigAsync, getNavProfileAsync } from './bilibili';
 import { ACCOUNT_API_BASE, RUNTIME_URL } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
-import type { LocalAppConfigDto } from '../types/api';
+import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
 
 type ConnectionInfoSnapshot = { roomId: number; priority: string; connectedAt: number };
+
 type RemoteClientSnapshot = {
   clientId: string;
   clientVersion: string | null;
@@ -51,6 +56,7 @@ const parseServerTimeMs = (value: unknown, fieldName: string): number | null => 
   if (value === null || value === undefined || value === '') {
     return null;
   }
+
   let ms: number;
   if (typeof value === 'number') {
     ms = value;
@@ -63,7 +69,6 @@ const parseServerTimeMs = (value: unknown, fieldName: string): number | null => 
     }
   }
 
-  // 兼容服务端返回 unix 秒
   if (ms > 100000000 && ms < 10000000000) {
     ms *= 1000;
   }
@@ -85,61 +90,58 @@ const normalizeConnectionInfo = (info: {
   return {
     roomId: info.roomId,
     priority: String(info.priority),
-    connectedAt
+    connectedAt,
   };
 };
 
-const ensureNumberArray = (value: unknown, fieldName: string): number[] => {
-  if (value === null || value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new Error(`账号中心返回的 ${fieldName} 无效`);
-  }
-  return value.map((item) => {
-    const num = typeof item === 'number' ? item : Number(item);
-    if (!Number.isFinite(num)) {
-      throw new Error(`账号中心返回的 ${fieldName} 无效`);
+const sortRecordings = (items: RecordingInfoDto[]): RecordingInfoDto[] => {
+  return [...items].sort((a, b) => {
+    const liveA = a.channel?.isLiving ? 1 : 0;
+    const liveB = b.channel?.isLiving ? 1 : 0;
+    if (liveA !== liveB) {
+      return liveB - liveA;
     }
-    return num;
+    const uidA = Number(a.channel?.uId ?? 0);
+    const uidB = Number(b.channel?.uId ?? 0);
+    return uidA - uidB;
   });
 };
 
-const ensureObjectArray = <T = unknown>(value: unknown, fieldName: string): T[] => {
-  if (value === null || value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new Error(`账号中心返回的 ${fieldName} 无效`);
-  }
-  return value as T[];
-};
+const toRecordingInfoDto = (items: CoreClientControlStateSnapshot['recordings']): RecordingInfoDto[] =>
+  items.map(item => ({
+    channel: { ...item.channel },
+    setting: { ...item.setting },
+    todayDanmakusCount: Number(item.todayDanmakusCount ?? 0),
+    providedDanmakuDataCount: Number(item.providedDanmakuDataCount ?? 0),
+    providedMessageCount: Number(item.providedMessageCount ?? 0),
+  }));
 
-const getRemoteField = (raw: Record<string, unknown>, camel: string, pascal: string) =>
-  (raw[camel] ?? raw[pascal]) as unknown;
-
-const getRemoteString = (raw: Record<string, unknown>, camel: string, pascal: string): string => {
-  const value = getRemoteField(raw, camel, pascal);
-  return typeof value === 'string' ? value : String(value ?? '');
-};
-
-const getRemoteBoolean = (raw: Record<string, unknown>, camel: string, pascal: string): boolean => {
-  const value = getRemoteField(raw, camel, pascal);
-  if (typeof value === 'boolean') return value;
-  if (value === null || value === undefined || value === '') return false;
-  if (value === 0 || value === '0' || value === 'false') return false;
-  if (value === 1 || value === '1' || value === 'true') return true;
-  throw new Error(`账号中心返回的 ${camel} 无效`);
-};
+const toRemoteClientSnapshot = (remote: CoreClientRuntimeStateDto): RemoteClientSnapshot => ({
+  clientId: String(remote.clientId ?? '').trim(),
+  clientVersion: remote.clientVersion == null ? null : String(remote.clientVersion),
+  ip: remote.ip == null ? null : String(remote.ip),
+  isRunning: Boolean(remote.isRunning),
+  runtimeConnected: Boolean(remote.runtimeConnected),
+  cookieValid: Boolean(remote.cookieValid),
+  connectedRooms: remote.connectedRooms.map(roomId => Number(roomId)).filter(roomId => Number.isFinite(roomId) && roomId > 0).map(roomId => Math.floor(roomId)),
+  connectionInfo: remote.connectionInfo.map(normalizeConnectionInfo),
+  holdingRooms: remote.holdingRooms.map(roomId => Number(roomId)).filter(roomId => Number.isFinite(roomId) && roomId > 0).map(roomId => Math.floor(roomId)),
+  messageCount: Number.isFinite(Number(remote.messageCount)) ? Number(remote.messageCount) : 0,
+  lastRoomAssigned: Number.isFinite(Number(remote.lastRoomAssigned)) ? Number(remote.lastRoomAssigned) : null,
+  lastError: typeof remote.lastError === 'string' ? remote.lastError : (remote.lastError == null ? null : String(remote.lastError)),
+  lastHeartbeat: parseServerTimeMs(remote.lastHeartbeat, 'lastHeartbeat'),
+});
 
 class DanmakuService {
   private static instance: DanmakuService;
   private client: DanmakuClient | null = null;
   private localClientId: string;
   private lastNavCookieCheckAt = 0;
+  private lastInitializationSignature: string | null = null;
   private readonly navCookieCheckIntervalMs = 30_000;
 
   public state = reactive({
+    userInfo: null as UserInfo | null,
     isRunning: false,
     runtimeConnected: false,
     connectedRooms: [] as number[],
@@ -156,7 +158,24 @@ class DanmakuService {
     lockedByOther: false,
     ownerClientId: null as string | null,
     lastHeartbeat: null as number | null,
-    remoteClients: [] as RemoteClientSnapshot[]
+    remoteClients: [] as RemoteClientSnapshot[],
+    recordings: [] as RecordingInfoDto[],
+    coreConfig: {
+      maxConnections: 5,
+      runtimeUrl: RUNTIME_URL,
+      autoReconnect: true,
+      reconnectInterval: 5000,
+      statusCheckInterval: 30,
+      streamers: [],
+      requestServerRooms: true,
+      allowedAreas: [],
+      allowedParentAreas: [],
+    } as CoreControlConfigDto,
+    syncTags: {
+      configTag: null as string | null,
+      clientsTag: null as string | null,
+      recordingTag: null as string | null,
+    },
   });
 
   private constructor() {
@@ -171,13 +190,26 @@ class DanmakuService {
   }
 
   public async initialize(localConfig?: Pick<LocalAppConfigDto, 'cookieCloudKey' | 'cookieCloudPassword' | 'cookieCloudHost' | 'cookieRefreshInterval' | 'capacityOverride'>): Promise<void> {
-    await this.disposeExistingClient();
-
     const token = getAuthToken();
     if (!token) {
       throw new Error('请先登录并提供 Token');
     }
-    await this.assertBiliLoginReady();
+
+    const signature = JSON.stringify({
+      token,
+      cookieCloudKey: localConfig?.cookieCloudKey?.trim() || '',
+      cookieCloudPassword: localConfig?.cookieCloudPassword?.trim() || '',
+      cookieCloudHost: localConfig?.cookieCloudHost?.trim() || '',
+      cookieRefreshInterval: localConfig?.cookieRefreshInterval ?? null,
+      capacityOverride: localConfig?.capacityOverride ?? null,
+    });
+
+    if (this.client && this.lastInitializationSignature === signature) {
+      this.client.startControlSync();
+      return;
+    }
+
+    await this.disposeExistingClient();
 
     this.client = new DanmakuClient({
       clientId: this.localClientId,
@@ -193,97 +225,103 @@ class DanmakuService {
       accountToken: token,
       clientVersion: 'desktop',
       accountApiBase: ACCOUNT_API_BASE,
-      runtimeUrl: RUNTIME_URL
+      runtimeUrl: RUNTIME_URL,
     });
+    this.lastInitializationSignature = signature;
 
     this.setupListeners();
     this.applyStatusSnapshot();
+    this.applyControlStateSnapshot(this.client.getControlState());
+    this.client.startControlSync();
   }
 
-  public async refreshRemoteState(): Promise<CoreSyncTagSnapshot> {
-    const token = getAuthToken();
-    if (!token) {
-      throw new Error('请先登录并提供 Token');
+  public async refreshControlState(): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
     }
 
-    const { data: remotes, tags } = await getCoreClients();
-    const normalizedClients = remotes.map((remote) => {
-      const raw = remote as unknown as Record<string, unknown>;
-      const clientId = getRemoteString(raw, 'clientId', 'ClientId').trim();
-      if (!clientId) {
-        throw new Error('账号中心返回的 clientId 无效');
-      }
+    const snapshot = await this.client.refreshControlState();
+    this.applyControlStateSnapshot(snapshot);
+  }
 
-      const clientVersion = getRemoteField(raw, 'clientVersion', 'ClientVersion');
-      const ip = getRemoteField(raw, 'ip', 'Ip');
+  public async refreshRemoteState(): Promise<typeof this.state.syncTags> {
+    await this.refreshRuntimeState();
+    return { ...this.state.syncTags };
+  }
 
-      const connectedRooms = ensureNumberArray(getRemoteField(raw, 'connectedRooms', 'ConnectedRooms'), 'connectedRooms');
-      const connectionInfo = ensureObjectArray<{
-        roomId: number;
-        priority: unknown;
-        connectedAt: string | number;
-      }>(getRemoteField(raw, 'connectionInfo', 'ConnectionInfo'), 'connectionInfo').map(normalizeConnectionInfo);
-
-      const holdingRooms = ensureNumberArray(
-        getRemoteField(raw, 'holdingRooms', 'HoldingRooms'),
-        'holdingRooms'
-      );
-
-      const messageCountRaw = getRemoteField(raw, 'messageCount', 'MessageCount');
-      const messageCount = typeof messageCountRaw === 'number' ? messageCountRaw : Number(messageCountRaw);
-
-      const lastRoomAssignedRaw = getRemoteField(raw, 'lastRoomAssigned', 'LastRoomAssigned');
-      const lastRoomAssigned = typeof lastRoomAssignedRaw === 'number' ? lastRoomAssignedRaw : Number(lastRoomAssignedRaw);
-
-      const lastError = getRemoteField(raw, 'lastError', 'LastError');
-      const lastHeartbeat = parseServerTimeMs(getRemoteField(raw, 'lastHeartbeat', 'LastHeartbeat'), 'lastHeartbeat');
-
-      return {
-        clientId,
-        clientVersion: clientVersion == null ? null : String(clientVersion),
-        ip: ip == null ? null : String(ip),
-        isRunning: getRemoteBoolean(raw, 'isRunning', 'IsRunning'),
-        runtimeConnected: getRemoteBoolean(raw, 'runtimeConnected', 'RuntimeConnected'),
-        cookieValid: getRemoteBoolean(raw, 'cookieValid', 'CookieValid'),
-        connectedRooms,
-        connectionInfo,
-        holdingRooms,
-        messageCount: Number.isFinite(messageCount) ? messageCount : 0,
-        lastRoomAssigned: Number.isFinite(lastRoomAssigned) ? lastRoomAssigned : null,
-        lastError: typeof lastError === 'string' ? lastError : (lastError == null ? null : String(lastError)),
-        lastHeartbeat
-      } satisfies RemoteClientSnapshot;
-    });
-
-    this.state.remoteClients = normalizedClients;
-
-    const self = normalizedClients.find((c) => c.clientId === this.localClientId) ?? null;
-    const activeOwner = normalizedClients
-      .filter((c) => c.clientId !== this.localClientId && (c.isRunning || c.runtimeConnected))
-      .sort((a, b) => (b.lastHeartbeat ?? 0) - (a.lastHeartbeat ?? 0))[0]
-      ?? normalizedClients.find((c) => c.clientId !== this.localClientId)
-      ?? null;
-
-    const owner = self ?? activeOwner;
-    this.state.ownerClientId = owner?.clientId ?? null;
-    this.state.lastHeartbeat = owner?.lastHeartbeat ?? null;
-    this.state.lockedByOther = self === null && activeOwner !== null;
-
-    if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
-      this.state.isRunning = false;
-      this.state.runtimeConnected = false;
-      this.state.connectedRooms = [];
-      this.state.connectionInfo = [];
-      this.state.holdingRooms = [];
-      this.state.messageCount = 0;
-      this.state.pendingMessageCount = 0;
-      this.state.messageCmdCountMap = {};
-      this.state.lastRoomAssigned = null;
-      this.state.lastError = null;
-      await this.refreshCookieValidityFromNav(false);
+  public async refreshRuntimeState(): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
     }
 
-    return tags;
+    this.applyStatusSnapshot();
+    const snapshot = await this.client.refreshRuntimeControlState();
+    this.applyControlStateSnapshot(snapshot);
+  }
+
+  public async refreshRecordingState(): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    const snapshot = await this.client.refreshRecordingControlState();
+    this.applyControlStateSnapshot(snapshot);
+  }
+
+  public async saveCoreConfig(config: CoreControlConfigDto): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    const snapshot = await this.client.saveCoreConfig(config);
+    this.applyControlStateSnapshot(snapshot);
+  }
+
+  public async addRecording(uid: number): Promise<RecordingInfoDto> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    const added = await this.client.addRecording(uid);
+    this.applyControlStateSnapshot(this.client.getControlState());
+    return {
+      channel: { ...added.channel },
+      setting: { ...added.setting },
+      todayDanmakusCount: Number(added.todayDanmakusCount ?? 0),
+      providedDanmakuDataCount: Number(added.providedDanmakuDataCount ?? 0),
+      providedMessageCount: Number(added.providedMessageCount ?? 0),
+    };
+  }
+
+  public async removeRecording(uid: number): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    await this.client.removeRecording(uid);
+    this.applyControlStateSnapshot(this.client.getControlState());
+  }
+
+  public async updateRecordingPublic(uid: number, isPublic: boolean): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    await this.client.updateRecordingPublic(uid, isPublic);
+    this.applyControlStateSnapshot(this.client.getControlState());
+  }
+
+  public async forceTakeoverRuntimeState(): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    const snapshot = await this.client.forceTakeoverRuntimeState();
+    this.applyControlStateSnapshot(snapshot);
+  }
+
+  public async dispose(): Promise<void> {
+    await this.disposeExistingClient();
   }
 
   public async start(): Promise<void> {
@@ -319,6 +357,7 @@ class DanmakuService {
   private async disposeExistingClient(): Promise<void> {
     let stopError: unknown | undefined;
     if (this.client) {
+      this.client.stopControlSync();
       try {
         await this.client.stop();
       } catch (error) {
@@ -328,7 +367,9 @@ class DanmakuService {
       this.client = null;
     }
 
+    this.lastInitializationSignature = null;
     this.resetRuntimeState();
+    this.resetControlState();
     if (stopError) {
       throw stopError;
     }
@@ -353,12 +394,34 @@ class DanmakuService {
     this.state.lastHeartbeat = null;
   }
 
+  private resetControlState(): void {
+    this.state.userInfo = null;
+    this.state.remoteClients = [];
+    this.state.recordings = [];
+    this.state.syncTags.configTag = null;
+    this.state.syncTags.clientsTag = null;
+    this.state.syncTags.recordingTag = null;
+    this.state.coreConfig.maxConnections = 5;
+    this.state.coreConfig.runtimeUrl = RUNTIME_URL;
+    this.state.coreConfig.autoReconnect = true;
+    this.state.coreConfig.reconnectInterval = 5000;
+    this.state.coreConfig.statusCheckInterval = 30;
+    this.state.coreConfig.requestServerRooms = true;
+    this.state.coreConfig.allowedAreas = [];
+    this.state.coreConfig.allowedParentAreas = [];
+    this.state.coreConfig.streamers.splice(0);
+  }
+
   private setupListeners(): void {
     if (!this.client) return;
 
     this.client.on('connected', () => {
       this.state.isRunning = true;
       this.applyStatusSnapshot();
+    });
+
+    this.client.on('controlStateChanged', (snapshot) => {
+      this.applyControlStateSnapshot(snapshot);
     });
 
     this.client.on('disconnected', () => {
@@ -369,7 +432,9 @@ class DanmakuService {
       this.state.streamerStatuses = statuses.map(status => ({ ...status }));
     });
 
-
+    this.client.on('queueChanged', (pendingMessageCount: number) => {
+      this.state.pendingMessageCount = pendingMessageCount;
+    });
 
     this.client.on('msg', (message: DanmakuMessage) => {
       this.state.messageCount += 1;
@@ -384,6 +449,55 @@ class DanmakuService {
     });
   }
 
+  private applyControlStateSnapshot(snapshot: CoreClientControlStateSnapshot): void {
+    this.state.userInfo = snapshot.userInfo ? { ...snapshot.userInfo } : null;
+    this.state.coreConfig.maxConnections = snapshot.config.maxConnections;
+    this.state.coreConfig.runtimeUrl = snapshot.config.runtimeUrl || RUNTIME_URL;
+    this.state.coreConfig.autoReconnect = snapshot.config.autoReconnect;
+    this.state.coreConfig.reconnectInterval = snapshot.config.reconnectInterval;
+    this.state.coreConfig.statusCheckInterval = snapshot.config.statusCheckInterval;
+    this.state.coreConfig.requestServerRooms = snapshot.config.requestServerRooms;
+    this.state.coreConfig.allowedAreas = [...snapshot.config.allowedAreas];
+    this.state.coreConfig.allowedParentAreas = [...snapshot.config.allowedParentAreas];
+    this.state.coreConfig.streamers.splice(0, this.state.coreConfig.streamers.length, ...snapshot.config.streamers.map(item => ({ ...item })));
+
+    this.state.recordings = sortRecordings(toRecordingInfoDto(snapshot.recordings));
+    this.state.remoteClients = snapshot.remoteClients.map(toRemoteClientSnapshot);
+    this.state.syncTags.configTag = snapshot.tags.configTag;
+    this.state.syncTags.clientsTag = snapshot.tags.clientsTag;
+    this.state.syncTags.recordingTag = snapshot.tags.recordingTag;
+    this.refreshRemoteOwnership();
+  }
+
+  private refreshRemoteOwnership(): void {
+    const normalizedClients = this.state.remoteClients;
+    const self = normalizedClients.find(client => client.clientId === this.localClientId) ?? null;
+    const activeOwner = normalizedClients
+      .filter(client => client.clientId !== this.localClientId && (client.isRunning || client.runtimeConnected))
+      .sort((a, b) => (b.lastHeartbeat ?? 0) - (a.lastHeartbeat ?? 0))[0]
+      ?? normalizedClients.find(client => client.clientId !== this.localClientId)
+      ?? null;
+
+    const owner = self ?? activeOwner;
+    this.state.ownerClientId = owner?.clientId ?? null;
+    this.state.lastHeartbeat = owner?.lastHeartbeat ?? null;
+    this.state.lockedByOther = self === null && activeOwner !== null;
+
+    if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
+      this.state.isRunning = false;
+      this.state.runtimeConnected = false;
+      this.state.connectedRooms = [];
+      this.state.connectionInfo = [];
+      this.state.holdingRooms = [];
+      this.state.messageCount = 0;
+      this.state.pendingMessageCount = 0;
+      this.state.messageCmdCountMap = {};
+      this.state.lastRoomAssigned = null;
+      this.state.lastError = null;
+      void this.refreshCookieValidityFromNav(false);
+    }
+  }
+
   private applyStatusSnapshot(): void {
     if (!this.client) {
       return;
@@ -395,8 +509,6 @@ class DanmakuService {
     this.state.connectedRooms = [...status.connectedRooms];
     this.state.connectionInfo = status.connectionInfo.map(normalizeConnectionInfo);
     this.state.cookieValid = status.cookieValid;
-    
-    // Update extended state
     this.state.holdingRooms = [...status.holdingRooms];
     this.state.messageCount = status.messageCount;
     this.state.pendingMessageCount = status.pendingMessageCount;
@@ -412,7 +524,7 @@ class DanmakuService {
     }
     return {
       Token: token,
-      ClientId: this.localClientId
+      ClientId: this.localClientId,
     };
   }
 

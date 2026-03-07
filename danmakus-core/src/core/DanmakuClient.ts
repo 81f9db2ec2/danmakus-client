@@ -11,14 +11,19 @@ import {
   DanmakuClientEvents,
   DanmakuConfig,
   CliOptions,
+  CoreControlConfigDto,
+  CoreControlStateSnapshot,
   LiveWsConnection,
   LiveWsRoomConfig,
   StreamerStatus,
+  CoreSyncTagSnapshot,
   CoreRuntimeStateDto,
   CoreConnectionInfoDto,
   ErrorCategory,
   ClientErrorRecord,
-  RecorderEventType
+  RecordingInfoDto,
+  RecorderEventType,
+  UserInfo,
 } from '../types';
 import { ScopedLogger, normalizeLogLevel } from './Logger';
 
@@ -34,6 +39,7 @@ const LOCK_RETRY_MIN_DELAY = 200;
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
 const QUEUE_OVERFLOW_LOG_INTERVAL_MS = 10_000;
+const CONTROL_SYNC_INTERVAL_MS = 5000;
 
 function generateClientId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -106,6 +112,11 @@ export class DanmakuClient extends EventEmitter {
   private accountConfigRefreshing = false;
   private accountConfigTag: string | null = null;
   private assignmentTag: string | null = null;
+  private clientsTag: string | null = null;
+  private recordingTag: string | null = null;
+  private userInfo: UserInfo | null = null;
+  private remoteClients: CoreRuntimeStateDto[] = [];
+  private recordings: RecordingInfoDto[] = [];
   private recordingRoomIds: number[] = [];
   private recordingSessions: Set<number> = new Set();
   private lastStreamerLiveStates: Map<number, boolean> = new Map();
@@ -140,6 +151,8 @@ export class DanmakuClient extends EventEmitter {
   private lastRuntimeClientRegisterAt = 0;
   private suppressRuntimeAutoRegister = false;
   private runtimeGeneration = 0;
+  private controlSyncTimer?: ReturnType<typeof setTimeout>;
+  private controlSyncRefreshing = false;
 
   constructor(config: Partial<DanmakuConfig> = {}) {
     super();
@@ -1053,6 +1066,280 @@ export class DanmakuClient extends EventEmitter {
     };
   }
 
+  getControlState(): CoreControlStateSnapshot {
+    return {
+      userInfo: this.cloneUserInfo(this.userInfo),
+      config: this.buildCoreControlConfigSnapshot(),
+      recordings: this.cloneRecordingList(this.recordings),
+      remoteClients: this.cloneRemoteClients(this.remoteClients),
+      tags: this.buildCoreSyncTagSnapshot(),
+    };
+  }
+
+  async refreshControlState(): Promise<CoreControlStateSnapshot> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    await this.refreshUserInfo();
+    await this.pullAccountConfig();
+    await this.refreshRecordingList(true);
+    await this.refreshRemoteClients(true);
+    this.emitControlStateChanged();
+    return this.getControlState();
+  }
+
+  async refreshRuntimeControlState(): Promise<CoreControlStateSnapshot> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    await this.refreshRemoteClients(true);
+    return this.getControlState();
+  }
+
+  async refreshRecordingControlState(): Promise<CoreControlStateSnapshot> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    await this.refreshRecordingList(true);
+    return this.getControlState();
+  }
+
+  startControlSync(): void {
+    this.scheduleControlSync(0);
+  }
+
+  stopControlSync(): void {
+    if (!this.controlSyncTimer) {
+      return;
+    }
+
+    clearTimeout(this.controlSyncTimer);
+    this.controlSyncTimer = undefined;
+  }
+
+  async saveCoreConfig(config: CoreControlConfigDto): Promise<CoreControlStateSnapshot> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    const result = await this.accountClient.updateCoreConfig(config);
+    await this.applyAccountConfigSnapshot(result.data, result.tags.configTag);
+    this.updateSyncTags(result.tags);
+    this.emitControlStateChanged();
+    return this.getControlState();
+  }
+
+  async addRecording(uid: number): Promise<RecordingInfoDto> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    const result = await this.accountClient.addRecording(uid);
+    this.updateSyncTags(result.tags);
+    await this.refreshRecordingList(true);
+    return result.data;
+  }
+
+  async removeRecording(uid: number): Promise<void> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    const result = await this.accountClient.removeRecording(uid);
+    this.updateSyncTags(result.tags);
+    await this.refreshRecordingList(true);
+  }
+
+  async updateRecordingPublic(uid: number, isPublic: boolean): Promise<void> {
+    if (!this.accountClient) {
+      throw new Error('账号中心客户端尚未初始化');
+    }
+
+    const result = await this.accountClient.updateRecordingSetting([
+      {
+        id: uid,
+        setting: { isPublic },
+      },
+    ]);
+
+    if (!result.data.includes(uid)) {
+      throw new Error('更新录制公开状态失败');
+    }
+
+    this.updateSyncTags(result.tags);
+    await this.refreshRecordingList(true);
+  }
+
+  async forceTakeoverRuntimeState(): Promise<CoreControlStateSnapshot> {
+    await this.syncRuntimeState({}, { strict: true, force: true });
+    await this.refreshRemoteClients(true);
+    this.emitControlStateChanged();
+    return this.getControlState();
+  }
+
+  private buildCoreControlConfigSnapshot(): CoreControlConfigDto {
+    const config = this.configManager.getConfig();
+    return {
+      maxConnections: config.maxConnections,
+      runtimeUrl: config.runtimeUrl,
+      autoReconnect: config.autoReconnect,
+      reconnectInterval: config.reconnectInterval,
+      statusCheckInterval: config.statusCheckInterval,
+      streamers: [],
+      requestServerRooms: config.requestServerRooms ?? true,
+      allowedAreas: [...(config.allowedAreas ?? [])],
+      allowedParentAreas: [...(config.allowedParentAreas ?? [])],
+    };
+  }
+
+  private buildCoreSyncTagSnapshot(): CoreSyncTagSnapshot {
+    return {
+      configTag: this.accountConfigTag,
+      clientsTag: this.clientsTag,
+      recordingTag: this.recordingTag,
+    };
+  }
+
+  private cloneRemoteClients(remoteClients: CoreRuntimeStateDto[]): CoreRuntimeStateDto[] {
+    return remoteClients.map(remote => ({
+      ...remote,
+      connectedRooms: [...remote.connectedRooms],
+      connectionInfo: remote.connectionInfo.map(info => ({ ...info })),
+      holdingRooms: [...remote.holdingRooms],
+    }));
+  }
+
+  private cloneUserInfo(userInfo: UserInfo | null): UserInfo | null {
+    if (!userInfo) {
+      return null;
+    }
+
+    return {
+      ...userInfo,
+      bindedOAuth: [...userInfo.bindedOAuth],
+    };
+  }
+
+  private cloneRecordingList(recordings: RecordingInfoDto[]): RecordingInfoDto[] {
+    return recordings.map(item => ({
+      ...item,
+      channel: { ...item.channel },
+      setting: { ...item.setting },
+    }));
+  }
+
+  private emitControlStateChanged(): void {
+    this.emit('controlStateChanged', this.getControlState());
+  }
+
+  private scheduleControlSync(delayMs: number): void {
+    if (this.controlSyncTimer || !this.accountClient || this.isStopping) {
+      return;
+    }
+
+    const delay = Math.max(0, Math.floor(delayMs));
+    this.controlSyncTimer = setTimeout(() => {
+      this.controlSyncTimer = undefined;
+      void this.pollControlState();
+    }, delay);
+  }
+
+  private async pollControlState(): Promise<void> {
+    if (!this.accountClient || this.controlSyncRefreshing || this.isStopping) {
+      return;
+    }
+
+    this.controlSyncRefreshing = true;
+    try {
+      if (!this.isRunning) {
+        const tags = await this.accountClient.getCoreHeartbeatTags();
+        await this.handleAccountConfigTagChange(tags.configTag);
+        await this.handleClientsTagChange(tags.clientsTag);
+        await this.handleRecordingTagChange(tags.recordingTag);
+      }
+    } catch (error) {
+      this.recordError(error, { category: 'runtime-sync', code: 'CONTROL_SYNC_FAILED', recoverable: true });
+      this.logger.warn('同步控制面板数据失败', error);
+    } finally {
+      this.controlSyncRefreshing = false;
+      if (this.accountClient && !this.isStopping) {
+        this.scheduleControlSync(CONTROL_SYNC_INTERVAL_MS);
+      }
+    }
+  }
+
+  private updateSyncTags(tags: CoreSyncTagSnapshot): void {
+    if (tags.configTag !== null) {
+      this.accountConfigTag = tags.configTag;
+    }
+    if (tags.clientsTag !== null) {
+      this.clientsTag = tags.clientsTag;
+    }
+    if (tags.recordingTag !== null) {
+      this.recordingTag = tags.recordingTag;
+    }
+  }
+
+  private async refreshUserInfo(): Promise<void> {
+    if (!this.accountClient) {
+      return;
+    }
+
+    this.userInfo = this.cloneUserInfo(await this.accountClient.getUserInfo());
+    this.emitControlStateChanged();
+  }
+
+  private async pullAccountConfig(): Promise<void> {
+    if (!this.accountClient) {
+      return;
+    }
+
+    const remoteConfig = await this.accountClient.getCoreConfig();
+    await this.applyAccountConfigSnapshot(remoteConfig, this.accountClient.getCoreConfigTag());
+  }
+
+  private async refreshRemoteClients(force: boolean, nextTag: string | null = null): Promise<void> {
+    if (!this.accountClient) {
+      return;
+    }
+    if (!force && (nextTag === null || nextTag === this.clientsTag)) {
+      return;
+    }
+
+    const result = await this.accountClient.getCoreClients();
+    this.remoteClients = this.cloneRemoteClients(result.data);
+    this.updateSyncTags(result.tags);
+    if (nextTag !== null) {
+      this.clientsTag = nextTag;
+    }
+    this.emitControlStateChanged();
+  }
+
+  private async refreshRecordingList(force: boolean, nextTag: string | null = null): Promise<void> {
+    if (!this.accountClient) {
+      return;
+    }
+    if (!force && (nextTag === null || nextTag === this.recordingTag)) {
+      return;
+    }
+
+    const result = await this.accountClient.getRecordingList();
+    this.recordings = this.cloneRecordingList(result.data);
+    this.recordingRoomIds = this.recordings
+      .map(item => Number(item.channel.roomId))
+      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
+      .map(roomId => Math.floor(roomId));
+    this.statusManager?.updateRecordingRooms(this.recordingRoomIds);
+    this.updateSyncTags(result.tags);
+    if (nextTag !== null) {
+      this.recordingTag = nextTag;
+    }
+    this.emitControlStateChanged();
+  }
+
   private ensureRuntimeConnection(): RuntimeConnection {
     if (!this.runtimeConnection) {
       throw new Error('Runtime连接尚未初始化');
@@ -1074,10 +1361,7 @@ export class DanmakuClient extends EventEmitter {
 
     this.logger.info('正在从账号中心加载核心配置...');
     const remoteConfig = await this.accountClient.getCoreConfig();
-    this.accountConfigTag = this.accountClient.getCoreConfigTag();
-    this.configManager.applyAccountConfig(remoteConfig);
-    this.applyRuntimeTunings(this.configManager.getConfig());
-    this.initializeManagers();
+    await this.applyAccountConfigSnapshot(remoteConfig, this.accountClient.getCoreConfigTag());
   }
 
   private async ensureCookieReadyForStartup(): Promise<void> {
@@ -1219,6 +1503,8 @@ export class DanmakuClient extends EventEmitter {
       });
       this.lastHeartbeat = Date.now();
       await this.handleAccountConfigTagChange(result.configTag);
+      await this.handleClientsTagChange(result.clientsTag);
+      await this.handleRecordingTagChange(result.recordingTag);
       if (this.consumeAssignmentTag(result.assignmentTag)) {
         await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'assignment-tag-changed', {
           force: true,
@@ -1384,6 +1670,22 @@ export class DanmakuClient extends EventEmitter {
     await this.refreshAccountConfig(nextTag);
   }
 
+  private async handleClientsTagChange(nextTag: string | null): Promise<void> {
+    if (nextTag === null || nextTag === this.clientsTag) {
+      return;
+    }
+
+    await this.refreshRemoteClients(true, nextTag);
+  }
+
+  private async handleRecordingTagChange(nextTag: string | null): Promise<void> {
+    if (nextTag === null || nextTag === this.recordingTag) {
+      return;
+    }
+
+    await this.refreshRecordingList(true, nextTag);
+  }
+
   private consumeAssignmentTag(nextTag: string | null): boolean {
     if (nextTag === null || nextTag === this.assignmentTag) {
       return false;
@@ -1509,6 +1811,7 @@ export class DanmakuClient extends EventEmitter {
       retryCount: 0,
       nextRetryAt: Date.now()
     });
+    this.emitQueueChanged();
     this.scheduleMessageDispatch(this.messageUploadInterval);
   }
 
@@ -1526,6 +1829,11 @@ export class DanmakuClient extends EventEmitter {
       this.releaseQueuedMessage(queued);
     }
     this.pendingMessages = [];
+    this.emitQueueChanged();
+  }
+
+  private emitQueueChanged(): void {
+    this.emit('queueChanged', this.pendingMessages.length);
   }
 
   private logQueueOverflow(queueError: Error, dropped?: QueuedMessage): void {
@@ -1623,6 +1931,7 @@ export class DanmakuClient extends EventEmitter {
         for (const sent of sentMessages) {
           this.releaseQueuedMessage(sent);
         }
+        this.emitQueueChanged();
         return;
       }
 
@@ -1645,6 +1954,7 @@ export class DanmakuClient extends EventEmitter {
         });
         this.emit('error', sendError, roomId);
         this.releaseQueuedMessage(dropped);
+        this.emitQueueChanged();
         return;
       }
 
@@ -1679,6 +1989,7 @@ export class DanmakuClient extends EventEmitter {
       for (const item of dropped) {
         this.releaseQueuedMessage(item);
       }
+      this.emitQueueChanged();
       this.logger.warn(`消息队列容量调整后丢弃 ${overflowCount} 条待发送消息`);
     }
 
@@ -1713,24 +2024,44 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private async refreshAccountConfig(nextTag: string): Promise<void> {
-    if (!this.accountClient || this.accountConfigRefreshing || this.isStopping || !this.isRunning) {
+    if (!this.accountClient || this.accountConfigRefreshing || this.isStopping) {
       return;
     }
 
-    const previousConfig = this.configManager.getConfig();
     this.accountConfigRefreshing = true;
     try {
       const remoteConfig = await this.accountClient.getCoreConfig();
-      this.configManager.applyAccountConfig(remoteConfig);
-      this.configManager.validate();
-      const nextConfig = this.configManager.getConfig();
-      this.accountConfigTag = this.accountClient.getCoreConfigTag() ?? nextTag;
+      await this.applyAccountConfigSnapshot(remoteConfig, this.accountClient.getCoreConfigTag() ?? nextTag);
+    } catch (error) {
+      this.recordError(error, { category: 'config', code: 'HOT_RELOAD_FAILED', recoverable: true });
+      this.emit('error', error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.accountConfigRefreshing = false;
+    }
+  }
 
-      if (!this.hasHotConfigChanges(previousConfig, nextConfig)) {
-        return;
-      }
+  private async applyAccountConfigSnapshot(remoteConfig: CoreControlConfigDto, nextTag: string | null): Promise<void> {
+    const previousConfig = this.configManager.getConfig();
+    this.configManager.applyAccountConfig(remoteConfig);
+    this.configManager.validate();
+    const nextConfig = this.configManager.getConfig();
+    this.accountConfigTag = nextTag;
 
+    if (!this.isRunning) {
+      this.applyRuntimeTunings(nextConfig);
+      this.initializeManagers();
+      this.emitControlStateChanged();
+      return;
+    }
+
+    if (!this.hasHotConfigChanges(previousConfig, nextConfig)) {
+      this.emitControlStateChanged();
+      return;
+    }
+
+    try {
       await this.applyHotConfigChanges(previousConfig, nextConfig);
+      this.emitControlStateChanged();
     } catch (error) {
       const failedConfig = this.configManager.getConfig();
       this.configManager.updateConfig(previousConfig);
@@ -1743,10 +2074,7 @@ export class DanmakuClient extends EventEmitter {
         this.recordError(rollbackError, { category: 'config', code: 'HOT_RELOAD_ROLLBACK_FAILED' });
         this.logger.error('配置热更新回滚失败', rollbackError);
       }
-      this.recordError(error, { category: 'config', code: 'HOT_RELOAD_FAILED', recoverable: true });
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      this.accountConfigRefreshing = false;
+      throw error;
     }
   }
 
