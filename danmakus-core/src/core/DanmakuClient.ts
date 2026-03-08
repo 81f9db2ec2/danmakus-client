@@ -1188,6 +1188,10 @@ export class DanmakuClient extends EventEmitter {
     this.logger.info('正在从账号中心加载核心配置...');
     const remoteConfig = await this.accountClient.getCoreConfig();
     await this.applyAccountConfigSnapshot(remoteConfig, this.accountClient.getCoreConfigTag());
+
+    this.logger.info('正在从账号中心加载录制状态...');
+    await this.controlState.refreshUserInfo();
+    await this.controlState.refreshRecordingList(true);
   }
 
   private async ensureCookieReadyForStartup(): Promise<void> {

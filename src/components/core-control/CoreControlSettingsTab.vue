@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref, toRefs } from 'vue';
 import { Loader2, RefreshCw, Save, Plus, Trash2, X, Info } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
@@ -28,7 +28,7 @@ const props = defineProps<{
 }>();
 const { coreConfig, availableAreas, recordings, refreshingRecordings, addingRecording, removingRecordingUid, updatingRecordingUid, savingConfig } = toRefs(props);
 
-const newRecordingUid = ref('');
+const newRecordingUid = ref<string | number>('');
 const areaSearchQuery = ref('');
 
 const parentAreaOptions = computed(() =>
@@ -74,7 +74,8 @@ const recordingItems = computed(() =>
 );
 
 const submitAddRecording = () => {
-  const uid = Number(newRecordingUid.value.trim());
+  const rawUid = newRecordingUid.value;
+  const uid = typeof rawUid === 'string' ? Number(rawUid.trim()) : rawUid;
   if (!Number.isFinite(uid) || uid <= 0) {
     return;
   }

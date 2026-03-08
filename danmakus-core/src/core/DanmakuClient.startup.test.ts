@@ -18,6 +18,113 @@ const remoteConfig = {
 };
 
 describe('DanmakuClient startup', () => {
+  test('reloads user info and recording list on every start', async () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      requestServerRooms: false,
+      streamers: []
+    });
+
+    const updatedRecordingRooms: number[][] = [];
+    const statusManager = {
+      start: () => undefined,
+      stop: () => undefined,
+      updateHoldingRooms: () => undefined,
+      updateRecordingRooms: (rooms: number[]) => {
+        updatedRecordingRooms.push([...rooms]);
+      },
+      getAllStatuses: () => [],
+      getRoomsToConnect: () => [],
+      refreshNow: () => undefined,
+      getStreamerStatus: () => undefined,
+    };
+    const runtimeConnection = {
+      connect: async () => true,
+      disconnect: async () => undefined,
+      getConnectionState: () => true,
+      sendMessages: async () => 0,
+      requestRooms: async () => null,
+      onConnected: undefined,
+      onReconnected: undefined,
+      onDisconnected: undefined,
+      onSessionInvalid: undefined,
+    };
+    let getUserInfoCallCount = 0;
+    let getRecordingListCallCount = 0;
+
+    client.initializeManagers = () => {
+      client.statusManager = statusManager;
+      client.runtimeConnection = runtimeConnection;
+    };
+    client.initializeManagers();
+    client.acquireRuntimeLock = async () => undefined;
+    client.ensureCookieReadyForStartup = async () => undefined;
+    client.refreshHoldingRoomsIfNeeded = async () => true;
+    client.syncRuntimeState = async () => undefined;
+    client.accountClient = {
+      getCoreConfig: async () => remoteConfig,
+      getCoreConfigTag: () => 'config-tag',
+      getUserInfo: async () => {
+        getUserInfoCallCount += 1;
+        return {
+          id: 42,
+          name: '测试用户',
+          bindedOAuth: [],
+          recievedDanmakusCount: 0,
+        };
+      },
+      getRecordingList: async () => {
+        getRecordingListCallCount += 1;
+        return {
+          data: [
+            {
+              channel: {
+                uId: 1001,
+                roomId: 2233,
+                uName: '测试主播',
+                faceUrl: '',
+                isLiving: true,
+              },
+              setting: {
+                isPublic: true,
+              },
+              todayDanmakusCount: 0,
+              providedDanmakuDataCount: 0,
+              providedMessageCount: 0,
+            },
+          ],
+          tags: {
+            recordingTag: 'recording-tag',
+            configTag: 'config-tag',
+            clientsTag: null,
+          },
+        };
+      },
+      releaseRuntimeState: async () => undefined,
+    };
+
+    await client.start();
+
+    expect(getUserInfoCallCount).toBe(1);
+    expect(getRecordingListCallCount).toBe(1);
+    expect(client.recordingRoomIds).toEqual([2233]);
+    expect(client.getControlState().userInfo?.id).toBe(42);
+    expect(client.getControlState().recordings.map((item: any) => item.channel.roomId)).toEqual([2233]);
+
+    await client.stop();
+    expect(client.recordingRoomIds).toEqual([]);
+
+    await client.start();
+
+    expect(getUserInfoCallCount).toBe(2);
+    expect(getRecordingListCallCount).toBe(2);
+    expect(client.recordingRoomIds).toEqual([2233]);
+    expect(updatedRecordingRooms).toContainEqual([2233]);
+  });
+
   test('derives runtime auth headers from account token and client id', async () => {
     const client: any = new DanmakuClient({
       clientId: 'client-id',
@@ -41,6 +148,28 @@ describe('DanmakuClient startup', () => {
 
       if (url === 'https://example.com/api/v2/account/core-config') {
         return new Response(JSON.stringify({ code: 200, data: remoteConfig }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://example.com/api/v2/account/info') {
+        return new Response(JSON.stringify({
+          code: 200,
+          data: {
+            id: 1,
+            name: '测试用户',
+            bindedOAuth: [],
+            recievedDanmakusCount: 0,
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://example.com/api/v2/account/recording') {
+        return new Response(JSON.stringify({ code: 200, data: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
@@ -76,6 +205,8 @@ describe('DanmakuClient startup', () => {
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
     expect(requests).toEqual([
       'GET https://example.com/api/v2/account/core-config',
+      'GET https://example.com/api/v2/account/info',
+      'GET https://example.com/api/v2/account/recording',
       'POST https://example.com/api/v2/core-runtime/sync',
       'DELETE https://example.com/api/v2/core-runtime/state?clientId=client-id'
     ]);
