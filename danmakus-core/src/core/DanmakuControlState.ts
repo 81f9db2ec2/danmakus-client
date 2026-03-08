@@ -29,6 +29,7 @@ interface DanmakuControlStateContext {
   applyAccountConfigSnapshot(remoteConfig: CoreControlConfigDto, nextTag: string | null): Promise<void>;
   recordError(error: unknown, context?: ControlStateErrorContext): void;
   syncRuntimeState(overrides?: Partial<CoreRuntimeStateDto>, options?: { force?: boolean; strict?: boolean }): Promise<void>;
+  refreshHoldingRoomsIfNeeded(maxConnections: number, reason: string, options?: { force?: boolean }): Promise<boolean>;
   updateConnections(): void;
   refreshStatusNow(): void;
   updateRecordingRooms(roomIds: number[]): void;
@@ -249,6 +250,11 @@ export class DanmakuControlState {
       && !this.context.areRoomIdsEqual(previousRecordingRoomIds, this.context.getRecordingRoomIds())
     ) {
       this.context.refreshStatusNow();
+      await this.context.refreshHoldingRoomsIfNeeded(
+        this.context.getControlState().config.maxConnections,
+        'recording-list-changed',
+        { force: true }
+      );
       this.context.updateConnections();
     }
     this.context.emitControlStateChanged();

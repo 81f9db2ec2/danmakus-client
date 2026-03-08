@@ -291,9 +291,7 @@ export class DanmakuHoldingRoomCoordinator {
     config: DanmakuConfig
   ): { roomId: number; priority: 'high' | 'server' }[] {
     const holdingRooms = this.context.getHoldingRoomIds();
-    const recordingRooms = this.isHoldingRoomRequestEnabled(config)
-      ? this.context.getRecordingRoomIds().filter(roomId => holdingRooms.includes(roomId))
-      : this.context.getRecordingRoomIds();
+    const recordingRooms = this.context.getRecordingRoomIds().filter(roomId => holdingRooms.includes(roomId));
 
     return statusManager.getRoomsToConnect(
       recordingRooms,
@@ -322,8 +320,9 @@ export class DanmakuHoldingRoomCoordinator {
   }
 
   getConnectedHoldingRoomIds(): number[] {
+    const holdingRoomSet = new Set(this.context.getHoldingRoomIds());
     return Array.from(this.context.getConnections().values())
-      .filter((connection) => connection.priority === 'server')
+      .filter((connection) => holdingRoomSet.has(connection.roomId))
       .map((connection) => connection.roomId)
       .filter((roomId) => Number.isFinite(roomId) && roomId > 0);
   }
@@ -337,7 +336,7 @@ export class DanmakuHoldingRoomCoordinator {
     if (!runtimeConnection?.getConnectionState()) {
       return false;
     }
-    if (!this.isHoldingRoomRequestEnabled()) {
+    if (!this.isServerAssignmentRequestEnabled()) {
       this.clearHoldingRooms();
       return false;
     }
@@ -412,8 +411,8 @@ export class DanmakuHoldingRoomCoordinator {
     this.context.syncRuntimeState();
   }
 
-  private isHoldingRoomRequestEnabled(config: DanmakuConfig = this.context.getConfig()): boolean {
-    return (config.requestServerRooms ?? true) && Math.max(0, Math.floor(config.maxConnections)) > 0;
+  private isServerAssignmentRequestEnabled(config: DanmakuConfig = this.context.getConfig()): boolean {
+    return Math.max(0, Math.floor(config.maxConnections)) > 0;
   }
 
   private ensureStatusManager(): StreamerStatusManager {

@@ -138,7 +138,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     }
   });
 
-  it("keeps recording-only rooms in legacy non-pull mode", () => {
+  it("disconnects recording-only rooms even when supplemental assignments are disabled", () => {
     const originalSetTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number) => 1 as ReturnType<typeof setTimeout>) as typeof setTimeout;
 
@@ -152,10 +152,94 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
 
       coordinator.applyConnectionsUpdate();
 
-      expect(disconnectedRooms).toEqual([]);
-      expect(connectionMap.has(201)).toBe(true);
+      expect(disconnectedRooms).toEqual([201]);
+      expect(connectionMap.has(201)).toBe(false);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
     }
+  });
+
+  it("still requests server assignments when supplemental assignments are disabled", async () => {
+    let requestPayload: Record<string, unknown> | null = null;
+    const statusManager: any = new StreamerStatusManager(30, "https://example.com/api/v2/core-runtime");
+    statusManager.updateHoldingRooms([]);
+    statusManager.updateRecordingRooms([201]);
+    statusManager.statusCache = new Map([
+      [201, { roomId: 201, isLive: true }],
+    ]);
+
+    let holdingRooms: number[] = [];
+    const coordinator = new DanmakuHoldingRoomCoordinator({
+      isRunning: () => true,
+      isStopping: () => false,
+      getConfig: () => ({
+        runtimeUrl: "https://example.com/api/v2/core-runtime",
+        maxConnections: 5,
+        requestServerRooms: false,
+        streamers: [],
+      } as DanmakuConfig),
+      getRuntimeConnection: () => ({
+        getConnectionState: () => true,
+        requestRooms: async (payload: Record<string, unknown>) => {
+          requestPayload = payload;
+          return {
+            holdingRooms: [201],
+            newlyAssignedRooms: [201],
+            droppedRooms: [],
+            effectiveCapacity: 5,
+            nextRequestAfter: 0,
+          };
+        },
+      }),
+      getStatusManager: () => statusManager,
+      getRecordingRoomIds: () => [201],
+      getConnections: () => new Map(),
+      disconnectFromRoom: () => undefined,
+      connectToRoom: async () => undefined,
+      updateConnections: () => undefined,
+      syncRuntimeState: () => undefined,
+      refreshStatusNow: () => undefined,
+      updateHoldingRooms: (rooms: number[]) => {
+        holdingRooms = [...rooms];
+        statusManager.updateHoldingRooms(rooms);
+      },
+      getHoldingRoomIds: () => [...holdingRooms],
+      setHoldingRoomIds: (rooms: number[]) => {
+        holdingRooms = [...rooms];
+      },
+      getHoldingRoomRequestRefreshing: () => false,
+      setHoldingRoomRequestRefreshing: () => undefined,
+      getNextHoldingRoomRequestAt: () => 0,
+      setNextHoldingRoomRequestAt: () => undefined,
+      getQueuedRoomConnects: () => [],
+      setQueuedRoomConnects: () => undefined,
+      getQueuedRoomIds: () => new Set<number>(),
+      getRoomConnectQueueTimer: () => undefined,
+      setRoomConnectQueueTimer: () => undefined,
+      getLastRoomConnectStartAt: () => 0,
+      setLastRoomConnectStartAt: () => undefined,
+      getRoomConnectStartInterval: () => 10_000,
+      getLastRoomAssigned: () => undefined,
+      setLastRoomAssigned: () => undefined,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+        debug: () => undefined,
+        child: () => this,
+      },
+    } as never);
+
+    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "followed-only", { force: true });
+
+    expect(success).toBe(true);
+    expect(requestPayload).toEqual({
+      reason: "followed-only",
+      holdingRooms: [],
+      connectedRooms: [],
+      desiredCount: 5,
+      capacityOverride: undefined,
+    });
+    expect(holdingRooms).toEqual([201]);
   });
 });

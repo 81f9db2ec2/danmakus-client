@@ -257,6 +257,7 @@ describe("DanmakuClient room pull flow", () => {
 
     const updatedRooms: number[][] = [];
     let refreshNowCount = 0;
+    let refreshHoldingRoomsCount = 0;
     let updateConnectionsCount = 0;
     client.isRunning = true;
     client.statusManager = {
@@ -269,6 +270,10 @@ describe("DanmakuClient room pull flow", () => {
     };
     client.updateConnections = () => {
       updateConnectionsCount += 1;
+    };
+    client.refreshHoldingRoomsIfNeeded = async () => {
+      refreshHoldingRoomsCount += 1;
+      return true;
     };
     client.accountClient = {
       getRecordingList: async () => ({
@@ -286,6 +291,7 @@ describe("DanmakuClient room pull flow", () => {
     expect(client.recordingRoomIds).toEqual([2233]);
     expect(updatedRooms).toEqual([[2233]]);
     expect(refreshNowCount).toBe(1);
+    expect(refreshHoldingRoomsCount).toBe(1);
     expect(updateConnectionsCount).toBe(1);
   });
 

@@ -150,7 +150,7 @@ const emit = defineEmits<{
               <div class="flex items-center gap-1.5">
                 <div>
                   <div class="flex items-center gap-1">
-                    <p class="text-xs font-medium">请求服务器分配</p>
+                    <p class="text-xs font-medium">允许本站补充分配主播</p>
                     <Tooltip>
                       <TooltipTrigger as-child>
                         <Info class="h-3 w-3 text-muted-foreground cursor-help" />
@@ -162,7 +162,7 @@ const emit = defineEmits<{
                       </TooltipContent>
                     </Tooltip>
                   </div>
-                  <p class="text-[11px] text-muted-foreground">由服务端协同房间分配</p>
+                  <p class="text-[11px] text-muted-foreground">仅在空闲连接位时补充分配</p>
                 </div>
               </div>
               <Switch v-model:model-value="coreConfig.requestServerRooms" />
@@ -185,7 +185,7 @@ const emit = defineEmits<{
               </TooltipContent>
             </Tooltip>
           </div>
-          <CardDescription>限制本站分配的直播分区，不选则不限制</CardDescription>
+          <CardDescription>限制本站补充分配的直播分区，不影响你关注的录制主播</CardDescription>
         </CardHeader>
         <CardContent class="space-y-5">
           <!-- Parent areas -->

@@ -231,6 +231,7 @@ export class DanmakuClient extends EventEmitter {
       applyAccountConfigSnapshot: (remoteConfig, nextTag) => this.applyAccountConfigSnapshot(remoteConfig, nextTag),
       recordError: (error, context) => this.recordError(error, context),
       syncRuntimeState: (overrides, options) => this.syncRuntimeState(overrides, options),
+      refreshHoldingRoomsIfNeeded: (maxConnections, reason, options) => this.refreshHoldingRoomsIfNeeded(maxConnections, reason, options),
       updateConnections: () => this.updateConnections(),
       refreshStatusNow: () => {
         this.statusManager?.refreshNow();
