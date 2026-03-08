@@ -383,6 +383,9 @@ export class DanmakuHoldingRoomCoordinator {
     const next = Array.from(new Set(result.holdingRooms.filter((roomId) => Number.isFinite(roomId) && roomId > 0)));
     const removedRooms = previous.filter((roomId) => !next.includes(roomId));
     const addedRooms = next.filter((roomId) => !previous.includes(roomId));
+    const zombieConnectedRooms = Array.from(this.context.getConnections().keys())
+      .filter((roomId) => Number.isFinite(roomId) && roomId > 0 && !next.includes(roomId));
+    const roomsToDisconnect = Array.from(new Set([...removedRooms, ...zombieConnectedRooms]));
 
     this.context.setHoldingRoomIds(next);
     this.context.setNextHoldingRoomRequestAt(
@@ -398,7 +401,7 @@ export class DanmakuHoldingRoomCoordinator {
       this.context.setLastRoomAssigned(lastAssignedRoom);
     }
 
-    for (const roomId of removedRooms) {
+    for (const roomId of roomsToDisconnect) {
       this.removeQueuedRoomConnect(roomId);
       this.context.disconnectFromRoom(roomId);
     }

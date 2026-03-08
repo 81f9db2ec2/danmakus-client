@@ -19,7 +19,9 @@ describe('AccountApiClient', () => {
 
     expect(result).toEqual({
       configTag: '"config-tag"',
-      assignmentTag: 'assignment-tag'
+      assignmentTag: 'assignment-tag',
+      clientsTag: null,
+      recordingTag: null
     });
   });
 

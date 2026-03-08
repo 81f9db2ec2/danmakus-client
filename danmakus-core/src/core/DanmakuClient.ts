@@ -586,7 +586,13 @@ export class DanmakuClient extends EventEmitter {
       this.logger.info(`正在连接到房间 ${roomId} (优先级: ${priority})...`);
 
       const connectionOptions = await this.resolveLiveWsConnectionOptions(roomId);
-      if (generation !== this.runtimeGeneration || !this.isRunning || this.isStopping || this.connections.has(roomId)) {
+      if (
+        generation !== this.runtimeGeneration
+        || !this.isRunning
+        || this.isStopping
+        || this.connections.has(roomId)
+        || !this.isRoomStillDesired(roomId)
+      ) {
         return;
       }
       const targetRoomId = typeof connectionOptions.roomId === 'number' && connectionOptions.roomId > 0
@@ -618,7 +624,12 @@ export class DanmakuClient extends EventEmitter {
       const liveWS = this.liveWsConnectionFactory
         ? await this.liveWsConnectionFactory(targetRoomId, roomConfig)
         : new LiveWS(targetRoomId, liveOptions);
-      if (generation !== this.runtimeGeneration || !this.isRunning || this.isStopping) {
+      if (
+        generation !== this.runtimeGeneration
+        || !this.isRunning
+        || this.isStopping
+        || !this.isRoomStillDesired(roomId)
+      ) {
         try {
           liveWS.close();
         } catch {
@@ -972,6 +983,10 @@ export class DanmakuClient extends EventEmitter {
    */
   getConnectedRooms(): number[] {
     return Array.from(this.connections.keys());
+  }
+
+  private isRoomStillDesired(roomId: number): boolean {
+    return this.statusManager ? this.holdingRoomCoordinator.isRoomStillDesired(roomId) : true;
   }
 
   private findConnectionByResolvedRoomId(resolvedRoomId: number, excludeRoomId?: number): ConnectionInfo | undefined {

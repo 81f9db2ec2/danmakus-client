@@ -18,7 +18,7 @@ describe("DanmakuClient room connect queue", () => {
 
     try {
       client.isRunning = true;
-      client.queueRoomConnect(6154037, "high");
+      client.holdingRoomCoordinator.queueRoomConnect(6154037, "high");
       expect(delays[0]).toBe(0);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
@@ -55,7 +55,7 @@ describe("DanmakuClient room pull flow", () => {
       return true;
     };
 
-    await client.heartbeatRuntimeState();
+    await client.runtimeSync.heartbeatRuntimeState();
 
     expect(refreshCalls).toEqual([
       {
@@ -97,7 +97,7 @@ describe("DanmakuClient room pull flow", () => {
       return true;
     };
 
-    await client.heartbeatRuntimeState();
+    await client.runtimeSync.heartbeatRuntimeState();
 
     expect(refreshCalls).toEqual([]);
   });
@@ -157,10 +157,52 @@ describe("DanmakuClient room pull flow", () => {
     expect(client.holdingRoomIds).toEqual([102, 103]);
     expect(client._updatedRooms).toEqual([102, 103]);
     expect(client.connections.has(101)).toBe(false);
-    expect(client.connections.has(999)).toBe(true);
-    expect(closedRooms).toEqual([101]);
+    expect(client.connections.has(999)).toBe(false);
+    expect(closedRooms).toEqual([101, 999]);
     expect(client._connectionsUpdated).toBe(true);
     expect(client._synced).toBe(true);
+  });
+
+  it("abandons an in-flight connect when the room is no longer desired", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    let resolveConnectionOptions: ((value: unknown) => void) | undefined;
+    let factoryCallCount = 0;
+    client.isRunning = true;
+    client._desiredRooms = [{ roomId: 4455, priority: "server" }];
+    client.statusManager = {
+      getRoomsToConnect: () => client._desiredRooms,
+    };
+    client.resolveLiveWsConnectionOptions = () => new Promise((resolve) => {
+      resolveConnectionOptions = resolve;
+    });
+    client.liveWsConnectionFactory = async () => {
+      factoryCallCount += 1;
+      return {
+        addEventListener: () => undefined,
+        close: () => undefined,
+      };
+    };
+    client.syncRuntimeState = async () => undefined;
+
+    const connecting = client.connectToRoom(4455, "server");
+    client._desiredRooms = [];
+    resolveConnectionOptions?.({
+      roomId: 4455,
+      address: "wss://example.com/sub",
+      key: "key-4455",
+      uid: 1,
+      protover: 3,
+    });
+    await connecting;
+
+    expect(factoryCallCount).toBe(0);
+    expect(client.connections.has(4455)).toBe(false);
   });
 
   it("forces a room request during reconnect even when cooldown is active and desiredCount is zero", async () => {
@@ -239,7 +281,7 @@ describe("DanmakuClient room pull flow", () => {
       }),
     };
 
-    await client.refreshRecordingList(true);
+    await client.controlState.refreshRecordingList(true);
 
     expect(client.recordingRoomIds).toEqual([2233]);
     expect(updatedRooms).toEqual([[2233]]);
@@ -257,6 +299,13 @@ describe("DanmakuClient room pull flow", () => {
 
     let factoryCallCount = 0;
     client.isRunning = true;
+    client._desiredRooms = [
+      { roomId: 1001, priority: "high" },
+      { roomId: 1002, priority: "server" },
+    ];
+    client.statusManager = {
+      getRoomsToConnect: () => client._desiredRooms,
+    };
     client.resolveLiveWsConnectionOptions = async (roomId: number) => ({
       roomId: 5566,
       address: "wss://example.com/sub",
