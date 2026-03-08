@@ -113,5 +113,28 @@ describe("RuntimeConnection room pull", () => {
       effectiveCapacity: 1,
       nextRequestAfter: 1710000001000,
     });
+    expect(runtime.getConnectionState()).toBe(true);
+  });
+
+  it("marks runtime disconnected after request-room fails on all candidates", async () => {
+    let disconnectedError: Error | undefined;
+    globalThis.fetch = (async () => new Response('bad gateway', { status: 502 })) as typeof fetch;
+
+    const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
+    runtime.onDisconnected = (error?: Error) => {
+      disconnectedError = error;
+    };
+    await runtime.connect();
+
+    const result = await (runtime as any).requestRooms({
+      holdingRooms: [201],
+      connectedRooms: [201],
+      desiredCount: 1,
+      reason: "disconnect-check",
+    });
+
+    expect(result).toBeNull();
+    expect(runtime.getConnectionState()).toBe(false);
+    expect(disconnectedError).toBeInstanceOf(Error);
   });
 });

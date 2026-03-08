@@ -36,6 +36,7 @@ const RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
 
 export class RuntimeConnection {
   private isConnected = false;
+  private hasConnectedOnce = false;
   private readonly runtimeBaseUrl: string;
   private readonly token?: string;
   private readonly clientId?: string;
@@ -64,9 +65,19 @@ export class RuntimeConnection {
         throw new Error('缺少 ClientId，无法建立核心运行态通道');
       }
 
+      if (this.isConnected) {
+        return true;
+      }
+
+      const isReconnect = this.hasConnectedOnce;
       this.isConnected = true;
-      this.logger.info(`已连接核心运行态接口: ${this.runtimeBaseUrl}`);
-      this.onConnected?.();
+      this.hasConnectedOnce = true;
+      this.logger.info(`${isReconnect ? '已重新连接' : '已连接'}核心运行态接口: ${this.runtimeBaseUrl}`);
+      if (isReconnect) {
+        this.onReconnected?.();
+      } else {
+        this.onConnected?.();
+      }
       return true;
     } catch (error) {
       this.isConnected = false;
@@ -76,6 +87,10 @@ export class RuntimeConnection {
   }
 
   async disconnect(): Promise<void> {
+    if (!this.isConnected) {
+      return;
+    }
+
     this.isConnected = false;
     this.logger.info('核心运行态接口连接已断开');
   }
@@ -178,14 +193,19 @@ export class RuntimeConnection {
       headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
-      ...init,
-      headers
-    }, {
-      timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
-    });
+    try {
+      const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
+        ...init,
+        headers
+      }, {
+        timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
+      });
 
-    return this.unwrapRuntimeResponse<T>(response);
+      return await this.unwrapRuntimeResponse<T>(response);
+    } catch (error) {
+      this.markDisconnected(error, path);
+      throw error;
+    }
   }
 
   private async requestRuntimeZstd<T>(path: string, payload: unknown): Promise<T> {
@@ -209,16 +229,32 @@ export class RuntimeConnection {
     headers.set('Content-Type', 'application/json');
     headers.set('Content-Encoding', 'zstd');
 
-    const compressedBody = await encodeZstdJson(payload);
-    const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
-      method: 'POST',
-      headers,
-      body: compressedBody as unknown as BodyInit
-    }, {
-      timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
-    });
+    try {
+      const compressedBody = await encodeZstdJson(payload);
+      const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
+        method: 'POST',
+        headers,
+        body: compressedBody as unknown as BodyInit
+      }, {
+        timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
+      });
 
-    return this.unwrapRuntimeResponse<T>(response);
+      return await this.unwrapRuntimeResponse<T>(response);
+    } catch (error) {
+      this.markDisconnected(error, path);
+      throw error;
+    }
+  }
+
+  private markDisconnected(error: unknown, path: string): void {
+    if (!this.isConnected) {
+      return;
+    }
+
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    this.isConnected = false;
+    this.logger.warn(`核心运行态接口请求失败，已标记断线: ${path}`, normalizedError);
+    this.onDisconnected?.(normalizedError);
   }
 
   private async unwrapRuntimeResponse<T>(response: Response): Promise<T> {

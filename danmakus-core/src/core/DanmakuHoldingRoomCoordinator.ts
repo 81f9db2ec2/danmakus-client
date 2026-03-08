@@ -76,11 +76,7 @@ export class DanmakuHoldingRoomCoordinator {
     this.pruneOfflineHoldingRooms(statusManager);
     this.trimHoldingRoomsToCapacity(config.maxConnections);
 
-    const roomsToConnect = statusManager.getRoomsToConnect(
-      this.context.getRecordingRoomIds(),
-      this.context.getHoldingRoomIds(),
-      config.maxConnections
-    );
+    const roomsToConnect = this.resolveRoomsToConnect(statusManager, config);
     const currentConnections = Array.from(this.context.getConnections().keys());
     const targetRooms = roomsToConnect.map((room) => room.roomId);
 
@@ -286,12 +282,24 @@ export class DanmakuHoldingRoomCoordinator {
     }
 
     const config = this.context.getConfig();
-    const roomsToConnect = statusManager.getRoomsToConnect(
-      this.context.getRecordingRoomIds(),
-      this.context.getHoldingRoomIds(),
+    const roomsToConnect = this.resolveRoomsToConnect(statusManager, config);
+    return roomsToConnect.some(item => item.roomId === roomId);
+  }
+
+  private resolveRoomsToConnect(
+    statusManager: StreamerStatusManager,
+    config: DanmakuConfig
+  ): { roomId: number; priority: 'high' | 'server' }[] {
+    const holdingRooms = this.context.getHoldingRoomIds();
+    const recordingRooms = this.isHoldingRoomRequestEnabled(config)
+      ? this.context.getRecordingRoomIds().filter(roomId => holdingRooms.includes(roomId))
+      : this.context.getRecordingRoomIds();
+
+    return statusManager.getRoomsToConnect(
+      recordingRooms,
+      holdingRooms,
       config.maxConnections
     );
-    return roomsToConnect.some(item => item.roomId === roomId);
   }
 
   clearHoldingRooms(): void {

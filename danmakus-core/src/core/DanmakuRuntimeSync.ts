@@ -156,6 +156,11 @@ export class DanmakuRuntimeSync {
           force: true,
         });
       }
+
+      const runtimeConnection = this.context.getRuntimeConnection();
+      if (runtimeConnection && !runtimeConnection.getConnectionState()) {
+        await runtimeConnection.connect();
+      }
     } catch (error) {
       this.context.recordError(error, {
         category: 'runtime-sync',
@@ -235,12 +240,15 @@ export class DanmakuRuntimeSync {
       return;
     }
 
-    const refreshed = await this.context.refreshHoldingRoomsIfNeeded(this.context.getConfig().maxConnections, 'runtime-reconnect', {
-      force: true,
-    });
-    if (!refreshed) {
-      this.context.clearHoldingRooms();
+    const snapshot = this.context.buildRuntimeStateSnapshot();
+    await this.syncRuntimeState({}, { force: true });
+
+    if (snapshot.connectedRooms.length === 0 && snapshot.holdingRooms.length === 0) {
+      await this.context.refreshHoldingRoomsIfNeeded(this.context.getConfig().maxConnections, 'runtime-reconnect', {
+        force: true,
+      });
     }
+
     this.context.updateConnections();
     void this.syncRuntimeState();
   }

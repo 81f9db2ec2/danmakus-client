@@ -364,6 +364,16 @@ export class DanmakuClient extends EventEmitter {
       this.messageQueue.scheduleMessageDispatch();
     };
 
+    this.runtimeConnection.onDisconnected = (error?: Error) => {
+      if (!this.isRunning || this.isStopping) {
+        return;
+      }
+
+      this.logger.warn('Runtime 连接已断开，保留当前录制并等待恢复', error);
+      this.updateConnections();
+      void this.syncRuntimeState();
+    };
+
     this.runtimeConnection.onSessionInvalid = (reason: string) => {
       this.handleRuntimeSessionInvalid(reason);
     };
@@ -1556,10 +1566,7 @@ export class DanmakuClient extends EventEmitter {
         throw new Error('配置热更新后无法连接Runtime');
       }
 
-      const refreshed = await this.refreshHoldingRoomsIfNeeded(config.maxConnections, 'runtime-rebuild', { force: true });
-      if (!refreshed) {
-        this.clearHoldingRooms();
-      }
+      await this.refreshHoldingRoomsIfNeeded(config.maxConnections, 'runtime-rebuild', { force: true });
     } finally {
       this.suppressRuntimeAutoRegister = false;
     }

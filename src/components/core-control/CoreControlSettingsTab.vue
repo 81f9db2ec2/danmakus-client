@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref, toRefs } from 'vue';
 import { Loader2, RefreshCw, Save, Plus, Trash2, X, Info } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';

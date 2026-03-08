@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import {
   Activity,
   AppWindow,
@@ -31,9 +31,9 @@ const emit = defineEmits<{
 
 const navItems = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard, tooltip: '查看核心运行状态和数据统计' },
-  { key: 'settings', label: '核心配置', icon: Settings, tooltip: '配置连接参数、分区过滤和录制管理' },
+  { key: 'settings', label: '核心配置', icon: Settings, tooltip: '配置连接参数、分区过滤和注注管理' },
   { key: 'app', label: '应用设置', icon: AppWindow, tooltip: '管理托盘、启动项和应用更新' },
-  { key: 'bilibili', label: 'Bilibili', icon: Tv2, tooltip: '登录 Bilibili 账号同步 Cookie' },
+  { key: 'bilibili', label: 'Bilibili', icon: Tv2, tooltip: '登制 Bilibili 账号同步 Cookie' },
   { key: 'account', label: '账户', icon: CircleUserRound, tooltip: '查看账户信息和贡献统计' },
 ];
 </script>
@@ -112,7 +112,7 @@ const navItems = [
           <p class="truncate text-sm font-medium">{{ userInfo.name || `用户${userInfo.id}` }}</p>
           <p class="text-[11px] text-muted-foreground">ID: {{ userInfo.id }}</p>
         </div>
-        <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" title="退出登录" @click="emit('logout')">
+        <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" title="退出登制" @click="emit('logout')">
           <LogOut class="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
       </div>

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
@@ -203,7 +203,7 @@ const connectionRoomCards = computed(() => {
         ? 'assigned'
         : 'unknown';
     const sourceText = sourceKind === 'recording'
-      ? '关注录制'
+      ? '注注主播'
       : sourceKind === 'assigned'
         ? '本站分配'
         : '未知来源';

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import { getDanmakuAreas } from '../services/account';
@@ -438,7 +438,7 @@ const handleRemoveRecording = async (uid: number) => {
     toast.success('已移除录制主播');
   } catch (error) {
     console.error(error);
-    toast.error(error instanceof Error ? error.message : '移除录制主播失败');
+    toast.error(error instanceof Error ? error.message : '取消添加录制主播失败');
   } finally {
     removingRecordingUid.value = null;
   }
