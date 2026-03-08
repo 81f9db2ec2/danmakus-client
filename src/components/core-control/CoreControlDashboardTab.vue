@@ -203,7 +203,7 @@ const connectionRoomCards = computed(() => {
         ? 'assigned'
         : 'unknown';
     const sourceText = sourceKind === 'recording'
-      ? '注注主播'
+      ? '关注主播'
       : sourceKind === 'assigned'
         ? '本站分配'
         : '未知来源';
