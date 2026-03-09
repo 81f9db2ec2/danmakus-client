@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { toast } from 'vue-sonner';
 import { getDanmakuAreas } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
-import { biliNavProfileState, startNavProfileAutoRefresh, stopNavProfileAutoRefresh } from '../services/bilibili';
 import { RUNTIME_URL } from '../services/env';
 import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http';
 import {
@@ -83,6 +82,7 @@ let announcedAppUpdateVersion: string | null = null;
 const coreConfigAutoSaveThrottleMs = 1_200;
 let coreConfigAutoSaveTimer: number | undefined;
 let coreConfigAutoSavePending = false;
+let localConfigApplyTimer: number | undefined;
 let syncingCoreConfigFromRemote = false;
 let pendingRemoteCoreConfigSyncCount = 0;
 let syncingAutoStartFromDesktop = false;
@@ -126,8 +126,6 @@ const recordingStatsByRoom = computed(() => {
 const lastHeartbeatText = computed(() =>
   runtimeState.lastHeartbeat ? new Date(runtimeState.lastHeartbeat).toLocaleString() : '—'
 );
-const cookieStatusText = computed(() => biliNavProfileState.profile ? '有效' : '未知');
-const cookieStatusType = computed(() => biliNavProfileState.profile ? 'success' : 'warning');
 
 const ensureToken = () => {
   if (!token.value) {
@@ -494,6 +492,17 @@ const refreshRuntimeState = async () => {
   }
 };
 
+const handleSyncCookieCloud = async () => {
+  if (!ensureToken()) return;
+  try {
+    await danmakuService.syncCookieCloud();
+    toast.success('CookieCloud 同步完成');
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : 'CookieCloud 同步失败');
+  }
+};
+
 const handleForceTakeover = async () => {
   if (!ensureToken()) return;
   forcingLock.value = true;
@@ -537,6 +546,12 @@ watch(
 
 watch(localConfig, () => {
   saveLocalAppConfig(localConfig);
+  if (localConfigApplyTimer !== undefined) {
+    clearTimeout(localConfigApplyTimer);
+  }
+  localConfigApplyTimer = window.setTimeout(() => {
+    danmakuService.applyLocalConfig(localConfig);
+  }, 400);
 }, { deep: true });
 
 watch(() => localConfig.autoStart, (nextValue, previousValue) => {
@@ -573,14 +588,6 @@ watch(
   { immediate: true }
 );
 
-watch(isLoggedIn, (loggedIn) => {
-  if (loggedIn) {
-    startNavProfileAutoRefresh();
-  } else {
-    stopNavProfileAutoRefresh();
-  }
-}, { immediate: true });
-
 onMounted(async () => {
   if (isDesktopApp) {
     try {
@@ -611,7 +618,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopAutoAppUpdatePoll();
-  stopNavProfileAutoRefresh();
+  if (localConfigApplyTimer !== undefined) {
+    clearTimeout(localConfigApplyTimer);
+    localConfigApplyTimer = undefined;
+  }
   clearCoreConfigAutoSaveTimer();
   coreConfigAutoSavePending = false;
   if (closeToTrayUnlisten) {
@@ -658,10 +668,8 @@ onBeforeUnmount(() => {
               :local-client-id="localClientId"
               :account-name="accountNameForDisplay"
               :account-id="accountIdForDisplay"
-              :bili-account-profile="biliNavProfileState.profile"
+              :auth-state="runtimeState.authState"
               :last-heartbeat-text="lastHeartbeatText"
-              :cookie-status-text="cookieStatusText"
-              :cookie-status-type="cookieStatusType"
               :refreshing-state="refreshingState"
               :forcing-lock="forcingLock"
               :starting-core="startingCore"
@@ -676,6 +684,8 @@ onBeforeUnmount(() => {
               v-else-if="currentPage === 'settings'"
               key="settings"
               :core-config="coreConfig"
+              :local-config="localConfig"
+              :auth-state="runtimeState.authState"
               :available-areas="availableAreas"
               :recordings="recordings"
               :refreshing-recordings="refreshingRecordings"
@@ -688,6 +698,7 @@ onBeforeUnmount(() => {
               @add-recording="handleAddRecording"
               @remove-recording="handleRemoveRecording"
               @update-recording-public="handleUpdateRecordingPublic"
+              @sync-cookie-cloud="handleSyncCookieCloud"
             />
 
             <CoreControlAppTab

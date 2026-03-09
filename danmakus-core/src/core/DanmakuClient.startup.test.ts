@@ -301,16 +301,21 @@ describe('DanmakuClient startup', () => {
       fetchImpl: async (input: RequestInfo | URL) => {
         const url = String(input);
 
-        if (url.startsWith('https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket')) {
+        if (url === 'https://api.bilibili.com/x/web-interface/nav') {
           return new Response(JSON.stringify({
             code: 0,
             data: {
-              ticket: 'ticket',
-              created_at: 1,
-              ttl: 3600,
-              nav: {
-                img: 'https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz123456.png',
-                sub: 'https://i0.hdslb.com/bfs/wbi/uvwxyzabcdefghijklmnopqrstuvwxyz1234.png'
+              isLogin: true,
+              mid: 10021741,
+              uname: '测试用户',
+              face: '',
+              money: 0,
+              vipStatus: 0,
+              vip_label: { text: '' },
+              level_info: { current_level: 6 },
+              wbi_img: {
+                img_url: 'https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz123456.png',
+                sub_url: 'https://i0.hdslb.com/bfs/wbi/uvwxyzabcdefghijklmnopqrstuvwxyz1234.png'
               }
             }
           }), {
@@ -319,7 +324,17 @@ describe('DanmakuClient startup', () => {
           });
         }
 
-        if (url.startsWith('https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo')) {
+        if (url === 'https://api.bilibili.com/x/web-frontend/getbuvid') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: { buvid: 'test-buvid' }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url.startsWith('https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?')) {
           return new Response(JSON.stringify({
             code: 0,
             data: {
@@ -350,5 +365,47 @@ describe('DanmakuClient startup', () => {
     expect(options.address).toBe('wss://broadcastlv.chat.bilibili.com/sub');
     expect(options.uid).toBe(10021741);
     expect(options.buvid).toBe('test-buvid');
+  });
+
+  test('uses interactive login provider when no cookie source is configured', async () => {
+    let interactiveLoginCallCount = 0;
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      streamers: [],
+      interactiveLoginProvider: async () => {
+        interactiveLoginCallCount += 1;
+        return 'DedeUserID=10021741; SESSDATA=test-session; buvid3=test-buvid;';
+      },
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === 'https://api.bilibili.com/x/web-interface/nav') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              isLogin: true,
+              mid: 10021741,
+              uname: '测试用户',
+              face: '',
+              money: 0,
+              vipStatus: 0,
+              vip_label: { text: '' },
+              level_info: { current_level: 6 }
+            }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        throw new Error(`unexpected request: ${url}`);
+      }
+    });
+
+    await expect(client.ensureCookieReadyForStartup()).resolves.toBeUndefined();
+    expect(interactiveLoginCallCount).toBe(1);
+    expect(client.getStatus().authState.activeSource).toBe('local');
+    expect(client.getStatus().authState.hasUsableCookie).toBe(true);
   });
 });

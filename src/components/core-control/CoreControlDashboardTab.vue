@@ -1,5 +1,6 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import type { AuthStateSnapshot } from 'danmakus-core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   AlertCircle,
@@ -80,13 +81,9 @@ type RuntimeStateSnapshot = {
   ownerClientId: string | null;
   lastError: string | null;
   lastRoomAssigned: number | null;
+  authState: AuthStateSnapshot;
 };
 
-type BiliAccountProfile = {
-  uid: number;
-  uname: string;
-  level: number;
-};
 
 const normalizeRoomId = (value: unknown): number | null => {
   const roomId = typeof value === 'number' ? value : Number(value);
@@ -104,15 +101,36 @@ const props = defineProps<{
   localClientId: string;
   accountName: string;
   accountId: number | null;
-  biliAccountProfile: BiliAccountProfile | null;
+  authState: AuthStateSnapshot;
   lastHeartbeatText: string;
-  cookieStatusText: string;
-  cookieStatusType: 'success' | 'warning';
   refreshingState: boolean;
   forcingLock: boolean;
   startingCore: boolean;
   stoppingCore: boolean;
 }>();
+
+const activeAuthProfile = computed(() =>
+  props.authState.cookieCloud.profile
+  ?? props.authState.local.profile
+  ?? null
+);
+
+const cookieStatusText = computed(() => {
+  if (props.authState.phase === 'syncing') return '同步中';
+  if (props.authState.hasUsableCookie) {
+    return props.authState.activeSource === 'cookieCloud' ? 'CookieCloud 有效' : '本地登录有效';
+  }
+  if (props.authState.lastError) return '无效';
+  return '未配置';
+});
+
+const cookieStatusType = computed(() => props.authState.hasUsableCookie ? 'success' : 'warning');
+
+const authSourceText = computed(() => {
+  if (props.authState.activeSource === 'cookieCloud') return '当前使用 CookieCloud';
+  if (props.authState.activeSource === 'local') return '当前使用本地扫码登录';
+  return '当前无可用鉴权';
+});
 
 const messageCmdRows = computed(() =>
   Object.entries(props.runtimeState.messageCmdCountMap)
@@ -251,7 +269,7 @@ const barColors = [
 ];
 
 const cookieBadgeClass = computed(() =>
-  props.cookieStatusType === 'success'
+  cookieStatusType.value === 'success'
     ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
     : 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300'
 );
@@ -427,14 +445,17 @@ onBeforeUnmount(() => {
             <Badge variant="outline" :class="cookieBadgeClass" class="text-xs">{{ cookieStatusText }}</Badge>
           </div>
           <p
-            v-if="biliAccountProfile"
+            v-if="activeAuthProfile"
             class="mt-1 truncate text-[11px] text-muted-foreground"
-            :title="`${biliAccountProfile.uname} · UID ${biliAccountProfile.uid} · Lv.${biliAccountProfile.level}`"
+            :title="`${activeAuthProfile.uname} · UID ${activeAuthProfile.uid} · Lv.${activeAuthProfile.level}`"
           >
-            {{ biliAccountProfile.uname }} · UID {{ biliAccountProfile.uid }} · Lv.{{ biliAccountProfile.level }}
+            {{ activeAuthProfile.uname }} · UID {{ activeAuthProfile.uid }} · Lv.{{ activeAuthProfile.level }}
+          </p>
+          <p v-else-if="authState.lastError" class="mt-1 text-[11px] text-muted-foreground">
+            {{ authState.lastError }}
           </p>
           <p v-else class="mt-1 text-[11px] text-muted-foreground">
-            未登录 Bilibili 账号
+            {{ authSourceText }}
           </p>
         </CardContent>
       </Card>

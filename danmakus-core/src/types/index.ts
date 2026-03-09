@@ -76,6 +76,7 @@ export interface DanmakuConfig {
   cookieCloudPassword?: string;
   cookieCloudHost?: string;
   cookieProvider?: () => string | null | undefined;
+  interactiveLoginProvider?: () => Promise<string | null | undefined>;
   runtimeUrl: string;
   runtimeHeaders?: Record<string, string>;
   cookieRefreshInterval: number; // 秒
@@ -124,6 +125,54 @@ export interface CookieCloudResponse {
   };
 }
 
+export type AuthSourceKind = 'cookieCloud' | 'local';
+export type AuthSyncPhase = 'idle' | 'syncing' | 'ready' | 'error' | 'degraded';
+
+export interface BiliAuthProfile {
+  uid: number;
+  uname: string;
+  face: string;
+  level: number;
+  money: number;
+  vipStatus: number;
+  vipLabel: string;
+}
+
+export interface AuthSourceStateSnapshot {
+  configured: boolean;
+  hasCookie: boolean;
+  valid: boolean;
+  phase: AuthSyncPhase;
+  lastAttemptAt: number | null;
+  lastSuccessAt: number | null;
+  lastValidatedAt: number | null;
+  lastError: string | null;
+  profile: BiliAuthProfile | null;
+}
+
+export interface AuthStateSnapshot {
+  activeSource: AuthSourceKind | null;
+  hasUsableCookie: boolean;
+  phase: AuthSyncPhase;
+  lastError: string | null;
+  local: AuthSourceStateSnapshot;
+  cookieCloud: AuthSourceStateSnapshot;
+}
+
+export type BilibiliQrLoginStatus = 'expired' | 'unknown' | 'scanned' | 'waiting' | 'confirmed';
+
+export type BilibiliQrLoginPollResult =
+  | { status: 'expired' }
+  | { status: 'unknown' }
+  | { status: 'scanned' }
+  | { status: 'waiting' }
+  | { status: 'confirmed'; cookie: string; refreshToken: string };
+
+export interface BilibiliQrLoginSessionInfo {
+  url: string;
+  qrcodeKey: string;
+}
+
 // 直播间信息类型
 export interface RoomInfo {
   roomId: number;
@@ -142,6 +191,7 @@ export interface DanmakuClientEvents {
   'controlStateChanged': (state: CoreControlStateSnapshot) => void;
   'error': (error: Error, roomId?: number) => void;
   'cookieUpdated': () => void;
+  'authStateChanged': (state: AuthStateSnapshot) => void;
   'queueChanged': (pendingMessageCount: number) => void;
   'streamerStatusUpdated': (statuses: StreamerStatus[]) => void;
 }
@@ -232,6 +282,7 @@ export interface CoreRuntimeStateDto {
   isRunning: boolean;
   runtimeConnected: boolean;
   cookieValid: boolean;
+  authState?: AuthStateSnapshot;
   connectedRooms: number[];
   connectionInfo: CoreConnectionInfoDto[];
   holdingRooms: number[];

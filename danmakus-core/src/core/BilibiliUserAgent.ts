@@ -48,6 +48,18 @@ export function wrapBilibiliFetch(
     if (!headers.has('User-Agent')) {
       headers.set('User-Agent', startupBilibiliUserAgent)
     }
+    if (!headers.has('Accept')) {
+      headers.set('Accept', 'application/json, text/plain, */*')
+    }
+    if (!headers.has('Accept-Language')) {
+      headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8')
+    }
+    if (!headers.has('Origin')) {
+      headers.set('Origin', 'https://www.bilibili.com')
+    }
+    if (!headers.has('Referer')) {
+      headers.set('Referer', 'https://www.bilibili.com/')
+    }
 
     return resolvedFetch(input, {
       ...init,

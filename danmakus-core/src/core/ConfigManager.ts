@@ -174,6 +174,12 @@ export class ConfigManager {
       // 外部更新时也不允许写入本地主播列表
       streamers: []
     };
+
+    this.config.cookieCloudKey = this.normalizeCookieSecret(this.config.cookieCloudKey);
+    this.config.cookieCloudPassword = this.normalizeCookieSecret(this.config.cookieCloudPassword);
+    this.config.cookieCloudHost = this.normalizeCookieHost(this.config.cookieCloudHost);
+    this.config.cookieRefreshInterval = this.normalizeCookieRefreshInterval(this.config.cookieRefreshInterval);
+    this.config.capacityOverride = this.normalizeCapacityOverride(this.config.capacityOverride);
   }
 
   /**

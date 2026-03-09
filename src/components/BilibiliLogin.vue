@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { BilibiliAuthApi, type BilibiliQrLoginSession } from 'danmakus-core';
 import QRCode from 'qrcode';
 import { toast } from 'vue-sonner';
 import { CheckCircle2, Loader2, QrCode, UserRound, ExternalLink } from 'lucide-vue-next';
@@ -24,15 +25,54 @@ import { Separator } from '@/components/ui/separator';
 import {
   biliNavProfileState,
   biliCookie,
-  getLoginInfoAsync,
-  getLoginUrlDataAsync,
   getNavProfileAsync,
   startNavProfileAutoRefresh,
   stopNavProfileAutoRefresh
 } from '../services/bilibili';
+import { danmakuService } from '../services/DanmakuService';
+import { fetchImpl } from '../services/fetchImpl';
 
 const navProfile = computed(() => biliNavProfileState.profile);
 const isLoggedIn = computed(() => navProfile.value !== null);
+const authState = computed(() => danmakuService.state.authState);
+const activeCookieSourceLabel = computed(() => {
+  if (authState.value.activeSource === 'cookieCloud') {
+    return 'CookieCloud';
+  }
+  if (authState.value.activeSource === 'local') {
+    return '本地扫码登录';
+  }
+  return '无可用来源';
+});
+const activeCookieSourceDescription = computed(() => {
+  if (authState.value.activeSource === 'cookieCloud') {
+    return '当前核心连接使用 CookieCloud 提供的 Cookie';
+  }
+  if (authState.value.activeSource === 'local') {
+    return '当前核心连接使用本地扫码登录得到的 Cookie。';
+  }
+  if (authState.value.cookieCloud.configured) {
+    return '已配置 CookieCloud，但当前还没有可用 Cookie；你也可以使用本页扫码登录作为备用来源。';
+  }
+  return '当前核心没有可用 Cookie 来源；可以在本页扫码登录，或先配置 CookieCloud。';
+});
+const activeCookieSourceBadgeClass = computed(() => {
+  if (authState.value.activeSource === 'cookieCloud') {
+    return 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+  }
+  if (authState.value.activeSource === 'local') {
+    return 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  }
+  return 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+});
+const localLoginBadgeClass = computed(() =>
+  isLoggedIn.value
+    ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    : 'border-muted-foreground/20 bg-muted/40 text-muted-foreground'
+);
+const shouldShowPrimaryLoginPrompt = computed(() =>
+  !isLoggedIn.value && authState.value.activeSource !== 'cookieCloud'
+);
 const showLoginModal = ref(false);
 
 const isQRCodeLogining = ref(false);
@@ -42,6 +82,8 @@ const loginStatus = ref<'expired' | 'unknown' | 'scanned' | 'waiting' | 'confirm
 const loginQrDataUrl = ref('');
 const expiredTimer = ref<number>();
 const timer = ref<number>();
+const qrLoginApi = new BilibiliAuthApi(fetchImpl);
+let qrLoginSession: BilibiliQrLoginSession | null = null;
 
 const checkStatus = async (force = false) => {
   try {
@@ -61,6 +103,7 @@ const buildQrCodeDataUrl = async (url: string) => {
 const finishLogin = () => {
   if (timer.value) clearInterval(timer.value);
   if (expiredTimer.value) clearTimeout(expiredTimer.value);
+  qrLoginSession = null;
   isQRCodeLogining.value = false;
   loginStatus.value = undefined;
   loginUrl.value = '';
@@ -76,9 +119,10 @@ const startLogin = async () => {
     loginStatus.value = 'waiting';
     showLoginModal.value = true;
 
-    const data = await getLoginUrlDataAsync();
+    qrLoginSession = await qrLoginApi.createQrLoginSession();
+    const data = qrLoginSession.getInfo();
     loginUrl.value = data.url;
-    loginKey.value = data.qrcode_key;
+    loginKey.value = data.qrcodeKey;
     await buildQrCodeDataUrl(data.url);
 
     expiredTimer.value = window.setTimeout(() => {
@@ -89,14 +133,20 @@ const startLogin = async () => {
 
     timer.value = window.setInterval(async () => {
       try {
-        const login = await getLoginInfoAsync(loginKey.value);
+        if (!qrLoginSession) {
+          return;
+        }
+        const login = await qrLoginSession.poll();
         loginStatus.value = login.status;
 
         if (login.status === 'confirmed') {
-          biliCookie.setBiliCookie(login.cookie, login.refresh_token);
+          biliCookie.setBiliCookie(login.cookie, login.refreshToken);
           toast.success('登录成功');
           finishLogin();
           await checkStatus(true);
+          await danmakuService.refreshAuthState({ force: true }).catch(error => {
+            console.error(error);
+          });
           showLoginModal.value = false;
         } else if (login.status === 'expired') {
           loginStatus.value = 'expired';
@@ -117,6 +167,9 @@ const startLogin = async () => {
 
 const handleLogout = () => {
   biliCookie.clear();
+  void danmakuService.refreshAuthState({ force: true }).catch(error => {
+    console.error(error);
+  });
   toast.success('已登出 Bilibili');
 };
 
@@ -145,6 +198,20 @@ onBeforeUnmount(() => {
       </CardHeader>
 
       <CardContent class="space-y-4">
+        <div class="rounded-lg border bg-background/50 px-3 py-3 shadow-sm">
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            <Badge variant="outline" :class="activeCookieSourceBadgeClass">
+              核心当前来源：{{ activeCookieSourceLabel }}
+            </Badge>
+            <Badge variant="outline" :class="localLoginBadgeClass">
+              本地扫码状态：{{ isLoggedIn ? '已登录' : '未登录' }}
+            </Badge>
+          </div>
+          <p class="mt-2 text-xs leading-5 text-muted-foreground">
+            {{ activeCookieSourceDescription }}
+          </p>
+        </div>
+
         <div v-if="isLoggedIn" class="space-y-4">
           <div class="flex items-center justify-between gap-3">
             <a
@@ -187,12 +254,26 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-else class="space-y-3">
-          <p class="text-sm text-muted-foreground">未登录，需要登录 Bilibili 账号以连接弹幕。</p>
+        <div v-else-if="shouldShowPrimaryLoginPrompt" class="space-y-3">
+          <p class="text-sm text-muted-foreground">
+            当前未检测到本地登录，可扫码登录为当前客户端提供本地 Cookie。
+          </p>
           <Button class="w-full" @click="startLogin">
             <QrCode class="h-4 w-4" />
             扫码登录
           </Button>
+        </div>
+
+        <div v-else class="space-y-3 rounded-lg border bg-background/40 px-3 py-3">
+          <p class="text-sm text-muted-foreground">
+            当前核心已通过 CookieCloud 持有可用 Cookie。本地扫码登录不是必需项，如需给当前客户端补充一份本地 Cookie，可手动执行扫码登录。
+          </p>
+          <div class="flex justify-end">
+            <Button variant="outline" size="sm" @click="startLogin">
+              <QrCode class="h-4 w-4" />
+              备用扫码登录
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>

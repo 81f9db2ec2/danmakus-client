@@ -48,6 +48,18 @@ danmakus --token "your-account-token" -k "cookie-key" -p "cookie-password"
 | `DANMAKUS_COOKIECLOUD_KEY` | 等价于 `--cookie-key` |
 | `DANMAKUS_COOKIECLOUD_PASSWORD` | 等价于 `--cookie-password` |
 
+### CookieCloud 说明
+
+[CookieCloud](https://github.com/easychen/CookieCloud) 是一个浏览器扩展，可以把 Cookie 同步到云端。使用端到端加密，只有你知道密钥。
+
+本站提供实例：`https://cookie.danmakus.com/`，也可自建。配置示例：
+
+- **服务器地址**：`https://cookie.danmakus.com/`
+- **同步域名关键词**：`bilibili.com`
+- **同步 Local Storage**：否
+
+只会读取 bilibili.com 的 Cookie。
+
 ## 作为库使用
 
 ```ts
@@ -141,7 +153,9 @@ docker build -t danmakus-core .
 docker run -d --name danmakus -e DANMAKUS_TOKEN="your-token" danmakus-core
 ```
 
-### Docker Compose
+### Docker Compose（推荐）
+
+推荐使用 [Watchtower](https://containrrr.dev/watchtower/) 自动更新镜像：
 
 ```yaml
 # docker-compose.yml
@@ -154,11 +168,21 @@ services:
       - DANMAKUS_TOKEN=your-account-token
       # DANMAKUS_COOKIECLOUD_KEY=cookie-key
       # DANMAKUS_COOKIECLOUD_PASSWORD=cookie-password
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 3600 danmakus
 ```
 
 ```bash
 docker compose up -d
 ```
+
+Watchtower 会每小时检查一次 `danmakus-core` 镜像更新并自动重启容器。
 
 ## PM2 部署
 

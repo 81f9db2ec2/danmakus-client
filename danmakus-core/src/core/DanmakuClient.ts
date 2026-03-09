@@ -1,11 +1,12 @@
 import EventEmitter from 'eventemitter3';
-import { BilibiliApiClient, LiveWS, parseLiveConfig } from 'bilibili-live-danmaku';
+import { LiveWS } from 'bilibili-live-danmaku';
+import { AuthManager } from './AuthManager';
+import { BilibiliLiveWsAuthApi } from './BilibiliLiveWsAuthApi';
 import { ConfigManager } from './ConfigManager';
-import { CookieManager } from './CookieManager';
 import { RuntimeConnection } from './RuntimeConnection';
 import { StreamerStatusManager } from './StreamerStatusManager';
 import { AccountApiClient } from './AccountApiClient';
-import { wrapBilibiliFetch } from './BilibiliUserAgent';
+import { readCookieValue } from './BilibiliCookie';
 import { DanmakuMessageQueue } from './DanmakuMessageQueue';
 import { DanmakuRuntimeSync } from './DanmakuRuntimeSync';
 import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator';
@@ -62,7 +63,7 @@ interface ClientErrorContext {
   roomId?: number;
 }
 
-type CookieSource = 'biliLocal' | 'cookieCloud';
+type CookieSource = 'local' | 'cookieCloud';
 type NormalizedCookieRuntimeConfig = {
   enabled: boolean;
   key?: string;
@@ -82,8 +83,11 @@ type LiveWsConnectionOptions = {
 export class DanmakuClient extends EventEmitter {
   private logger: ScopedLogger;
   private configManager: ConfigManager;
-  private cookieManager?: CookieManager;
-  private cookieProvider?: () => string | null | undefined;
+  private authManager: AuthManager;
+  private bilibiliLiveWsAuthApi: BilibiliLiveWsAuthApi;
+  private baseLocalCookieProvider?: () => string | null | undefined;
+  private interactiveLoginProvider?: () => Promise<string | null | undefined>;
+  private ephemeralLocalCookie = '';
   private liveWsConfigProvider?: (roomId: number) => Promise<LiveWsRoomConfig | null | undefined>;
   private liveWsConnectionFactory?: (roomId: number, options: LiveWsRoomConfig) => Promise<LiveWsConnection>;
   private runtimeConnection?: RuntimeConnection;
@@ -129,9 +133,19 @@ export class DanmakuClient extends EventEmitter {
 
     this.logger = new ScopedLogger('DanmakuClient', normalizeLogLevel(config.logLevel, 'info'));
     this.clientId = config.clientId || generateClientId();
-    this.cookieProvider = config.cookieProvider;
+    this.baseLocalCookieProvider = config.cookieProvider;
+    this.interactiveLoginProvider = config.interactiveLoginProvider;
     this.liveWsConfigProvider = config.liveWsConfigProvider;
     this.liveWsConnectionFactory = config.liveWsConnectionFactory;
+    this.authManager = new AuthManager({
+      localCookieProvider: () => this.readLocalCookie(),
+      cookieCloudKey: config.cookieCloudKey,
+      cookieCloudPassword: config.cookieCloudPassword,
+      cookieCloudHost: config.cookieCloudHost,
+      cookieRefreshInterval: config.cookieRefreshInterval,
+      fetchImpl: config.fetchImpl,
+    });
+    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(config.fetchImpl);
     this.messageQueue = new DanmakuMessageQueue({
       isRunning: () => this.isRunning,
       isStopping: () => this.isStopping,
@@ -303,20 +317,8 @@ export class DanmakuClient extends EventEmitter {
   private initializeManagers(): void {
     const finalConfig = this.configManager.getConfig();
     this.applyRuntimeTunings(finalConfig);
-
-    if (this.cookieManager) {
-      this.cookieManager.stopPeriodicUpdate();
-    }
-
-    this.cookieManager = this.configManager.hasCookieCloudConfig()
-      ? new CookieManager(
-        finalConfig.cookieCloudKey!,
-        finalConfig.cookieCloudPassword!,
-        finalConfig.cookieCloudHost,
-        finalConfig.cookieRefreshInterval,
-        finalConfig.fetchImpl
-      )
-      : undefined;
+    this.rebuildAuthManager(finalConfig);
+    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(finalConfig.fetchImpl);
 
     if (this.runtimeConnection) {
       void this.runtimeConnection.disconnect().catch(() => undefined);
@@ -416,11 +418,7 @@ export class DanmakuClient extends EventEmitter {
       await this.ensureCookieReadyForStartup();
       await this.acquireRuntimeLock();
 
-      // 启动CookieManager
-      if (this.cookieManager) {
-        this.logger.info('启动Cookie管理器...');
-        this.cookieManager.startPeriodicUpdate();
-      }
+      this.authManager.start();
 
       // 连接Runtime
       this.logger.info('连接到Runtime服务器...');
@@ -494,10 +492,7 @@ export class DanmakuClient extends EventEmitter {
     }
     this.connections.clear();
 
-    // 停止CookieManager
-    if (this.cookieManager) {
-      this.cookieManager.stopPeriodicUpdate();
-    }
+    this.authManager.stop();
 
     // 断开Runtime连接
     await this.runtimeConnection?.disconnect();
@@ -721,28 +716,14 @@ export class DanmakuClient extends EventEmitter {
       throw new Error(`房间 ${roomId} 缺少可用 Cookie，无法获取内置鉴权信息`);
     }
 
-    const currentConfig = this.configManager.getConfig();
-    const apiClient = new BilibiliApiClient({
-      cookie: normalizedCookie,
-      fetch: wrapBilibiliFetch(currentConfig.fetchImpl)
-    });
-
-    const danmuInfo = await apiClient.xliveGetDanmuInfo({ id: roomId });
-    const parsedConfig = parseLiveConfig(danmuInfo.data);
-    const roomInit = await apiClient.liveRoomInit({ id: roomId });
-    const resolvedRoomIdRaw = roomInit.data?.room_id;
-    const resolvedRoomId = typeof resolvedRoomIdRaw === 'number' ? resolvedRoomIdRaw : Number(resolvedRoomIdRaw);
-    if (!Number.isFinite(resolvedRoomId) || resolvedRoomId <= 0) {
-      throw new Error(`房间 ${roomId} 获取内置鉴权信息失败: room_id 无效`);
-    }
+    const resolved = await this.bilibiliLiveWsAuthApi.getRoomConfig(roomId, normalizedCookie);
 
     return {
       ...options,
-      ...parsedConfig,
-      roomId: resolvedRoomId,
-      uid: options.uid,
-      buvid: options.buvid,
-      protover: options.protover ?? 3
+      ...resolved,
+      uid: typeof resolved.uid === 'number' && resolved.uid > 0 ? resolved.uid : options.uid,
+      buvid: resolved.buvid ?? options.buvid,
+      protover: resolved.protover ?? options.protover ?? 3
     };
   }
 
@@ -750,7 +731,7 @@ export class DanmakuClient extends EventEmitter {
     if (!cookie) {
       return 0;
     }
-    const uidText = DanmakuClient.readCookieValue(cookie, 'DedeUserID');
+    const uidText = readCookieValue(cookie, 'DedeUserID');
     if (uidText && /^[0-9]+$/.test(uidText)) {
       return Number(uidText);
     }
@@ -761,48 +742,13 @@ export class DanmakuClient extends EventEmitter {
     if (!cookie) {
       return undefined;
     }
-    return DanmakuClient.readCookieValue(cookie, 'buvid3')
-      ?? DanmakuClient.readCookieValue(cookie, 'buvid4')
-      ?? DanmakuClient.readCookieValue(cookie, 'buvid_fp');
+    return readCookieValue(cookie, 'buvid3')
+      ?? readCookieValue(cookie, 'buvid4')
+      ?? readCookieValue(cookie, 'buvid_fp');
   }
 
   private getPreferredCookie(): { source: CookieSource; value: string } | null {
-    const localCookie = this.cookieProvider?.()?.trim();
-    if (localCookie) {
-      return { source: 'biliLocal', value: localCookie };
-    }
-
-    const cloudCookie = this.cookieManager?.getCookies().trim();
-    if (cloudCookie) {
-      return { source: 'cookieCloud', value: cloudCookie };
-    }
-
-    return null;
-  }
-
-  private hasAvailableCookie(): boolean {
-    return this.getPreferredCookie() !== null;
-  }
-
-  private static readCookieValue(cookie: string, key: string): string | undefined {
-    const parts = cookie.split(';');
-    for (const part of parts) {
-      const segment = part.trim();
-      if (!segment) {
-        continue;
-      }
-      const separator = segment.indexOf('=');
-      if (separator <= 0) {
-        continue;
-      }
-      const name = segment.slice(0, separator).trim();
-      if (name !== key) {
-        continue;
-      }
-      const value = segment.slice(separator + 1).trim();
-      return value || undefined;
-    }
-    return undefined;
+    return this.authManager.getPreferredCookie();
   }
 
   /**
@@ -1028,6 +974,7 @@ export class DanmakuClient extends EventEmitter {
   getStatus() {
     const connectionInfo = this.getConnectionInfo();
     const streamerStatuses = this.statusManager?.getAllStatuses() ?? [];
+    const authState = this.authManager.getState();
 
     return {
       clientId: this.clientId,
@@ -1035,7 +982,8 @@ export class DanmakuClient extends EventEmitter {
       connectedRooms: this.getConnectedRooms(),
       connectionInfo,
       runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
-      cookieValid: this.hasAvailableCookie(),
+      cookieValid: authState.hasUsableCookie,
+      authState,
       streamerStatuses,
       holdingRooms: [...this.holdingRoomIds],
       recordingRoomIds: [...this.recordingRoomIds],
@@ -1069,6 +1017,35 @@ export class DanmakuClient extends EventEmitter {
 
   async refreshRecordingControlState(): Promise<CoreControlStateSnapshot> {
     return this.controlState.refreshRecordingControlState();
+  }
+
+  updateLocalRuntimeConfig(updates: Pick<DanmakuConfig,
+    'cookieCloudKey' | 'cookieCloudPassword' | 'cookieCloudHost' | 'cookieRefreshInterval' | 'capacityOverride'>,
+  ): void {
+    const previous = this.configManager.getConfig();
+    this.configManager.updateConfig(updates);
+    this.configManager.validate();
+    const next = this.configManager.getConfig();
+
+    const previousCookie = this.normalizeCookieRuntimeConfig(previous);
+    const nextCookie = this.normalizeCookieRuntimeConfig(next);
+    if (this.hasCookieConfigChanged(previousCookie, nextCookie)) {
+      this.rebuildAuthManager(next);
+    }
+
+    if ((previous.capacityOverride ?? undefined) !== (next.capacityOverride ?? undefined) && this.isRunning) {
+      void this.syncRuntimeState({}, { force: true }).catch((error) => {
+        this.logger.warn('热更新 capacityOverride 后同步运行态失败', error);
+      });
+    }
+  }
+
+  async refreshAuthState(options?: { force?: boolean }): Promise<void> {
+    await this.authManager.refreshState({ validateProfile: true, force: options?.force === true });
+  }
+
+  async syncCookieCloud(): Promise<void> {
+    await this.authManager.syncCookieCloud();
   }
 
   startControlSync(): void {
@@ -1195,21 +1172,24 @@ export class DanmakuClient extends EventEmitter {
   }
 
   private async ensureCookieReadyForStartup(): Promise<void> {
-    if (this.liveWsConfigProvider || this.hasAvailableCookie()) {
+    if (this.liveWsConfigProvider) {
       return;
     }
 
-    if (this.cookieManager) {
-      this.logger.info('当前无可用 Cookie，正在尝试从 CookieCloud 拉取...');
-      const updated = await this.cookieManager.updateCookies();
-      if (updated && this.hasAvailableCookie()) {
-        return;
-      }
+    const authState = this.authManager.getState();
+    const cookieCloudConfigured = authState.cookieCloud.configured;
 
-      throw new Error('CookieCloud 未返回可用的 Bilibili Cookie，无法启动弹幕客户端');
+    if (!cookieCloudConfigured && !this.authManager.hasAvailableCookie() && this.interactiveLoginProvider) {
+      this.logger.info('未提供可用 Cookie，准备进入交互式扫码登录...');
+      const cookie = (await this.interactiveLoginProvider())?.trim() || '';
+      if (cookie) {
+        this.ephemeralLocalCookie = cookie;
+        await this.authManager.refreshState({ validateProfile: true, force: true });
+      }
     }
 
-    throw new Error('未提供可用的 Bilibili Cookie，无法启动弹幕客户端；请先配置本地 Cookie 或 CookieCloud');
+    await this.authManager.ensureReadyForStartup();
+    this.emit('authStateChanged', this.authManager.getState());
   }
 
   private async acquireRuntimeLock(): Promise<void> {
@@ -1230,13 +1210,15 @@ export class DanmakuClient extends EventEmitter {
     const connectionInfo = this.getConnectionInfo();
     const connectedRooms = this.getConnectedRooms();
     const config = this.configManager.getConfig();
+    const authState = this.authManager.getState();
 
     return {
       clientId: this.clientId,
       clientVersion: config.clientVersion ?? 'core',
       isRunning: this.isRunning,
       runtimeConnected,
-      cookieValid: this.hasAvailableCookie(),
+      cookieValid: authState.hasUsableCookie,
+      authState,
       connectedRooms,
       connectionInfo: connectionInfo.map<CoreConnectionInfoDto>(info => ({
         roomId: info.roomId,
@@ -1253,12 +1235,14 @@ export class DanmakuClient extends EventEmitter {
 
   private buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string } {
     const config = this.configManager.getConfig();
+    const authState = this.authManager.getState();
     return {
       clientId: this.clientId,
       clientVersion: config.clientVersion ?? 'core',
       isRunning: this.isRunning,
       runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
-      cookieValid: this.hasAvailableCookie(),
+      cookieValid: authState.hasUsableCookie,
+      authState,
       messageCount: this.messageCount,
       lastRoomAssigned: this.lastRoomAssigned ?? null,
       lastError: this.lastError ?? null
@@ -1488,7 +1472,7 @@ export class DanmakuClient extends EventEmitter {
     const cookieChanged = this.hasCookieConfigChanged(previousCookie, nextCookie);
 
     if (cookieChanged) {
-      this.rebuildCookieManager(next);
+      this.rebuildAuthManager(next);
     }
 
     if (statusManagerChanged) {
@@ -1522,22 +1506,35 @@ export class DanmakuClient extends EventEmitter {
     });
   }
 
-  private rebuildCookieManager(config: DanmakuConfig): void {
-    const normalized = this.normalizeCookieRuntimeConfig(config);
-    this.cookieManager?.stopPeriodicUpdate();
-    this.cookieManager = normalized.enabled
-      ? new CookieManager(
-        normalized.key!,
-        normalized.password!,
-        normalized.host,
-        normalized.refreshInterval,
-        config.fetchImpl
-      )
-      : undefined;
-
-    if (this.isRunning && this.cookieManager) {
-      this.cookieManager.startPeriodicUpdate();
+  private rebuildAuthManager(config: DanmakuConfig): void {
+    this.baseLocalCookieProvider = config.cookieProvider;
+    this.interactiveLoginProvider = config.interactiveLoginProvider;
+    this.authManager.dispose();
+    this.authManager = new AuthManager({
+      localCookieProvider: () => this.readLocalCookie(),
+      cookieCloudKey: config.cookieCloudKey,
+      cookieCloudPassword: config.cookieCloudPassword,
+      cookieCloudHost: config.cookieCloudHost,
+      cookieRefreshInterval: config.cookieRefreshInterval,
+      fetchImpl: config.fetchImpl,
+    });
+    this.authManager.onStateChanged((state) => {
+      this.emit('authStateChanged', state);
+      this.emit('cookieUpdated');
+    });
+    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(config.fetchImpl);
+    if (this.isRunning) {
+      this.authManager.start();
     }
+    void this.authManager.refreshState({ validateProfile: true, force: true }).catch(() => undefined);
+  }
+
+  private readLocalCookie(): string {
+    const ephemeralCookie = this.ephemeralLocalCookie.trim();
+    if (ephemeralCookie) {
+      return ephemeralCookie;
+    }
+    return this.baseLocalCookieProvider?.()?.trim() || '';
   }
 
   private rebuildStatusManager(config: DanmakuConfig): void {

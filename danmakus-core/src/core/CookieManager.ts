@@ -3,8 +3,13 @@ import { CookieCloudResponse } from '../types';
 export class CookieManager {
   private cookies: string = '';
   private lastUpdate: number = 0;
+  private lastAttempt: number = 0;
+  private lastSuccess: number = 0;
+  private lastError: string | null = null;
   private updateTimer?: ReturnType<typeof setInterval>;
   private updateTask?: Promise<boolean>;
+
+  onChanged?: () => void;
 
   private fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -52,6 +57,10 @@ export class CookieManager {
     }
 
     this.updateTask = (async () => {
+      this.lastAttempt = Date.now();
+      this.lastError = null;
+      this.notifyChanged();
+
       try {
         console.log('正在从CookieCloud获取Cookie信息...');
 
@@ -74,21 +83,35 @@ export class CookieManager {
           if (response.ok) {
             const cookieData: CookieCloudResponse = await response.json();
             this.cookies = this.extractBilibiliCookies(cookieData);
+            if (!this.cookies.trim()) {
+              this.lastError = 'CookieCloud 未返回可用的 Bilibili Cookie';
+              this.notifyChanged();
+              return false;
+            }
             this.lastUpdate = Date.now();
+            this.lastSuccess = this.lastUpdate;
+            this.lastError = null;
 
             console.log('Cookie信息已更新');
+            this.notifyChanged();
             return true;
           }
+
+          this.lastError = `CookieCloud HTTP ${response.status}`;
         } finally {
           clearTimeout(timeoutId);
         }
       } catch (error) {
-        console.error('获取Cookie失败:', error instanceof Error ? error.message : error);
+        this.lastError = error instanceof Error ? error.message : String(error);
+        console.error('获取Cookie失败:', this.lastError);
+        this.notifyChanged();
         return false;
       } finally {
         this.updateTask = undefined;
+        this.notifyChanged();
       }
 
+      this.notifyChanged();
       return false;
     })();
 
@@ -144,12 +167,31 @@ export class CookieManager {
     return this.lastUpdate;
   }
 
+  getLastAttemptTime(): number {
+    return this.lastAttempt;
+  }
+
+  getLastSuccessTime(): number {
+    return this.lastSuccess;
+  }
+
+  getLastError(): string | null {
+    return this.lastError;
+  }
+
+  isSyncing(): boolean {
+    return this.updateTask !== undefined;
+  }
+
   /**
    * 手动设置Cookie（用于测试或直接设置）
    */
   setCookies(cookies: string): void {
     this.cookies = cookies;
     this.lastUpdate = Date.now();
+    this.lastSuccess = this.lastUpdate;
+    this.lastError = null;
+    this.notifyChanged();
   }
 
   /**
@@ -158,6 +200,7 @@ export class CookieManager {
   clearCookies(): void {
     this.cookies = '';
     this.lastUpdate = 0;
+    this.notifyChanged();
   }
 
   /**
@@ -172,5 +215,9 @@ export class CookieManager {
       }
     }
     return null;
+  }
+
+  private notifyChanged(): void {
+    this.onChanged?.();
   }
 }

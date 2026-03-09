@@ -1,5 +1,6 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref, toRefs } from 'vue';
+import type { AuthStateSnapshot } from 'danmakus-core';
 import { Loader2, RefreshCw, Save, Plus, Trash2, X, Info } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,10 +15,12 @@ import {
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
-import type { CoreControlConfigDto, RecordingInfoDto } from '../../types/api';
+import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto } from '../../types/api';
 
 const props = defineProps<{
   coreConfig: CoreControlConfigDto;
+  localConfig: LocalAppConfigDto;
+  authState: AuthStateSnapshot;
   availableAreas: Record<string, string[]>;
   recordings: RecordingInfoDto[];
   refreshingRecordings: boolean;
@@ -83,12 +86,60 @@ const submitAddRecording = () => {
   newRecordingUid.value = '';
 };
 
+const assignLocalText = (field: 'cookieCloudKey' | 'cookieCloudPassword', raw: string | number) => {
+  props.localConfig[field] = String(raw).trim();
+};
+
+const assignCookieCloudHost = (raw: string | number) => {
+  props.localConfig.cookieCloudHost = String(raw).trim().replace(/\/+$/, '');
+};
+
+const assignCookieRefreshInterval = (raw: string | number) => {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+  props.localConfig.cookieRefreshInterval = Math.max(60, Math.floor(value));
+};
+
+const assignCapacityOverride = (raw: string | number) => {
+  const text = String(raw).trim();
+  if (!text) {
+    props.localConfig.capacityOverride = null;
+    return;
+  }
+  const value = Number(text);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+  props.localConfig.capacityOverride = Math.min(100, Math.max(1, Math.floor(value)));
+};
+
+const activeAuthSourceText = computed(() => {
+  if (props.authState.activeSource === 'cookieCloud') return '当前由 CookieCloud 提供鉴权';
+  if (props.authState.activeSource === 'local') return '当前由本地扫码登录提供鉴权';
+  return '当前无可用鉴权 Cookie';
+});
+
+const cookieCloudStatusText = computed(() => {
+  const state = props.authState.cookieCloud;
+  if (!state.configured) return '未配置';
+  if (state.phase === 'syncing') return '同步中';
+  if (state.valid) return '可用';
+  if (state.lastError) return '失败';
+  if (state.hasCookie) return '待校验';
+  return '未同步';
+});
+
+const formatSyncTime = (value: number | null) => value ? new Date(value).toLocaleString() : '—';
+
 const emit = defineEmits<{
   (e: 'save-config'): void;
   (e: 'refresh-recordings'): void;
   (e: 'add-recording', uid: number): void;
   (e: 'remove-recording', uid: number): void;
   (e: 'update-recording-public', uid: number, isPublic: boolean): void;
+  (e: 'sync-cookie-cloud'): void;
 }>();
 </script>
 
@@ -166,6 +217,94 @@ const emit = defineEmits<{
                 </div>
               </div>
               <Switch v-model:model-value="coreConfig.requestServerRooms" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card class="bg-card/60">
+        <CardHeader class="pb-3">
+          <CardTitle class="text-sm">覆盖配置文件</CardTitle>
+          <CardDescription>仅保存在本地的, 覆盖全局配置的设置项</CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">最大录制数量（可选，1-100）</label>
+            <Input
+              :model-value="props.localConfig.capacityOverride ?? ''"
+              type="number"
+              min="1"
+              max="100"
+              placeholder="留空表示跟随全局设置"
+              @update:model-value="assignCapacityOverride"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card class="bg-card/60">
+        <CardHeader class="pb-3">
+          <CardTitle class="text-sm">CookieCloud</CardTitle>
+          <CardDescription>仅保存在当前客户端本地，不会上传到服务器</CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <div class="rounded-lg border bg-background/40 p-3 text-xs text-muted-foreground space-y-1.5">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="font-medium text-foreground">{{ activeAuthSourceText }}</p>
+                <p>CookieCloud 状态：{{ cookieCloudStatusText }}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="!props.authState.cookieCloud.configured || props.authState.cookieCloud.phase === 'syncing'"
+                @click="emit('sync-cookie-cloud')"
+              >
+                <Loader2 v-if="props.authState.cookieCloud.phase === 'syncing'" class="h-4 w-4 animate-spin" />
+                <RefreshCw v-else class="h-4 w-4" />
+                立即同步
+              </Button>
+            </div>
+            <p>最近成功：{{ formatSyncTime(props.authState.cookieCloud.lastSuccessAt) }}</p>
+            <p v-if="props.authState.cookieCloud.lastError" class="text-destructive">
+              最近错误：{{ props.authState.cookieCloud.lastError }}
+            </p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
+            <Input
+              :model-value="props.localConfig.cookieCloudHost"
+              placeholder="https://cookie.danmakus.com"
+              @update:model-value="assignCookieCloudHost"
+            />
+          </div>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <div class="space-y-1">
+              <label class="text-xs font-medium text-muted-foreground">Key</label>
+              <Input
+                :model-value="props.localConfig.cookieCloudKey"
+                placeholder="Key"
+                @update:model-value="assignLocalText('cookieCloudKey', $event)"
+              />
+            </div>
+            <div class="space-y-1">
+              <label class="text-xs font-medium text-muted-foreground">密码</label>
+              <Input
+                :model-value="props.localConfig.cookieCloudPassword"
+                type="password"
+                placeholder="密码"
+                @update:model-value="assignLocalText('cookieCloudPassword', $event)"
+              />
+            </div>
+            <div class="space-y-1">
+              <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
+              <Input
+                :model-value="props.localConfig.cookieRefreshInterval"
+                type="number"
+                min="60"
+                placeholder="3600"
+                @update:model-value="assignCookieRefreshInterval"
+              />
             </div>
           </div>
         </CardContent>

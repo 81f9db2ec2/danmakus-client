@@ -1,5 +1,7 @@
 // 导出核心类
 export { DanmakuClient } from '../core/DanmakuClient';
+export { AuthManager } from '../core/AuthManager';
+export { BilibiliAuthApi, BilibiliQrLoginSession } from '../core/BilibiliAuthApi';
 export { ConfigManager } from '../core/ConfigManager';
 export { CookieManager } from '../core/CookieManager';
 export { RuntimeConnection } from '../core/RuntimeConnection';
@@ -17,4 +19,4 @@ export const createDanmakuClient = (config?: Partial<DanmakuConfig>) => {
 };
 
 // 版本信息
-export const version = '1.0.0';
+export const version = '1.0.1';

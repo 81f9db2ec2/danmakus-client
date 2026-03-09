@@ -2,7 +2,7 @@
 import {
   Download,
   Loader2,
-  RefreshCw
+  RefreshCw,
 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import {
@@ -10,9 +10,8 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle
+  CardTitle,
 } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import type { LocalAppConfigDto } from '../../types/api';
 
@@ -30,35 +29,6 @@ const emit = defineEmits<{
   (e: 'check-app-update'): void;
   (e: 'install-app-update'): void;
 }>();
-
-const assignLocalText = (field: 'cookieCloudKey' | 'cookieCloudPassword', raw: string | number) => {
-  props.localConfig[field] = String(raw).trim();
-};
-
-const assignCookieCloudHost = (raw: string | number) => {
-  props.localConfig.cookieCloudHost = String(raw).trim().replace(/\/+$/, '');
-};
-
-const assignCookieRefreshInterval = (raw: string | number) => {
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    return;
-  }
-  props.localConfig.cookieRefreshInterval = Math.max(60, Math.floor(value));
-};
-
-const assignCapacityOverride = (raw: string | number) => {
-  const text = String(raw).trim();
-  if (!text) {
-    props.localConfig.capacityOverride = null;
-    return;
-  }
-  const value = Number(text);
-  if (!Number.isFinite(value)) {
-    return;
-  }
-  props.localConfig.capacityOverride = Math.min(100, Math.max(1, Math.floor(value)));
-};
 </script>
 
 <template>
@@ -163,72 +133,5 @@ const assignCapacityOverride = (raw: string | number) => {
         </div>
       </CardContent>
     </Card>
-
-    <Card class="bg-card/60">
-      <CardHeader class="pb-3">
-        <CardTitle class="text-sm">本地核心覆盖</CardTitle>
-        <CardDescription>仅保存在当前客户端本地，不会同步到全局配置；修改后重启核心生效</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-muted-foreground">槽位覆盖数（可选，1-100）</label>
-          <Input
-            :model-value="props.localConfig.capacityOverride ?? ''"
-            type="number"
-            min="1"
-            max="100"
-            placeholder="留空表示跟随全局设置"
-            @update:model-value="assignCapacityOverride"
-          />
-        </div>
-      </CardContent>
-    </Card>
-
-    <Card class="bg-card/60">
-      <CardHeader class="pb-3">
-        <CardTitle class="text-sm">CookieCloud</CardTitle>
-        <CardDescription>仅保存在当前客户端本地，不会上传到服务器</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
-          <Input
-            :model-value="props.localConfig.cookieCloudHost"
-            placeholder="https://cookie.danmakus.com"
-            @update:model-value="assignCookieCloudHost"
-          />
-        </div>
-        <div class="grid gap-3 sm:grid-cols-3">
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">Key</label>
-            <Input
-              :model-value="props.localConfig.cookieCloudKey"
-              placeholder="Key"
-              @update:model-value="assignLocalText('cookieCloudKey', $event)"
-            />
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">密码</label>
-            <Input
-              :model-value="props.localConfig.cookieCloudPassword"
-              type="password"
-              placeholder="密码"
-              @update:model-value="assignLocalText('cookieCloudPassword', $event)"
-            />
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
-            <Input
-              :model-value="props.localConfig.cookieRefreshInterval"
-              type="number"
-              min="60"
-              placeholder="3600"
-              @update:model-value="assignCookieRefreshInterval"
-            />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-
   </div>
 </template>

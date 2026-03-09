@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { DanmakuClient } from '../core/DanmakuClient';
+import { createCliInteractiveLoginProvider } from './auth';
 import { attachCliEventListeners } from './runtime';
 import { CliOptions } from '../types';
 
@@ -12,7 +13,7 @@ const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
 program
   .name('danmakus')
   .description('轻量弹幕采集工具')
-  .version('1.0.0');
+  .version('1.0.1');
 
 program
   .option('-m, --max-connections <number>', '最大连接数 (1-100)', '15')
@@ -76,9 +77,13 @@ program
 
       console.log('================\n');
 
+      let localCookie = '';
+
       // 创建弹幕客户端
       const client = new DanmakuClient({
         maxConnections,
+        cookieProvider: () => localCookie,
+        interactiveLoginProvider: createCliInteractiveLoginProvider(),
         cookieCloudKey,
         cookieCloudPassword,
         cookieCloudHost,

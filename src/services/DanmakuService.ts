@@ -1,12 +1,14 @@
 import { DanmakuClient } from 'danmakus-core';
 import type {
+  AuthSourceStateSnapshot,
+  AuthStateSnapshot,
   CoreControlStateSnapshot as CoreClientControlStateSnapshot,
   CoreRuntimeStateDto as CoreClientRuntimeStateDto,
   DanmakuMessage,
   StreamerStatus,
 } from 'danmakus-core';
 import { reactive } from 'vue';
-import { biliCookie, getLiveWsRoomConfigAsync, getNavProfileAsync } from './bilibili';
+import { biliCookie } from './bilibili';
 import { RUNTIME_URL } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
@@ -29,6 +31,38 @@ type RemoteClientSnapshot = {
   lastError: string | null;
   lastHeartbeat: number | null;
 };
+
+const createEmptyAuthSourceState = (): AuthSourceStateSnapshot => ({
+  configured: false,
+  hasCookie: false,
+  valid: false,
+  phase: 'idle',
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastValidatedAt: null,
+  lastError: null,
+  profile: null,
+});
+
+const createEmptyAuthState = (): AuthStateSnapshot => ({
+  activeSource: null,
+  hasUsableCookie: false,
+  phase: 'idle',
+  lastError: null,
+  local: createEmptyAuthSourceState(),
+  cookieCloud: createEmptyAuthSourceState(),
+});
+
+const cloneAuthSourceState = (source: AuthSourceStateSnapshot): AuthSourceStateSnapshot => ({
+  ...source,
+  profile: source.profile ? { ...source.profile } : null,
+});
+
+const cloneAuthState = (state: AuthStateSnapshot): AuthStateSnapshot => ({
+  ...state,
+  local: cloneAuthSourceState(state.local),
+  cookieCloud: cloneAuthSourceState(state.cookieCloud),
+});
 
 const clientIdStorageKey = 'danmakus_client_id';
 
@@ -136,9 +170,7 @@ class DanmakuService {
   private static instance: DanmakuService;
   private client: DanmakuClient | null = null;
   private localClientId: string;
-  private lastNavCookieCheckAt = 0;
   private lastInitializationSignature: string | null = null;
-  private readonly navCookieCheckIntervalMs = 5 * 60_000;
 
   public state = reactive({
     userInfo: null as UserInfo | null,
@@ -155,6 +187,7 @@ class DanmakuService {
     lastError: null as string | null,
     lastRoomAssigned: null as number | null,
     cookieValid: false,
+    authState: createEmptyAuthState() as AuthStateSnapshot,
     lockedByOther: false,
     ownerClientId: null as string | null,
     lastHeartbeat: null as number | null,
@@ -215,7 +248,6 @@ class DanmakuService {
       clientId: this.localClientId,
       fetchImpl,
       cookieProvider: () => biliCookie.getBiliCookie(),
-      liveWsConfigProvider: getLiveWsRoomConfigAsync,
       cookieCloudKey: localConfig?.cookieCloudKey?.trim() || undefined,
       cookieCloudPassword: localConfig?.cookieCloudPassword?.trim() || undefined,
       cookieCloudHost: localConfig?.cookieCloudHost?.trim() || undefined,
@@ -256,6 +288,39 @@ class DanmakuService {
     this.applyStatusSnapshot();
     const snapshot = await this.client.refreshRuntimeControlState();
     this.applyControlStateSnapshot(snapshot);
+  }
+
+  public async refreshAuthState(options?: { force?: boolean }): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    await this.client.refreshAuthState(options);
+    this.applyStatusSnapshot();
+  }
+
+  public async syncCookieCloud(): Promise<void> {
+    if (!this.client) {
+      throw new Error('DanmakuClient 尚未初始化');
+    }
+
+    await this.client.syncCookieCloud();
+    this.applyStatusSnapshot();
+  }
+
+  public applyLocalConfig(localConfig: Pick<LocalAppConfigDto, 'cookieCloudKey' | 'cookieCloudPassword' | 'cookieCloudHost' | 'cookieRefreshInterval' | 'capacityOverride'>): void {
+    if (!this.client) {
+      return;
+    }
+
+    this.client.updateLocalRuntimeConfig({
+      cookieCloudKey: localConfig.cookieCloudKey,
+      cookieCloudPassword: localConfig.cookieCloudPassword,
+      cookieCloudHost: localConfig.cookieCloudHost,
+      cookieRefreshInterval: localConfig.cookieRefreshInterval,
+      capacityOverride: localConfig.capacityOverride ?? undefined,
+    });
+    this.applyStatusSnapshot();
   }
 
   public async refreshRecordingState(): Promise<void> {
@@ -327,7 +392,6 @@ class DanmakuService {
     if (!this.client) {
       throw new Error('DanmakuClient 尚未初始化');
     }
-    await this.assertBiliLoginReady();
 
     await this.client.start();
     this.applyStatusSnapshot();
@@ -397,6 +461,7 @@ class DanmakuService {
     this.state.userInfo = null;
     this.state.remoteClients = [];
     this.state.recordings = [];
+    this.state.authState = createEmptyAuthState();
     this.state.syncTags.configTag = null;
     this.state.syncTags.clientsTag = null;
     this.state.syncTags.recordingTag = null;
@@ -421,6 +486,11 @@ class DanmakuService {
 
     this.client.on('controlStateChanged', (snapshot) => {
       this.applyControlStateSnapshot(snapshot);
+    });
+
+    this.client.on('authStateChanged', (authState) => {
+      this.state.authState = cloneAuthState(authState);
+      this.state.cookieValid = authState.hasUsableCookie;
     });
 
     this.client.on('disconnected', () => {
@@ -493,7 +563,6 @@ class DanmakuService {
       this.state.messageCmdCountMap = {};
       this.state.lastRoomAssigned = null;
       this.state.lastError = null;
-      void this.refreshCookieValidityFromNav(false);
     }
   }
 
@@ -508,6 +577,7 @@ class DanmakuService {
     this.state.connectedRooms = [...status.connectedRooms];
     this.state.connectionInfo = status.connectionInfo.map(normalizeConnectionInfo);
     this.state.cookieValid = status.cookieValid;
+    this.state.authState = cloneAuthState(status.authState);
     this.state.holdingRooms = [...status.holdingRooms];
     this.state.messageCount = status.messageCount;
     this.state.pendingMessageCount = status.pendingMessageCount;
@@ -525,36 +595,6 @@ class DanmakuService {
       Token: token,
       ClientId: this.localClientId,
     };
-  }
-
-  private async assertBiliLoginReady(): Promise<void> {
-    const cookie = biliCookie.getBiliCookie().trim();
-    if (!cookie) {
-      this.state.cookieValid = false;
-      throw new Error('未提供 Bilibili Cookie，无法连接弹幕客户端，请先完成 Bilibili 登录');
-    }
-
-    const profile = await getNavProfileAsync({ force: true });
-    this.state.cookieValid = profile !== null;
-    if (!profile) {
-      throw new Error('Bilibili Cookie 无效或已过期，无法获取直播鉴权 Token，请重新登录');
-    }
-  }
-
-  private async refreshCookieValidityFromNav(force: boolean): Promise<void> {
-    const now = Date.now();
-    if (!force && now - this.lastNavCookieCheckAt < this.navCookieCheckIntervalMs) {
-      return;
-    }
-
-    this.lastNavCookieCheckAt = now;
-    try {
-      const profile = await getNavProfileAsync({ force });
-      this.state.cookieValid = profile !== null;
-    } catch (error) {
-      console.error(error);
-      this.state.cookieValid = false;
-    }
   }
 }
 
