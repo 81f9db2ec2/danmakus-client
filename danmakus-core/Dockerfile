@@ -1,51 +1,30 @@
-# 使用Bun官方镜像
-FROM oven/bun:1.0-alpine AS builder
+FROM oven/bun:1 AS base
 
-# 设置工作目录
 WORKDIR /app
 
-# 复制依赖文件
+FROM base AS install
+
 COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
-# 安装依赖
-RUN bun install
+FROM base AS build
 
-# 复制源代码
+COPY --from=install /app/node_modules ./node_modules
 COPY . .
+RUN bun build --compile --minify --target=bun-linux-x64-musl ./src/cli/index.ts --outfile ./dist/danmakus
 
-# 构建项目
-RUN bun run build
+FROM alpine:3.20 AS release
 
-# 运行阶段
-FROM oven/bun:1.0-alpine
-
-# 设置环境变量
 ENV NODE_ENV=production
-
-# 设置工作目录
 WORKDIR /app
 
-# 复制依赖文件
-COPY package.json bun.lock ./
+RUN apk add --no-cache libstdc++ libgcc \
+    && addgroup -S danmakus \
+    && adduser -S danmakus -G danmakus
 
-# 安装生产依赖
-RUN bun install --production
+COPY --from=build /app/dist/danmakus ./danmakus
 
-# 复制构建产物
-COPY --from=builder /app/dist ./dist
-
-# 创建非root用户
-RUN addgroup -g 1001 -S danmakus && \
-    adduser -S danmakus -u 1001
-
-# 切换到非root用户
 USER danmakus
 
-# 暴露端口（如果需要）
-# EXPOSE 3000
-
-# 设置启动命令
-ENTRYPOINT ["bun", "dist/cli/index.js"]
-
-# 默认参数（可以被覆盖）
+ENTRYPOINT ["./danmakus"]
 CMD ["--help"]

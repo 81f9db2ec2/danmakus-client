@@ -1,7 +1,7 @@
 {
   "name": "danmakus-core",
   "version": "1.0.0",
-  "description": "轻量弹幕采集库，支持CLI和库引用两种使用方式",
+  "description": "Danmakus的弹幕客户端核心",
   "main": "dist/lib/index.js",
   "types": "dist/lib/index.d.ts",
   "bin": {
@@ -12,6 +12,9 @@
     "clean": "bun -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
     "compile": "tsc",
     "dev": "bun run src/cli/index.ts",
+    "docker:build": "docker build -t danmakus-core:local .",
+    "docker:run": "docker run --rm danmakus-core:local --help",
+    "docker:test": "bun run scripts/docker-smoke-test.ts",
     "start": "bun dist/cli/index.js",
     "test": "bun test"
   },

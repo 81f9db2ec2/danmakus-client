@@ -283,7 +283,6 @@ export class DanmakuClient extends EventEmitter {
     if (config.accountToken) {
       this.accountClient = new AccountApiClient(
         config.accountToken,
-        config.accountApiBase,
         config.fetchImpl
       );
     }

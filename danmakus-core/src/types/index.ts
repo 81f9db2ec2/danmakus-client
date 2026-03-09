@@ -92,7 +92,6 @@ export interface DanmakuConfig {
   allowedAreas?: string[];
   allowedParentAreas?: string[];
   accountToken?: string;
-  accountApiBase?: string;
   clientId?: string;
   clientVersion?: string;
   logLevel?: LogLevel;
@@ -279,10 +278,8 @@ export interface CliOptions {
   cookieKey?: string;
   cookiePassword?: string;
   cookieHost?: string;
-  runtimeUrl?: string;
   statusCheckInterval?: number;
   verbose?: boolean;
   token?: string;
-  accountApi?: string;
   logLevel?: LogLevel;
 }

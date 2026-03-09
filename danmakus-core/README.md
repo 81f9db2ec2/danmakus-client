@@ -5,14 +5,7 @@
 - 连接 Bilibili 直播间并解析消息
 - 通过 Runtime API 上行消息
 - 轮询主播状态并维护连接池
-- 与账号中心同步核心运行态
-
-## 当前行为说明
-
-- CLI 以账号中心配置为主（需要 `Token`）。
-- 主播列表、连接参数默认从 `/api/v2/account/core-config` 拉取。
-- Cookie 策略固定为 `BiliLocal > CookieCloud`（本地扫码 Cookie 优先）。
-- Runtime 默认地址：`https://ukamnads.icu/api/v2/core-runtime`，可通过参数覆盖。
+- 与账号中心同步
 
 ## CLI 使用
 
@@ -32,9 +25,6 @@ danmakus --token "your-account-token"
 
 # 使用 CookieCloud
 danmakus --token "your-account-token" -k "cookie-key" -p "cookie-password"
-
-# 本地联调：覆盖 Runtime API 地址
-danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runtime"
 ```
 
 ### CLI 参数
@@ -43,12 +33,9 @@ danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runt
 | --- | --- | --- | --- |
 | `--max-connections <number>` | `-m` | 最大连接数，范围 `1-100` | `15` |
 | `--token <token>` | `-t` | 账号 Token（必填） | - |
-| `--account-api <url>` | - | 账号 API 地址 | `https://ukamnads.icu/api/v2/account` |
-| `--runtime-url <url>` | `-s` | Runtime API 地址 | `https://ukamnads.icu/api/v2/core-runtime` |
 | `--cookie-key <key>` | `-k` | CookieCloud Key | - |
 | `--cookie-password <password>` | `-p` | CookieCloud Password | - |
-| `--cookie-host <host>` | - | CookieCloud 服务地址 | `http://localhost:8088` |
-| `--status-check-interval <seconds>` | - | 主播状态检查间隔（秒） | `30` |
+| `--cookie-host <host>` | - | CookieCloud 服务地址 | `https://cookie.danmakus.com` |
 | `--log-level <level>` | - | 日志级别：`debug/info/warn/error/silent` | `info` |
 | `--verbose` | `-v` | 详细日志 | `false` |
 
@@ -57,8 +44,9 @@ danmakus --token "your-account-token" -s "http://localhost:5000/api/v2/core-runt
 | 变量 | 说明 |
 | --- | --- |
 | `DANMAKUS_TOKEN` | 等价于 `--token` |
-| `DANMAKUS_ACCOUNT_API` | 等价于 `--account-api` 默认值 |
-| `DANMAKUS_RUNTIME_URL` | 等价于 `--runtime-url` 默认值 |
+| `DANMAKUS_COOKIECLOUD_HOST` | 等价于 `--cookie-host` |
+| `DANMAKUS_COOKIECLOUD_KEY` | 等价于 `--cookie-key` |
+| `DANMAKUS_COOKIECLOUD_PASSWORD` | 等价于 `--cookie-password` |
 
 ## 作为库使用
 
@@ -67,9 +55,7 @@ import { DanmakuClient } from 'danmakus-core';
 
 const client = new DanmakuClient({
   maxConnections: 15,
-  runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
   accountToken: process.env.DANMAKUS_TOKEN,
-  accountApiBase: 'https://ukamnads.icu/api/v2/account',
   streamers: [
     { roomId: 123456, priority: 'high', name: '主播A' }
   ]
@@ -99,9 +85,7 @@ interface StreamerConfig {
 interface DanmakuConfig {
   maxConnections: number;
   streamers: StreamerConfig[];
-  runtimeUrl: string;
   accountToken?: string;
-  accountApiBase?: string;
   cookieProvider?: () => string | null | undefined;
   cookieCloudKey?: string;
   cookieCloudPassword?: string;
@@ -121,11 +105,82 @@ interface DanmakuConfig {
 
 ```bash
 # 运行 CLI
-bun run dev -- --token "your-account-token"
+bun run dev --token "your-account-token"
 
 # 构建
 bun run build
 
 # 类型检查
 bun run compile
+```
+
+## Docker 部署
+
+### 使用预构建镜像（推荐）
+
+```bash
+# 最小启动
+docker run -d --name danmakus \
+  -e DANMAKUS_TOKEN="your-account-token" \
+  ghcr.io/81f9db2ec2/danmakus-core
+
+# 使用 CookieCloud
+docker run -d --name danmakus \
+  -e DANMAKUS_TOKEN="your-account-token" \
+  -e DANMAKUS_COOKIECLOUD_KEY="cookie-key" \
+  -e DANMAKUS_COOKIECLOUD_PASSWORD="cookie-password" \
+  -e DANMAKUS_COOKIECLOUD_HOST="https://cookie.example.com" \
+  ghcr.io/81f9db2ec2/danmakus-core
+```
+
+### 自行构建
+
+```bash
+cd danmakus-core
+docker build -t danmakus-core .
+docker run -d --name danmakus -e DANMAKUS_TOKEN="your-token" danmakus-core
+```
+
+### Docker Compose
+
+```yaml
+# docker-compose.yml
+services:
+  danmakus:
+    image: ghcr.io/81f9db2ec2/danmakus-core
+    container_name: danmakus
+    restart: unless-stopped
+    environment:
+      - DANMAKUS_TOKEN=your-account-token
+      # DANMAKUS_COOKIECLOUD_KEY=cookie-key
+      # DANMAKUS_COOKIECLOUD_PASSWORD=cookie-password
+```
+
+```bash
+docker compose up -d
+```
+
+## PM2 部署
+
+```bash
+cd danmakus-core
+bun install
+
+# 启动
+export DANMAKUS_TOKEN="your-account-token"
+pm2 start src/cli/index.ts --name danmakus --interpreter bun
+
+# 带参数启动
+pm2 start src/cli/index.ts --name danmakus --interpreter bun -- -t "your-token" -m 20
+```
+
+### 常用 PM2 命令
+
+```bash
+pm2 logs danmakus     # 查看日志
+pm2 restart danmakus  # 重启
+pm2 stop danmakus     # 停止
+pm2 delete danmakus   # 删除
+pm2 save              # 保存进程列表
+pm2 startup           # 设置开机自启
 ```

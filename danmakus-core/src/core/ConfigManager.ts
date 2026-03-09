@@ -1,5 +1,8 @@
 import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types';
 
+const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
+const DEFAULT_RUNTIME_URL = 'https://ukamnads.icu/api/v2/core-runtime';
+
 export class ConfigManager {
   private config: DanmakuConfig;
 
@@ -12,7 +15,7 @@ export class ConfigManager {
   }
 
   private normalizeCookieHost(value?: string | null): string {
-    const fallback = this.config?.cookieCloudHost || 'https://cookie.danmakus.com';
+    const fallback = this.config?.cookieCloudHost || DEFAULT_COOKIE_CLOUD_HOST;
     if (typeof value !== 'string') {
       return fallback;
     }
@@ -40,10 +43,11 @@ export class ConfigManager {
   }
 
   constructor(options: Partial<DanmakuConfig> = {}) {
+    const { runtimeUrl: _ignoredRuntimeUrl, ...safeOptions } = options;
+
     this.config = {
       maxConnections: 15,
-      cookieCloudHost: 'https://cookie.danmakus.com',
-      runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
+      cookieCloudHost: DEFAULT_COOKIE_CLOUD_HOST,
       runtimeHeaders: options.runtimeHeaders,
       cookieRefreshInterval: 3600, // 1小时
       autoReconnect: true,
@@ -63,7 +67,8 @@ export class ConfigManager {
       lockAcquireRetryDelay: 1200,
       lockAcquireForceTakeover: false,
       errorHistoryLimit: 50,
-      ...options,
+      ...safeOptions,
+      runtimeUrl: DEFAULT_RUNTIME_URL,
       // 录制主播来源统一由 account.Recording（服务端分配）管理
       streamers: []
     };
@@ -103,16 +108,8 @@ export class ConfigManager {
       this.config.statusCheckInterval = Math.max(10, options.statusCheckInterval);
     }
 
-    if (options.runtimeUrl) {
-      this.config.runtimeUrl = options.runtimeUrl;
-    }
-
     if (options.token) {
       this.config.accountToken = options.token;
-    }
-
-    if (options.accountApi) {
-      this.config.accountApiBase = options.accountApi;
     }
 
     if (options.logLevel) {
@@ -126,10 +123,7 @@ export class ConfigManager {
     this.config = {
       ...this.config,
       maxConnections: remote.maxConnections,
-      // 如果本地配置了 localhost 开发环境，则忽略远程的 Runtime URL 配置
-      runtimeUrl: (this.config.runtimeUrl.includes('localhost') || this.config.runtimeUrl.includes('127.0.0.1'))
-        ? this.config.runtimeUrl
-        : (remote.runtimeUrl || this.config.runtimeUrl),
+      runtimeUrl: DEFAULT_RUNTIME_URL,
       autoReconnect: remote.autoReconnect,
       reconnectInterval: remote.reconnectInterval,
       statusCheckInterval: remote.statusCheckInterval,
@@ -171,9 +165,12 @@ export class ConfigManager {
    * 更新配置
    */
   updateConfig(updates: Partial<DanmakuConfig>): void {
+    const { runtimeUrl: _ignoredRuntimeUrl, ...safeUpdates } = updates;
+
     this.config = {
       ...this.config,
-      ...updates,
+      ...safeUpdates,
+      runtimeUrl: DEFAULT_RUNTIME_URL,
       // 外部更新时也不允许写入本地主播列表
       streamers: []
     };

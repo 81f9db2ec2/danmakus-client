@@ -8,19 +8,6 @@ export function attachCliEventListeners(
   _options: CliOptions,
   logger: CliLogger = console
 ): void {
-  client.on('SEND_GIFT', (message) => {
-    try {
-      const data = message.data;
-      const username = data.uname || '未知用户';
-      const giftName = data.giftName || '未知礼物';
-      const num = data.num || 1;
-
-      logger.log(`[礼物][房间${message.roomId}] ${username} 送出 ${num}个 ${giftName}`);
-    } catch {
-      logger.log(`[礼物][房间${message.roomId}] 解析失败: ${message.raw}`);
-    }
-  });
-
   client.on('connected', (roomId) => {
     logger.log(`✓ 房间 ${roomId} 连接成功`);
   });

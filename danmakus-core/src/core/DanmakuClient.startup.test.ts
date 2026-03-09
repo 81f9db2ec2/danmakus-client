@@ -3,7 +3,7 @@ import { DanmakuClient } from './DanmakuClient';
 
 const remoteConfig = {
   maxConnections: 5,
-  runtimeUrl: 'https://example.com/api/v2/core-runtime',
+  runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
   autoReconnect: true,
   reconnectInterval: 5000,
   statusCheckInterval: 30,
@@ -146,14 +146,14 @@ describe('DanmakuClient startup', () => {
       const url = String(input);
       requests.push(`${init?.method ?? 'GET'} ${url}`);
 
-      if (url === 'https://example.com/api/v2/account/core-config') {
+      if (url === 'https://ukamnads.icu/api/v2/account/core-config') {
         return new Response(JSON.stringify({ code: 200, data: remoteConfig }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      if (url === 'https://example.com/api/v2/account/info') {
+      if (url === 'https://ukamnads.icu/api/v2/account/info') {
         return new Response(JSON.stringify({
           code: 200,
           data: {
@@ -168,21 +168,21 @@ describe('DanmakuClient startup', () => {
         });
       }
 
-      if (url === 'https://example.com/api/v2/account/recording') {
+      if (url === 'https://ukamnads.icu/api/v2/account/recording') {
         return new Response(JSON.stringify({ code: 200, data: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      if (url === 'https://example.com/api/v2/core-runtime/sync') {
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/sync') {
         return new Response(JSON.stringify({ code: 200, data: {} }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      if (url === 'https://example.com/api/v2/core-runtime/state?clientId=client-id') {
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id') {
         return new Response(JSON.stringify({ code: 200, data: null }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -195,7 +195,6 @@ describe('DanmakuClient startup', () => {
     const client = new DanmakuClient({
       clientId: 'client-id',
       accountToken: 'token',
-      accountApiBase: 'https://example.com/api/v2/account',
       runtimeUrl: 'https://example.com/api/v2/core-runtime',
       fetchImpl,
       maxConnections: 5,
@@ -204,11 +203,91 @@ describe('DanmakuClient startup', () => {
 
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
     expect(requests).toEqual([
-      'GET https://example.com/api/v2/account/core-config',
-      'GET https://example.com/api/v2/account/info',
-      'GET https://example.com/api/v2/account/recording',
-      'POST https://example.com/api/v2/core-runtime/sync',
-      'DELETE https://example.com/api/v2/core-runtime/state?clientId=client-id'
+      'GET https://ukamnads.icu/api/v2/account/core-config',
+      'GET https://ukamnads.icu/api/v2/account/info',
+      'GET https://ukamnads.icu/api/v2/account/recording',
+      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id'
+    ]);
+  });
+
+  test('falls back to api.danmakus.com for account and runtime api calls when ukamnads is unavailable', async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(`${init?.method ?? 'GET'} ${url}`);
+
+      if (url.startsWith('https://ukamnads.icu/api/')) {
+        return new Response('bad gateway', { status: 502 });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/account/core-config') {
+        return new Response(JSON.stringify({ code: 200, data: remoteConfig }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/account/info') {
+        return new Response(JSON.stringify({
+          code: 200,
+          data: {
+            id: 1,
+            name: '测试用户',
+            bindedOAuth: [],
+            recievedDanmakusCount: 0,
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/account/recording') {
+        return new Response(JSON.stringify({ code: 200, data: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/core-runtime/sync') {
+        return new Response(JSON.stringify({ code: 200, data: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id') {
+        return new Response(JSON.stringify({ code: 200, data: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+    };
+
+    const client = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      fetchImpl,
+      maxConnections: 5,
+      streamers: []
+    });
+
+    await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
+    expect(requests).toEqual([
+      'GET https://ukamnads.icu/api/v2/account/core-config',
+      'GET https://api.danmakus.com/api/v2/account/core-config',
+      'GET https://ukamnads.icu/api/v2/account/info',
+      'GET https://api.danmakus.com/api/v2/account/info',
+      'GET https://ukamnads.icu/api/v2/account/recording',
+      'GET https://api.danmakus.com/api/v2/account/recording',
+      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
+      'POST https://api.danmakus.com/api/v2/core-runtime/sync',
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id',
+      'DELETE https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id'
     ]);
   });
 

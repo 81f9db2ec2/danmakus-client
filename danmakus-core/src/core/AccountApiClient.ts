@@ -23,6 +23,7 @@ const CLIENTS_TAG_HEADER = 'X-Core-Clients-Tag';
 const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
 const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
 const HEARTBEAT_FEATURES = 'clients,recording';
+const DEFAULT_ACCOUNT_API_BASE = 'https://ukamnads.icu/api/v2/account';
 
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -32,11 +33,10 @@ export class AccountApiClient {
 
   constructor(
     private token: string,
-    private baseUrl: string = 'https://ukamnads.icu/api/v2/account',
     fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
   ) {
     this.fetchImpl = fetchImpl ?? fetch;
-    this.accountBaseUrl = this.normalizeBaseUrl(this.baseUrl);
+    this.accountBaseUrl = this.normalizeBaseUrl(DEFAULT_ACCOUNT_API_BASE);
     this.coreRuntimeBaseUrl = this.resolveCoreRuntimeBaseUrl(this.accountBaseUrl);
   }
 

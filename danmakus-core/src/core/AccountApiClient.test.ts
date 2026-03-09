@@ -5,7 +5,6 @@ describe('AccountApiClient', () => {
   test('heartbeatRuntimeState should read config and assignment tags from headers', async () => {
     const client = new AccountApiClient(
       'token',
-      'https://example.com/api/v2/account',
       async () => new Response(null, {
         status: 204,
         headers: {
@@ -29,11 +28,10 @@ describe('AccountApiClient', () => {
     const requests: string[] = [];
     const client = new AccountApiClient(
       'token',
-      'https://example.com/api/v2/account',
       async (input) => {
         const url = String(input);
         requests.push(url);
-        if (url.startsWith('https://example.com/')) {
+        if (url.startsWith('https://ukamnads.icu/')) {
           return new Response('bad gateway', { status: 502 });
         }
 
@@ -57,7 +55,7 @@ describe('AccountApiClient', () => {
     const result = await client.getCoreConfig();
 
     expect(requests).toEqual([
-      'https://example.com/api/v2/account/core-config',
+      'https://ukamnads.icu/api/v2/account/core-config',
       'https://api.danmakus.com/api/v2/account/core-config'
     ]);
     expect(result.runtimeUrl).toBe('https://api.danmakus.com/api/v2/core-runtime');
