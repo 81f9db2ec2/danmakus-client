@@ -7,7 +7,7 @@ import type {
 } from 'danmakus-core';
 import { reactive } from 'vue';
 import { biliCookie, getLiveWsRoomConfigAsync, getNavProfileAsync } from './bilibili';
-import { ACCOUNT_API_BASE, RUNTIME_URL } from './env';
+import { RUNTIME_URL } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
 import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
@@ -224,7 +224,6 @@ class DanmakuService {
       runtimeHeaders: this.buildRuntimeHeaders(),
       accountToken: token,
       clientVersion: 'desktop',
-      accountApiBase: ACCOUNT_API_BASE,
       runtimeUrl: RUNTIME_URL,
     });
     this.lastInitializationSignature = signature;
