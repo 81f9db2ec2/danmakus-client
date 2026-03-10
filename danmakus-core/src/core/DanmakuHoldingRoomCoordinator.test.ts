@@ -8,9 +8,13 @@ function createCoordinatorContext(options?: {
   holdingRooms?: number[];
   recordingRooms?: number[];
   connectedRooms?: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }>;
+  runtimeConnected?: boolean;
 }) {
   const disconnectedRooms: number[] = [];
   const queuedConnects: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }> = [];
+  let syncCallCount = 0;
+  let updateConnectionsCallCount = 0;
+  let refreshStatusNowCallCount = 0;
   const connectionMap = new Map(
     (options?.connectedRooms ?? []).map((item) => [
       item.roomId,
@@ -51,7 +55,7 @@ function createCoordinatorContext(options?: {
     isStopping: () => false,
     getConfig: () => config,
     getRuntimeConnection: () => ({
-      getConnectionState: () => true,
+      getConnectionState: () => options?.runtimeConnected ?? true,
       requestRooms: async () => null,
     }),
     getStatusManager: () => statusManager,
@@ -68,9 +72,15 @@ function createCoordinatorContext(options?: {
     connectToRoom: async (roomId: number, priority: "high" | "normal" | "low" | "server") => {
       queuedConnects.push({ roomId, priority });
     },
-    updateConnections: () => undefined,
-    syncRuntimeState: () => undefined,
-    refreshStatusNow: () => undefined,
+    updateConnections: () => {
+      updateConnectionsCallCount += 1;
+    },
+    syncRuntimeState: () => {
+      syncCallCount += 1;
+    },
+    refreshStatusNow: () => {
+      refreshStatusNowCallCount += 1;
+    },
     updateHoldingRooms: (roomIds: number[]) => {
       holdingRooms = [...roomIds];
       statusManager.updateHoldingRooms(roomIds);
@@ -113,6 +123,9 @@ function createCoordinatorContext(options?: {
     disconnectedRooms,
     queuedConnects,
     connectionMap,
+    getSyncCallCount: () => syncCallCount,
+    getUpdateConnectionsCallCount: () => updateConnectionsCallCount,
+    getRefreshStatusNowCallCount: () => refreshStatusNowCallCount,
   };
 }
 
@@ -241,5 +254,48 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       capacityOverride: undefined,
     });
     expect(holdingRooms).toEqual([201]);
+  });
+
+  it("does not fan out refreshes or sync when holding room result is unchanged", () => {
+    const {
+      coordinator,
+      getSyncCallCount,
+      getUpdateConnectionsCallCount,
+      getRefreshStatusNowCallCount,
+    } = createCoordinatorContext({
+      holdingRooms: [301],
+      connectedRooms: [{ roomId: 301, priority: "server" }],
+    });
+
+    coordinator.applyHoldingRoomResult({
+      holdingRooms: [301],
+      newlyAssignedRooms: [],
+      droppedRooms: [],
+      effectiveCapacity: 5,
+      nextRequestAfter: 0,
+    });
+
+    expect(getRefreshStatusNowCallCount()).toBe(0);
+    expect(getUpdateConnectionsCallCount()).toBe(0);
+    expect(getSyncCallCount()).toBe(0);
+  });
+
+  it("does not sync runtime state on a no-op connections update", () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number) => 1 as ReturnType<typeof setTimeout>) as typeof setTimeout;
+
+    try {
+      const { coordinator, getSyncCallCount } = createCoordinatorContext({
+        holdingRooms: [301],
+        connectedRooms: [{ roomId: 301, priority: "server" }],
+        runtimeConnected: false,
+      });
+
+      coordinator.applyConnectionsUpdate();
+
+      expect(getSyncCallCount()).toBe(0);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
   });
 });

@@ -7,7 +7,7 @@ const MESSAGE_RETRY_MIN_DELAY = 200;
 const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
 const MESSAGE_BATCH_MIN_SIZE = 1;
 const MESSAGE_BATCH_MAX_SIZE = 500;
-const MESSAGE_UPLOAD_INTERVAL_MS = 1000;
+const MESSAGE_UPLOAD_INTERVAL_MS = 2000;
 const QUEUE_OVERFLOW_LOG_INTERVAL_MS = 10_000;
 const MESSAGE_DEDUP_WINDOW_MS = 2_000;
 const MESSAGE_DEDUP_CACHE_LIMIT = 4_000;
@@ -41,6 +41,7 @@ export class DanmakuMessageQueue {
   private pendingMessages: QueuedMessage[] = [];
   private messageDispatchTimer?: ReturnType<typeof setTimeout>;
   private messageDispatching = false;
+  private pendingDispatchDelayMs?: number;
   private messageQueueMaxSize = 2000;
   private queueOverflowLastLogAt = 0;
   private queueOverflowSuppressedCount = 0;
@@ -153,10 +154,18 @@ export class DanmakuMessageQueue {
         clearTimeout(this.messageDispatchTimer);
         this.messageDispatchTimer = undefined;
       }
+      this.pendingDispatchDelayMs = undefined;
       return;
     }
 
     const delay = Math.max(0, Math.floor(delayMs));
+    if (this.messageDispatching) {
+      this.pendingDispatchDelayMs = typeof this.pendingDispatchDelayMs === 'number'
+        ? Math.min(this.pendingDispatchDelayMs, delay)
+        : delay;
+      return;
+    }
+
     if (this.messageDispatchTimer) {
       if (delay > 0) {
         return;
@@ -177,6 +186,7 @@ export class DanmakuMessageQueue {
       this.messageDispatchTimer = undefined;
     }
     this.messageDispatching = false;
+    this.pendingDispatchDelayMs = undefined;
   }
 
   async flushPendingMessages(): Promise<void> {
@@ -256,7 +266,11 @@ export class DanmakuMessageQueue {
     } finally {
       this.messageDispatching = false;
       if (this.pendingMessages.length > 0 && !this.messageDispatchTimer && this.context.isRunning() && !this.context.isStopping()) {
-        this.scheduleMessageDispatch(this.messageUploadInterval);
+        const nextDelay = this.pendingDispatchDelayMs ?? this.messageUploadInterval;
+        this.pendingDispatchDelayMs = undefined;
+        this.scheduleMessageDispatch(nextDelay);
+      } else {
+        this.pendingDispatchDelayMs = undefined;
       }
     }
   }
