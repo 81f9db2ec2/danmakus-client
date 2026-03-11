@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { AuthStateSnapshot, RuntimeRoomPullShortfallDto } from 'danmakus-core';
+import { useTimeAgoIntl } from '@vueuse/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   AlertCircle,
@@ -13,7 +14,8 @@ import {
   RefreshCw,
   Server,
   StopCircle,
-  TvMinimal
+  TvMinimal,
+  X
 } from 'lucide-vue-next';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -84,6 +86,8 @@ type RuntimeStateSnapshot = {
   lastRoomAssigned: number | null;
   authState: AuthStateSnapshot;
 };
+
+const RUNTIME_ERROR_AUTO_DISMISS_MS = 5 * 60 * 1000;
 
 
 const normalizeRoomId = (value: unknown): number | null => {
@@ -339,7 +343,35 @@ const cookieBadgeClass = computed(() =>
 
 const selectedRoomId = ref<number | null>(null);
 const nowTimestamp = ref(Date.now());
+const retainedRuntimeError = ref<string | null>(null);
+const retainedRuntimeErrorStartedAt = ref<number | null>(null);
+const dismissedRuntimeError = ref<string | null>(null);
 let nowTimer: number | undefined;
+let runtimeErrorAutoDismissTimer: number | undefined;
+
+const visibleRuntimeError = computed(() => {
+  const error = retainedRuntimeError.value;
+  if (error === null || dismissedRuntimeError.value === error) {
+    return null;
+  }
+  return error;
+});
+
+const isRuntimeErrorRecovered = computed(() =>
+  visibleRuntimeError.value !== null && props.runtimeState.lastError === null
+);
+
+const runtimeErrorOccurredAgo = useTimeAgoIntl(
+  computed(() => retainedRuntimeErrorStartedAt.value ?? Date.now()),
+  {
+    locale: 'zh-CN',
+    relativeTimeFormatOptions: {
+      numeric: 'always',
+      style: 'long'
+    },
+    updateInterval: 1000
+  }
+);
 
 const selectedRoom = computed(() =>
   selectedRoomId.value === null
@@ -400,6 +432,70 @@ const closeRoomDetails = () => {
   selectedRoomId.value = null;
 };
 
+const clearRuntimeErrorAutoDismissTimer = () => {
+  if (runtimeErrorAutoDismissTimer !== undefined) {
+    clearTimeout(runtimeErrorAutoDismissTimer);
+    runtimeErrorAutoDismissTimer = undefined;
+  }
+};
+
+const dismissRuntimeError = () => {
+  const error = visibleRuntimeError.value;
+  if (error === null) {
+    return;
+  }
+  dismissedRuntimeError.value = error;
+  retainedRuntimeError.value = null;
+  retainedRuntimeErrorStartedAt.value = null;
+  clearRuntimeErrorAutoDismissTimer();
+};
+
+watch(
+  () => props.runtimeState.lastError,
+  (nextError, previousError) => {
+    clearRuntimeErrorAutoDismissTimer();
+
+    if (nextError) {
+      if (nextError !== previousError) {
+        dismissedRuntimeError.value = null;
+        retainedRuntimeErrorStartedAt.value = Date.now();
+      } else if (retainedRuntimeErrorStartedAt.value === null) {
+        retainedRuntimeErrorStartedAt.value = Date.now();
+      }
+
+      retainedRuntimeError.value = nextError;
+      return;
+    }
+
+    if (!previousError) {
+      retainedRuntimeError.value = null;
+      retainedRuntimeErrorStartedAt.value = null;
+      return;
+    }
+
+    if (dismissedRuntimeError.value === previousError) {
+      retainedRuntimeError.value = null;
+      retainedRuntimeErrorStartedAt.value = null;
+      return;
+    }
+
+    retainedRuntimeError.value = previousError;
+    if (retainedRuntimeErrorStartedAt.value === null) {
+      retainedRuntimeErrorStartedAt.value = Date.now();
+    }
+
+    const closingError = previousError;
+    runtimeErrorAutoDismissTimer = window.setTimeout(() => {
+      if (props.runtimeState.lastError !== null || retainedRuntimeError.value !== closingError) {
+        return;
+      }
+      retainedRuntimeError.value = null;
+      retainedRuntimeErrorStartedAt.value = null;
+    }, RUNTIME_ERROR_AUTO_DISMISS_MS);
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
   nowTimer = window.setInterval(() => {
     nowTimestamp.value = Date.now();
@@ -411,6 +507,7 @@ onBeforeUnmount(() => {
     clearInterval(nowTimer);
     nowTimer = undefined;
   }
+  clearRuntimeErrorAutoDismissTimer();
 });
 </script>
 
@@ -453,10 +550,30 @@ onBeforeUnmount(() => {
       </AlertDescription>
     </Alert>
 
-    <Alert v-if="runtimeState.lastError" variant="destructive">
+    <Alert v-if="visibleRuntimeError" variant="destructive" class="gap-3">
       <AlertCircle class="h-4 w-4" />
-      <AlertTitle>最近错误</AlertTitle>
-      <AlertDescription>{{ runtimeState.lastError }}</AlertDescription>
+      <div class="min-w-0 flex-1 space-y-1">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <AlertTitle>最近错误</AlertTitle>
+            <AlertDescription class="mt-1 break-all">{{ visibleRuntimeError }}</AlertDescription>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="-mr-1 h-7 w-7 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            title="关闭错误提示"
+            @click="dismissRuntimeError"
+          >
+            <X class="h-4 w-4" />
+            <span class="sr-only">关闭错误提示</span>
+          </Button>
+        </div>
+        <p class="text-xs text-destructive/80">
+          发生于 {{ runtimeErrorOccurredAgo }}
+          <span v-if="isRuntimeErrorRecovered">，错误已消失，5 分钟后自动关闭</span>
+        </p>
+      </div>
     </Alert>
 
     <!-- Status banner -->
