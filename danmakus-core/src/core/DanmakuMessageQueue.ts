@@ -126,8 +126,6 @@ export class DanmakuMessageQueue {
       data: undefined,
       raw: message.raw,
       timestamp: message.timestamp,
-      recorderEventType: message.recorderEventType,
-      recorderEventMessage: message.recorderEventMessage,
     };
 
     this.pendingMessages.push({

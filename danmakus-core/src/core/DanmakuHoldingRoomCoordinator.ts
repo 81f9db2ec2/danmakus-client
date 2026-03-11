@@ -1,4 +1,4 @@
-import { DanmakuConfig } from '../types';
+import { DanmakuConfig, RuntimeRoomPullShortfallDto } from '../types';
 import { RuntimeConnection } from './RuntimeConnection';
 import { ScopedLogger } from './Logger';
 import { StreamerStatusManager } from './StreamerStatusManager';
@@ -22,6 +22,7 @@ interface HoldingRoomResult {
   droppedRooms: number[];
   effectiveCapacity: number;
   nextRequestAfter?: number | null;
+  shortfall?: RuntimeRoomPullShortfallDto | null;
 }
 
 interface DanmakuHoldingRoomContext {
@@ -54,6 +55,9 @@ interface DanmakuHoldingRoomContext {
   getRoomConnectStartInterval(): number;
   getLastRoomAssigned(): number | undefined;
   setLastRoomAssigned(value: number | undefined): void;
+  getHoldingRoomShortfall(): RuntimeRoomPullShortfallDto | null;
+  setHoldingRoomShortfall(value: RuntimeRoomPullShortfallDto | null): void;
+  notifyStatusChanged(): void;
   logger: ScopedLogger;
 }
 
@@ -306,7 +310,15 @@ export class DanmakuHoldingRoomCoordinator {
 
   clearHoldingRooms(): void {
     const currentHoldingRoomIds = this.context.getHoldingRoomIds();
+    const previousShortfall = this.context.getHoldingRoomShortfall();
+    if (currentHoldingRoomIds.length === 0 && previousShortfall === null) {
+      return;
+    }
+
+    this.context.setHoldingRoomShortfall(null);
     if (currentHoldingRoomIds.length === 0) {
+      this.context.notifyStatusChanged();
+      this.context.syncRuntimeState();
       return;
     }
 
@@ -320,6 +332,7 @@ export class DanmakuHoldingRoomCoordinator {
     this.context.updateHoldingRooms([]);
     this.context.refreshStatusNow();
     this.context.updateConnections();
+    this.context.notifyStatusChanged();
     this.context.syncRuntimeState();
   }
 
@@ -359,6 +372,11 @@ export class DanmakuHoldingRoomCoordinator {
     const capacity = Math.max(0, Math.min(Math.floor(maxConnections), capacityOverride ?? Math.floor(maxConnections), 100));
     const desiredCount = Math.max(0, capacity - this.context.getHoldingRoomIds().length);
     if (desiredCount <= 0 && !options?.force) {
+      if (this.context.getHoldingRoomShortfall() !== null) {
+        this.context.setHoldingRoomShortfall(null);
+        this.context.notifyStatusChanged();
+        this.context.syncRuntimeState();
+      }
       return false;
     }
 
@@ -384,14 +402,18 @@ export class DanmakuHoldingRoomCoordinator {
   applyHoldingRoomResult(result: HoldingRoomResult): void {
     const previous = Array.from(new Set(this.context.getHoldingRoomIds().filter((roomId) => Number.isFinite(roomId) && roomId > 0)));
     const next = Array.from(new Set(result.holdingRooms.filter((roomId) => Number.isFinite(roomId) && roomId > 0)));
+    const previousShortfall = this.context.getHoldingRoomShortfall();
+    const nextShortfall = this.cloneHoldingRoomShortfall(result.shortfall);
     const removedRooms = previous.filter((roomId) => !next.includes(roomId));
     const addedRooms = next.filter((roomId) => !previous.includes(roomId));
     const holdingRoomsChanged = !this.areRoomIdsEqual(previous, next);
+    const shortfallChanged = !this.areHoldingRoomShortfallsEqual(previousShortfall, nextShortfall);
     const zombieConnectedRooms = Array.from(this.context.getConnections().keys())
       .filter((roomId) => Number.isFinite(roomId) && roomId > 0 && !next.includes(roomId));
     const roomsToDisconnect = Array.from(new Set([...removedRooms, ...zombieConnectedRooms]));
 
     this.context.setHoldingRoomIds(next);
+    this.context.setHoldingRoomShortfall(nextShortfall);
     this.context.setNextHoldingRoomRequestAt(
       typeof result.nextRequestAfter === 'number' && result.nextRequestAfter > 0
         ? result.nextRequestAfter
@@ -406,6 +428,10 @@ export class DanmakuHoldingRoomCoordinator {
     }
 
     if (!holdingRoomsChanged && roomsToDisconnect.length === 0) {
+      if (shortfallChanged) {
+        this.context.notifyStatusChanged();
+        this.context.syncRuntimeState();
+      }
       return;
     }
 
@@ -417,10 +443,41 @@ export class DanmakuHoldingRoomCoordinator {
     this.context.updateHoldingRooms(next);
     this.context.refreshStatusNow();
     this.context.updateConnections();
+    this.context.notifyStatusChanged();
+    if (holdingRoomsChanged || shortfallChanged) {
+      this.context.syncRuntimeState();
+    }
   }
 
   private isServerAssignmentRequestEnabled(config: DanmakuConfig = this.context.getConfig()): boolean {
     return Math.max(0, Math.floor(config.maxConnections)) > 0;
+  }
+
+  private cloneHoldingRoomShortfall(shortfall: RuntimeRoomPullShortfallDto | null | undefined): RuntimeRoomPullShortfallDto | null {
+    return shortfall
+      ? {
+          reason: shortfall.reason ?? null,
+          missingCount: shortfall.missingCount ?? null,
+          candidateCount: shortfall.candidateCount ?? null,
+          assignableCandidateCount: shortfall.assignableCandidateCount ?? null,
+          blockedBySameAccountCount: shortfall.blockedBySameAccountCount ?? null,
+          blockedByOtherAccountsCount: shortfall.blockedByOtherAccountsCount ?? null,
+        }
+      : null;
+  }
+
+  private areHoldingRoomShortfallsEqual(
+    left: RuntimeRoomPullShortfallDto | null | undefined,
+    right: RuntimeRoomPullShortfallDto | null | undefined
+  ): boolean {
+    const lhs = left ?? null;
+    const rhs = right ?? null;
+    return (lhs?.reason ?? null) === (rhs?.reason ?? null)
+      && (lhs?.missingCount ?? null) === (rhs?.missingCount ?? null)
+      && (lhs?.candidateCount ?? null) === (rhs?.candidateCount ?? null)
+      && (lhs?.assignableCandidateCount ?? null) === (rhs?.assignableCandidateCount ?? null)
+      && (lhs?.blockedBySameAccountCount ?? null) === (rhs?.blockedBySameAccountCount ?? null)
+      && (lhs?.blockedByOtherAccountsCount ?? null) === (rhs?.blockedByOtherAccountsCount ?? null);
   }
 
   private ensureStatusManager(): StreamerStatusManager {

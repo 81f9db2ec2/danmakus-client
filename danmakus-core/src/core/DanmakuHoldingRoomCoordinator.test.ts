@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { DanmakuConfig } from "../types";
+import type { DanmakuConfig, RuntimeRoomPullShortfallDto } from "../types";
 import { DanmakuHoldingRoomCoordinator } from "./DanmakuHoldingRoomCoordinator";
 import { StreamerStatusManager } from "./StreamerStatusManager";
 
 function createCoordinatorContext(options?: {
   requestServerRooms?: boolean;
   holdingRooms?: number[];
+  holdingRoomShortfall?: RuntimeRoomPullShortfallDto | null;
   recordingRooms?: number[];
   connectedRooms?: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }>;
   runtimeConnected?: boolean;
@@ -13,6 +14,7 @@ function createCoordinatorContext(options?: {
   const disconnectedRooms: number[] = [];
   const queuedConnects: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }> = [];
   let syncCallCount = 0;
+  let statusChangedCallCount = 0;
   let updateConnectionsCallCount = 0;
   let refreshStatusNowCallCount = 0;
   const connectionMap = new Map(
@@ -29,6 +31,7 @@ function createCoordinatorContext(options?: {
     ])
   );
   let holdingRooms = [...(options?.holdingRooms ?? [])];
+  let holdingRoomShortfall = options?.holdingRoomShortfall ? { ...options.holdingRoomShortfall } : null;
   let recordingRooms = [...(options?.recordingRooms ?? [])];
   let queuedRoomConnects: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }> = [];
   const queuedRoomIds = new Set<number>();
@@ -109,6 +112,13 @@ function createCoordinatorContext(options?: {
     getRoomConnectStartInterval: () => 10_000,
     getLastRoomAssigned: () => undefined,
     setLastRoomAssigned: () => undefined,
+    getHoldingRoomShortfall: () => (holdingRoomShortfall ? { ...holdingRoomShortfall } : null),
+    setHoldingRoomShortfall: (value: RuntimeRoomPullShortfallDto | null) => {
+      holdingRoomShortfall = value ? { ...value } : null;
+    },
+    notifyStatusChanged: () => {
+      statusChangedCallCount += 1;
+    },
     logger: {
       info: () => undefined,
       warn: () => undefined,
@@ -124,8 +134,10 @@ function createCoordinatorContext(options?: {
     queuedConnects,
     connectionMap,
     getSyncCallCount: () => syncCallCount,
+    getStatusChangedCallCount: () => statusChangedCallCount,
     getUpdateConnectionsCallCount: () => updateConnectionsCallCount,
     getRefreshStatusNowCallCount: () => refreshStatusNowCallCount,
+    getHoldingRoomShortfall: () => (holdingRoomShortfall ? { ...holdingRoomShortfall } : null),
   };
 }
 
@@ -174,6 +186,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
 
   it("still requests server assignments when supplemental assignments are disabled", async () => {
     let requestPayload: Record<string, unknown> | null = null;
+    let holdingRoomShortfall: RuntimeRoomPullShortfallDto | null = null;
     const statusManager: any = new StreamerStatusManager(30, "https://example.com/api/v2/core-runtime");
     statusManager.updateHoldingRooms([]);
     statusManager.updateRecordingRooms([201]);
@@ -234,6 +247,11 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       getRoomConnectStartInterval: () => 10_000,
       getLastRoomAssigned: () => undefined,
       setLastRoomAssigned: () => undefined,
+      getHoldingRoomShortfall: () => (holdingRoomShortfall ? { ...holdingRoomShortfall } : null),
+      setHoldingRoomShortfall: (value: RuntimeRoomPullShortfallDto | null) => {
+        holdingRoomShortfall = value ? { ...value } : null;
+      },
+      notifyStatusChanged: () => undefined,
       logger: {
         info: () => undefined,
         warn: () => undefined,
@@ -260,6 +278,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     const {
       coordinator,
       getSyncCallCount,
+      getStatusChangedCallCount,
       getUpdateConnectionsCallCount,
       getRefreshStatusNowCallCount,
     } = createCoordinatorContext({
@@ -278,6 +297,72 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     expect(getRefreshStatusNowCallCount()).toBe(0);
     expect(getUpdateConnectionsCallCount()).toBe(0);
     expect(getSyncCallCount()).toBe(0);
+    expect(getStatusChangedCallCount()).toBe(0);
+  });
+
+  it("syncs status when only shortfall changes", () => {
+    const {
+      coordinator,
+      getHoldingRoomShortfall,
+      getRefreshStatusNowCallCount,
+      getStatusChangedCallCount,
+      getSyncCallCount,
+      getUpdateConnectionsCallCount,
+    } = createCoordinatorContext({
+      holdingRooms: [301],
+      connectedRooms: [{ roomId: 301, priority: "server" }],
+    });
+
+    coordinator.applyHoldingRoomResult({
+      holdingRooms: [301],
+      newlyAssignedRooms: [],
+      droppedRooms: [],
+      effectiveCapacity: 5,
+      nextRequestAfter: 0,
+      shortfall: {
+        reason: "candidate_pool_exhausted",
+        missingCount: 1,
+        candidateCount: 4,
+        assignableCandidateCount: 4,
+        blockedBySameAccountCount: 0,
+        blockedByOtherAccountsCount: 0,
+      },
+    });
+
+    expect(getHoldingRoomShortfall()).toEqual({
+      reason: "candidate_pool_exhausted",
+      missingCount: 1,
+      candidateCount: 4,
+      assignableCandidateCount: 4,
+      blockedBySameAccountCount: 0,
+      blockedByOtherAccountsCount: 0,
+    });
+    expect(getRefreshStatusNowCallCount()).toBe(0);
+    expect(getUpdateConnectionsCallCount()).toBe(0);
+    expect(getStatusChangedCallCount()).toBe(1);
+    expect(getSyncCallCount()).toBe(1);
+  });
+
+  it("clears stale shortfall after capacity is filled", async () => {
+    const {
+      coordinator,
+      getHoldingRoomShortfall,
+      getStatusChangedCallCount,
+      getSyncCallCount,
+    } = createCoordinatorContext({
+      holdingRooms: [101, 102, 103, 104, 105],
+      holdingRoomShortfall: {
+        reason: "candidate_pool_exhausted",
+        missingCount: 1,
+      },
+    });
+
+    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "capacity-refresh");
+
+    expect(success).toBe(false);
+    expect(getHoldingRoomShortfall()).toBeNull();
+    expect(getStatusChangedCallCount()).toBe(1);
+    expect(getSyncCallCount()).toBe(1);
   });
 
   it("does not sync runtime state on a no-op connections update", () => {

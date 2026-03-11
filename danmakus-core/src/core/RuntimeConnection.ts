@@ -23,6 +23,14 @@ type RequestRoomResponse = {
   droppedRooms: number[];
   effectiveCapacity: number;
   nextRequestAfter?: number | null;
+  shortfall?: {
+    reason?: string | null;
+    missingCount?: number | null;
+    candidateCount?: number | null;
+    assignableCandidateCount?: number | null;
+    blockedBySameAccountCount?: number | null;
+    blockedByOtherAccountsCount?: number | null;
+  } | null;
 };
 
 type UploadDanmakusResponse = {
@@ -111,10 +119,8 @@ export class RuntimeConnection {
 
     const payload: ClientDanmakuMessage[] = messages.map((msg) => ({
       roomId: msg.roomId,
-      raw: msg.recorderEventType ? undefined : this.resolveRawPayload(msg),
+      raw: this.resolveRawPayload(msg),
       timestamp: msg.timestamp,
-      eventType: msg.recorderEventType,
-      eventMessage: msg.recorderEventMessage
     }));
 
     try {
@@ -160,6 +166,16 @@ export class RuntimeConnection {
         droppedRooms: this.normalizeRoomIds(result?.droppedRooms),
         effectiveCapacity: this.normalizeCapacity(result?.effectiveCapacity),
         nextRequestAfter: this.normalizeUnixTime(result?.nextRequestAfter),
+        shortfall: result?.shortfall
+          ? {
+              reason: typeof result.shortfall.reason === 'string' ? result.shortfall.reason : null,
+              missingCount: this.normalizeNonNegativeInt(result.shortfall.missingCount),
+              candidateCount: this.normalizeNonNegativeInt(result.shortfall.candidateCount),
+              assignableCandidateCount: this.normalizeNonNegativeInt(result.shortfall.assignableCandidateCount),
+              blockedBySameAccountCount: this.normalizeNonNegativeInt(result.shortfall.blockedBySameAccountCount),
+              blockedByOtherAccountsCount: this.normalizeNonNegativeInt(result.shortfall.blockedByOtherAccountsCount),
+            }
+          : null,
       };
     } catch (error) {
       this.logger.error('请求房间分配失败:', error);
@@ -352,6 +368,11 @@ export class RuntimeConnection {
   private normalizeCapacity(value: number | undefined): number {
     const normalized = Number(value);
     return Number.isFinite(normalized) && normalized > 0 ? Math.floor(normalized) : 0;
+  }
+
+  private normalizeNonNegativeInt(value: number | null | undefined): number {
+    const normalized = Number(value);
+    return Number.isFinite(normalized) && normalized >= 0 ? Math.floor(normalized) : 0;
   }
 
   private normalizeUnixTime(value: number | null | undefined): number | null {

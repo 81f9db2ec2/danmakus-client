@@ -5,6 +5,7 @@ import type {
   CoreControlStateSnapshot as CoreClientControlStateSnapshot,
   CoreRuntimeStateDto as CoreClientRuntimeStateDto,
   DanmakuMessage,
+  RuntimeRoomPullShortfallDto,
   StreamerStatus,
 } from 'danmakus-core';
 import { reactive } from 'vue';
@@ -112,6 +113,33 @@ const parseServerTimeMs = (value: unknown, fieldName: string): number | null => 
   return ms;
 };
 
+const normalizeNonNegativeInteger = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+};
+
+const cloneHoldingRoomShortfall = (
+  shortfall: RuntimeRoomPullShortfallDto | null | undefined
+): RuntimeRoomPullShortfallDto | null => {
+  if (!shortfall) {
+    return null;
+  }
+  return {
+    reason: typeof shortfall.reason === 'string' ? shortfall.reason : null,
+    missingCount: normalizeNonNegativeInteger(shortfall.missingCount),
+    candidateCount: normalizeNonNegativeInteger(shortfall.candidateCount),
+    assignableCandidateCount: normalizeNonNegativeInteger(shortfall.assignableCandidateCount),
+    blockedBySameAccountCount: normalizeNonNegativeInteger(shortfall.blockedBySameAccountCount),
+    blockedByOtherAccountsCount: normalizeNonNegativeInteger(shortfall.blockedByOtherAccountsCount),
+  };
+};
+
 const normalizeConnectionInfo = (info: {
   roomId: number;
   priority: unknown;
@@ -184,6 +212,7 @@ class DanmakuService {
     roomMessageCountMap: {} as Record<string, number>,
     streamerStatuses: [] as StreamerStatus[],
     holdingRooms: [] as number[],
+    holdingRoomShortfall: null as RuntimeRoomPullShortfallDto | null,
     lastError: null as string | null,
     lastRoomAssigned: null as number | null,
     cookieValid: false,
@@ -449,6 +478,7 @@ class DanmakuService {
     this.state.roomMessageCountMap = {};
     this.state.streamerStatuses = [];
     this.state.holdingRooms = [];
+    this.state.holdingRoomShortfall = null;
     this.state.lastError = null;
     this.state.lastRoomAssigned = null;
     this.state.cookieValid = false;
@@ -494,6 +524,10 @@ class DanmakuService {
     });
 
     this.client.on('disconnected', () => {
+      this.applyStatusSnapshot();
+    });
+
+    this.client.on('statusChanged', () => {
       this.applyStatusSnapshot();
     });
 
@@ -558,6 +592,7 @@ class DanmakuService {
       this.state.connectedRooms = [];
       this.state.connectionInfo = [];
       this.state.holdingRooms = [];
+      this.state.holdingRoomShortfall = null;
       this.state.messageCount = 0;
       this.state.pendingMessageCount = 0;
       this.state.messageCmdCountMap = {};
@@ -579,6 +614,7 @@ class DanmakuService {
     this.state.cookieValid = status.cookieValid;
     this.state.authState = cloneAuthState(status.authState);
     this.state.holdingRooms = [...status.holdingRooms];
+    this.state.holdingRoomShortfall = cloneHoldingRoomShortfall(status.holdingRoomShortfall);
     this.state.messageCount = status.messageCount;
     this.state.pendingMessageCount = status.pendingMessageCount;
     this.state.lastRoomAssigned = status.lastRoomAssigned ?? null;

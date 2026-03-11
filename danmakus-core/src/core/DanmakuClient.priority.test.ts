@@ -28,6 +28,62 @@ describe("DanmakuClient room connect queue", () => {
 });
 
 describe("DanmakuClient room pull flow", () => {
+  it("does not enqueue recorder lifecycle messages on websocket connect and close", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    const listeners = new Map<string, (event?: any) => void>();
+    client.isRunning = true;
+    client.statusManager = {
+      getRoomsToConnect: () => [{ roomId: 4455, priority: "server" }],
+      getStreamerStatus: () => ({ roomId: 4455, isLive: false }),
+      refreshNow: () => undefined,
+      updateHoldingRooms: () => undefined,
+    };
+    client.resolveLiveWsConnectionOptions = async () => ({
+      roomId: 4455,
+      address: "wss://example.com/sub",
+      key: "key-4455",
+      uid: 1,
+      protover: 3,
+    });
+    client.liveWsConnectionFactory = async () => ({
+      addEventListener: (type: string, listener: (event?: any) => void) => {
+        listeners.set(type, listener);
+      },
+      close: () => undefined,
+    });
+    client.messageQueue.scheduleMessageDispatch = () => undefined;
+    client.syncRuntimeState = async () => undefined;
+
+    await client.connectToRoom(4455, "server");
+
+    listeners.get("CONNECT_SUCCESS")?.({ data: {} });
+    listeners.get("close")?.({ code: 1000, reason: "" });
+
+    expect(client.messageQueue.getPendingCount()).toBe(0);
+  });
+
+  it("does not enqueue recorder lifecycle messages when streamer status turns offline", () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    client.messageQueue.scheduleMessageDispatch = () => undefined;
+    client.statusManager = {};
+    client.setupStatusManagerEvents();
+    client.statusManager.onStatusUpdated?.([{ roomId: 2233, isLive: false }]);
+
+    expect(client.messageQueue.getPendingCount()).toBe(0);
+  });
+
   it("forces a room request on heartbeat when assignment tag changes", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",

@@ -1,14 +1,9 @@
-// 统一的弹幕消息类型
-export type RecorderEventType = 'record_start' | 'record_interrupt' | 'record_end';
-
 export interface DanmakuMessage {
   roomId: number;
   cmd: string;
   data: any;
   raw: string;
   timestamp: number;
-  recorderEventType?: RecorderEventType;
-  recorderEventMessage?: string;
 }
 
 // 发送给后端的消息格式
@@ -16,8 +11,6 @@ export interface ClientDanmakuMessage {
   roomId: number;
   raw?: string;
   timestamp: number;
-  eventType?: RecorderEventType;
-  eventMessage?: string;
 }
 
 // 主播优先级类型
@@ -188,6 +181,7 @@ export interface DanmakuClientEvents {
   'msg': (message: DanmakuMessage) => void; // 订阅所有消息
   'connected': (roomId: number) => void;
   'disconnected': (roomId: number) => void;
+  'statusChanged': () => void;
   'controlStateChanged': (state: CoreControlStateSnapshot) => void;
   'error': (error: Error, roomId?: number) => void;
   'cookieUpdated': () => void;
@@ -275,6 +269,15 @@ export interface CoreConnectionInfoDto {
   connectedAt: string | number;
 }
 
+export interface RuntimeRoomPullShortfallDto {
+  reason?: string | null;
+  missingCount?: number | null;
+  candidateCount?: number | null;
+  assignableCandidateCount?: number | null;
+  blockedBySameAccountCount?: number | null;
+  blockedByOtherAccountsCount?: number | null;
+}
+
 export interface CoreRuntimeStateDto {
   clientId: string;
   clientVersion?: string | null;
@@ -289,6 +292,7 @@ export interface CoreRuntimeStateDto {
   messageCount: number;
   pendingMessageCount?: number;
   lastRoomAssigned?: number | null;
+  holdingRoomShortfall?: RuntimeRoomPullShortfallDto | null;
   lastError?: string | null;
   lastHeartbeat: string | number | null;
 }
@@ -315,6 +319,7 @@ export interface RuntimeRoomPullResponseDto {
   droppedRooms: number[];
   effectiveCapacity: number;
   nextRequestAfter?: number | null;
+  shortfall?: RuntimeRoomPullShortfallDto | null;
 }
 
 // 动态事件类型，支持特定cmd的订阅

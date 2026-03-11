@@ -27,7 +27,7 @@ import {
   ErrorCategory,
   ClientErrorRecord,
   RecordingInfoDto,
-  RecorderEventType,
+  RuntimeRoomPullShortfallDto,
   UserInfo,
 } from '../types';
 import { ScopedLogger, normalizeLogLevel } from './Logger';
@@ -111,11 +111,10 @@ export class DanmakuClient extends EventEmitter {
   private recordings: RecordingInfoDto[] = [];
   private recordingRoomIds: number[] = [];
   private messageQueue: DanmakuMessageQueue;
-  private recordingSessions: Set<number> = new Set();
-  private lastStreamerLiveStates: Map<number, boolean> = new Map();
   private isStopping = false;
   private messageCount = 0;
   private lastRoomAssigned?: number;
+  private holdingRoomShortfall: RuntimeRoomPullShortfallDto | null = null;
   private lastError?: string;
   private runtimeSync: DanmakuRuntimeSync;
   private roomConnectStartInterval = ROOM_CONNECT_START_INTERVAL;
@@ -228,6 +227,13 @@ export class DanmakuClient extends EventEmitter {
       getLastRoomAssigned: () => this.lastRoomAssigned,
       setLastRoomAssigned: (value) => {
         this.lastRoomAssigned = value;
+      },
+      getHoldingRoomShortfall: () => this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
+      setHoldingRoomShortfall: (value) => {
+        this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(value);
+      },
+      notifyStatusChanged: () => {
+        this.emitStatusChanged();
       },
       logger: this.logger.child('HoldingRooms'),
     });
@@ -390,7 +396,6 @@ export class DanmakuClient extends EventEmitter {
     }
 
     this.statusManager.onStatusUpdated = (statuses: StreamerStatus[]) => {
-      this.handleStreamerStatusTransitions(statuses);
       this.logger.info(`更新主播状态: ${statuses.filter(s => s.isLive).length}/${statuses.length} 在线`);
       this.updateConnections();
       this.emit('streamerStatusUpdated', statuses);
@@ -409,9 +414,7 @@ export class DanmakuClient extends EventEmitter {
     try {
       this.runtimeGeneration += 1;
       this.isStopping = false;
-      this.recordingSessions.clear();
       this.messageQueue.clearRecentMessageDedup();
-      this.lastStreamerLiveStates.clear();
       this.logger.info('正在启动弹幕客户端...');
 
       await this.prepareAccountConfig();
@@ -435,7 +438,8 @@ export class DanmakuClient extends EventEmitter {
         connectedRooms: [],
         connectionInfo: [],
         holdingRooms: [],
-        lastRoomAssigned: null
+        lastRoomAssigned: null,
+        holdingRoomShortfall: null,
       }, { force: true, strict: true });
 
       this.isRunning = true;
@@ -467,7 +471,6 @@ export class DanmakuClient extends EventEmitter {
   async stop(options?: { suppressReleaseErrors?: boolean }): Promise<void> {
     this.runtimeGeneration += 1;
     this.logger.info('正在停止弹幕客户端...');
-    await this.flushOpenRecordingSessionsOnStop();
     this.isStopping = true;
     this.isRunning = false;
 
@@ -500,11 +503,10 @@ export class DanmakuClient extends EventEmitter {
     this.holdingRoomRequestRefreshing = false;
     this.nextHoldingRoomRequestAt = 0;
     this.statusManager?.updateHoldingRooms([]);
-    this.recordingSessions.clear();
-    this.lastStreamerLiveStates.clear();
     this.assignmentTag = null;
     this.messageCount = 0;
     this.lastRoomAssigned = undefined;
+    this.holdingRoomShortfall = null;
     this.lastError = undefined;
     this.recentErrors = [];
     this.messageQueue.resetState();
@@ -769,7 +771,6 @@ export class DanmakuClient extends EventEmitter {
         return;
       }
       this.logger.debug(`房间 ${roomId} CONNECT_SUCCESS`, data);
-      this.markRecordingSessionStarted(roomId);
     });
 
     liveWS.addEventListener('HEARTBEAT_REPLY', ({ data }: any) => {
@@ -798,12 +799,6 @@ export class DanmakuClient extends EventEmitter {
       const code = typeof event?.code === 'number' ? event.code : -1;
       const reason = typeof event?.reason === 'string' ? event.reason : '';
       this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
-      const status = this.statusManager?.getStreamerStatus(roomId);
-      this.markRecordingSessionClosed(
-        roomId,
-        status?.isLive === false ? 'record_end' : 'record_interrupt',
-        status?.isLive === false ? '录制结束' : '录制中断'
-      );
       this.connections.delete(roomId);
       this.emit('disconnected', roomId);
       this.statusManager?.refreshNow();
@@ -991,6 +986,7 @@ export class DanmakuClient extends EventEmitter {
       pendingMessageCount: this.messageQueue.getPendingCount(),
       recentErrors: this.recentErrors.map(item => ({ ...item })),
       lastRoomAssigned: this.lastRoomAssigned,
+      holdingRoomShortfall: this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
       lastError: this.lastError,
       lastHeartbeat: this.runtimeSync.getLastHeartbeat(),
       config: this.configManager.getConfig()
@@ -1105,6 +1101,7 @@ export class DanmakuClient extends EventEmitter {
       connectedRooms: [...remote.connectedRooms],
       connectionInfo: remote.connectionInfo.map(info => ({ ...info })),
       holdingRooms: [...remote.holdingRooms],
+      holdingRoomShortfall: this.cloneHoldingRoomShortfall(remote.holdingRoomShortfall),
     }));
   }
 
@@ -1127,8 +1124,27 @@ export class DanmakuClient extends EventEmitter {
     }));
   }
 
+  private cloneHoldingRoomShortfall(
+    shortfall: RuntimeRoomPullShortfallDto | null | undefined
+  ): RuntimeRoomPullShortfallDto | null {
+    return shortfall
+      ? {
+          reason: shortfall.reason ?? null,
+          missingCount: shortfall.missingCount ?? null,
+          candidateCount: shortfall.candidateCount ?? null,
+          assignableCandidateCount: shortfall.assignableCandidateCount ?? null,
+          blockedBySameAccountCount: shortfall.blockedBySameAccountCount ?? null,
+          blockedByOtherAccountsCount: shortfall.blockedByOtherAccountsCount ?? null,
+        }
+      : null;
+  }
+
   private emitControlStateChanged(): void {
     this.emit('controlStateChanged', this.getControlState());
+  }
+
+  private emitStatusChanged(): void {
+    this.emit('statusChanged');
   }
 
 
@@ -1228,6 +1244,7 @@ export class DanmakuClient extends EventEmitter {
       holdingRooms: [...this.holdingRoomIds],
       messageCount: this.messageCount,
       lastRoomAssigned: this.lastRoomAssigned ?? null,
+      holdingRoomShortfall: this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
       lastError: this.lastError ?? null,
       lastHeartbeat: new Date(this.runtimeSync.getLastHeartbeat() || now).toISOString()
     };
@@ -1245,6 +1262,7 @@ export class DanmakuClient extends EventEmitter {
       authState,
       messageCount: this.messageCount,
       lastRoomAssigned: this.lastRoomAssigned ?? null,
+      holdingRoomShortfall: this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
       lastError: this.lastError ?? null
     };
   }
@@ -1300,85 +1318,6 @@ export class DanmakuClient extends EventEmitter {
     this.accountConfigTag = null;
     this.recordingRoomIds = [];
     this.statusManager?.updateRecordingRooms([]);
-  }
-
-  private handleStreamerStatusTransitions(statuses: StreamerStatus[]): void {
-    const nextStates = new Map<number, boolean>();
-
-    for (const status of statuses) {
-      nextStates.set(status.roomId, status.isLive);
-      const previous = this.lastStreamerLiveStates.get(status.roomId);
-      if (previous === true && !status.isLive) {
-        this.markRecordingSessionClosed(status.roomId, 'record_end', '录制结束');
-      }
-    }
-
-    this.lastStreamerLiveStates = nextStates;
-  }
-
-  private markRecordingSessionStarted(roomId: number, timestamp: number = Date.now()): void {
-    if (roomId <= 0 || this.recordingSessions.has(roomId)) {
-      return;
-    }
-
-    this.recordingSessions.add(roomId);
-    this.enqueueRecorderEvent(roomId, 'record_start', '录制开始', timestamp);
-  }
-
-  private markRecordingSessionClosed(
-    roomId: number,
-    eventType: 'record_interrupt' | 'record_end',
-    eventMessage: string,
-    timestamp: number = Date.now()
-  ): void {
-    if (roomId <= 0 || !this.recordingSessions.has(roomId)) {
-      return;
-    }
-
-    this.recordingSessions.delete(roomId);
-    this.enqueueRecorderEvent(roomId, eventType, eventMessage, timestamp);
-  }
-
-  private enqueueRecorderEvent(
-    roomId: number,
-    eventType: RecorderEventType,
-    eventMessage: string,
-    timestamp: number = Date.now()
-  ): void {
-    const message: DanmakuMessage = {
-      roomId,
-      cmd: `__${eventType.toUpperCase()}__`,
-      data: undefined,
-      raw: '',
-      timestamp,
-      recorderEventType: eventType,
-      recorderEventMessage: eventMessage
-    };
-
-    this.messageQueue.enqueueMessage(message);
-  }
-
-  private async flushOpenRecordingSessionsOnStop(): Promise<void> {
-    if (!this.isRunning || this.recordingSessions.size === 0) {
-      return;
-    }
-
-    for (const roomId of Array.from(this.recordingSessions)) {
-      this.markRecordingSessionClosed(roomId, 'record_interrupt', '录制中断');
-    }
-
-    if (!this.runtimeConnection?.getConnectionState()) {
-      return;
-    }
-
-    const maxFlushRounds = Math.max(1, Math.ceil(this.messageQueue.getPendingCount() / this.messageQueue.getMessageBatchSize()) + 1);
-    for (let i = 0; i < maxFlushRounds; i++) {
-      if (this.messageQueue.getPendingCount() === 0) {
-        break;
-      }
-
-      await this.messageQueue.flushPendingMessages();
-    }
   }
 
   private applyRuntimeTunings(config: DanmakuConfig): void {

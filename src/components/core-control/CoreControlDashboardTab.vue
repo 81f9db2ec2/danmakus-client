@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import type { AuthStateSnapshot } from 'danmakus-core';
+import type { AuthStateSnapshot, RuntimeRoomPullShortfallDto } from 'danmakus-core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   AlertCircle,
@@ -76,6 +76,7 @@ type RuntimeStateSnapshot = {
   messageCmdCountMap: Record<string, number>;
   roomMessageCountMap: Record<string, number>;
   holdingRooms: number[];
+  holdingRoomShortfall: RuntimeRoomPullShortfallDto | null;
   streamerStatuses: StreamerStatus[];
   lockedByOther: boolean;
   ownerClientId: string | null;
@@ -125,6 +126,19 @@ const cookieStatusText = computed(() => {
 });
 
 const cookieStatusType = computed(() => props.authState.hasUsableCookie ? 'success' : 'warning');
+
+const getHoldingRoomShortfallReasonText = (reason: string | null | undefined): string => {
+  switch (reason) {
+    case 'no_candidates':
+      return '当前没有更多直播中的可分配主播';
+    case 'blocked_by_reservations':
+      return '候选主播已被同账号或其他客户端占用';
+    case 'candidate_pool_exhausted':
+      return '可分配候选不足，暂时无法补满槽位';
+    default:
+      return '暂时无法补满当前槽位';
+  }
+};
 
 const authSourceText = computed(() => {
   if (props.authState.activeSource === 'cookieCloud') return '当前使用 CookieCloud';
@@ -261,6 +275,55 @@ const connectionRoomCards = computed(() => {
       }
       return a.roomId - b.roomId;
     });
+});
+
+const connectionShortfall = computed(() => {
+  if (!props.runtimeState.isRunning || !props.runtimeState.runtimeConnected) {
+    return null;
+  }
+
+  const shortfall = props.runtimeState.holdingRoomShortfall;
+  const missingCount = Number.isFinite(Number(shortfall?.missingCount))
+    ? Math.max(0, Math.floor(Number(shortfall?.missingCount)))
+    : 0;
+  if (missingCount <= 0) {
+    return null;
+  }
+
+  const detailParts: string[] = [];
+  const candidateCount = Number.isFinite(Number(shortfall?.candidateCount))
+    ? Math.max(0, Math.floor(Number(shortfall?.candidateCount)))
+    : 0;
+  const assignableCandidateCount = Number.isFinite(Number(shortfall?.assignableCandidateCount))
+    ? Math.max(0, Math.floor(Number(shortfall?.assignableCandidateCount)))
+    : 0;
+  const blockedBySameAccountCount = Number.isFinite(Number(shortfall?.blockedBySameAccountCount))
+    ? Math.max(0, Math.floor(Number(shortfall?.blockedBySameAccountCount)))
+    : 0;
+  const blockedByOtherAccountsCount = Number.isFinite(Number(shortfall?.blockedByOtherAccountsCount))
+    ? Math.max(0, Math.floor(Number(shortfall?.blockedByOtherAccountsCount)))
+    : 0;
+
+  if (candidateCount > 0) {
+    detailParts.push(`候选 ${candidateCount} 个`);
+  }
+  if (assignableCandidateCount > 0) {
+    detailParts.push(`可分配 ${assignableCandidateCount} 个`);
+  }
+  if (blockedBySameAccountCount > 0) {
+    detailParts.push(`同账号占用 ${blockedBySameAccountCount} 个`);
+  }
+  if (blockedByOtherAccountsCount > 0) {
+    detailParts.push(`其他账号占用 ${blockedByOtherAccountsCount} 个`);
+  }
+
+  return {
+    missingCount,
+    compactText: `还差 ${missingCount} 个`,
+    title: `当前未连满，还差 ${missingCount} 个房间`,
+    reasonText: getHoldingRoomShortfallReasonText(shortfall?.reason),
+    detailText: detailParts.join('，')
+  };
 });
 
 const barColors = [
@@ -477,6 +540,12 @@ onBeforeUnmount(() => {
             <TvMinimal class="h-3.5 w-3.5 text-muted-foreground/60" />
           </div>
           <p class="mt-1 text-2xl font-bold tabular-nums animate-number-pop">{{ runtimeState.connectedRooms.length }}</p>
+          <p
+            v-if="connectionShortfall"
+            class="mt-1 line-clamp-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300"
+          >
+            {{ connectionShortfall.compactText }} · {{ connectionShortfall.reasonText }}
+          </p>
         </CardContent>
       </Card>
 
@@ -490,6 +559,18 @@ onBeforeUnmount(() => {
         </CardContent>
       </Card>
     </div>
+
+    <Alert
+      v-if="connectionShortfall"
+      class="border-amber-300/80 bg-amber-500/10"
+    >
+      <AlertCircle class="h-4 w-4 text-amber-600 dark:text-amber-300" />
+      <AlertTitle>{{ connectionShortfall.title }}</AlertTitle>
+      <AlertDescription class="text-[13px] leading-5">
+        {{ connectionShortfall.reasonText }}
+        <span v-if="connectionShortfall.detailText"> · {{ connectionShortfall.detailText }}</span>
+      </AlertDescription>
+    </Alert>
 
     <!-- Online clients -->
     <Card class="bg-card/60">
@@ -547,6 +628,7 @@ onBeforeUnmount(() => {
         <CardTitle class="text-sm">连接详情</CardTitle>
         <CardDescription>
           {{ runtimeState.connectedRooms.length }} 已连接 / {{ connectionRoomCards.length }} 总房间
+          <span v-if="connectionShortfall"> · {{ connectionShortfall.compactText }}</span>
           <span v-if="runtimeState.lastRoomAssigned"> · 最近分配: {{ runtimeState.lastRoomAssigned }}</span>
         </CardDescription>
       </CardHeader>

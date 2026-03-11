@@ -25,6 +25,14 @@ describe("RuntimeConnection room pull", () => {
           droppedRooms: [201],
           effectiveCapacity: 4,
           nextRequestAfter: 1710000000000,
+          shortfall: {
+            reason: 'candidate_pool_exhausted',
+            missingCount: 1,
+            candidateCount: 2,
+            assignableCandidateCount: 2,
+            blockedBySameAccountCount: 0,
+            blockedByOtherAccountsCount: 1,
+          },
         },
       }), {
         status: 200,
@@ -60,6 +68,14 @@ describe("RuntimeConnection room pull", () => {
       droppedRooms: [201],
       effectiveCapacity: 4,
       nextRequestAfter: 1710000000000,
+      shortfall: {
+        reason: 'candidate_pool_exhausted',
+        missingCount: 1,
+        candidateCount: 2,
+        assignableCandidateCount: 2,
+        blockedBySameAccountCount: 0,
+        blockedByOtherAccountsCount: 1,
+      },
     });
   });
 
@@ -112,6 +128,7 @@ describe("RuntimeConnection room pull", () => {
       droppedRooms: [],
       effectiveCapacity: 1,
       nextRequestAfter: 1710000001000,
+      shortfall: null,
     });
     expect(runtime.getConnectionState()).toBe(true);
   });
