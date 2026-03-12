@@ -14,6 +14,8 @@ interface RuntimeSyncErrorContext {
   roomId?: number;
 }
 
+type HeartbeatRuntimeStateResult = Awaited<ReturnType<AccountApiClient['heartbeatRuntimeState']>>;
+
 interface DanmakuRuntimeSyncContext {
   getAccountClient(): AccountApiClient | undefined;
   getRuntimeConnection(): RuntimeConnection | undefined;
@@ -26,16 +28,12 @@ interface DanmakuRuntimeSyncContext {
   recordError(error: unknown, context?: RuntimeSyncErrorContext): void;
   buildRuntimeStateSnapshot(): CoreRuntimeStateDto;
   buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string };
-  handleAccountConfigTagChange(nextTag: string | null): Promise<void>;
-  handleClientsTagChange(nextTag: string | null): Promise<void>;
-  handleRecordingTagChange(nextTag: string | null): Promise<void>;
-  consumeAssignmentTag(nextTag: string | null): boolean;
+  handleHeartbeatResult(result: HeartbeatRuntimeStateResult): Promise<void>;
   refreshHoldingRoomsIfNeeded(
     maxConnections: number,
     reason: string,
     options?: { force?: boolean }
   ): Promise<boolean>;
-  clearHoldingRooms(): void;
   updateConnections(): void;
 }
 
@@ -148,14 +146,7 @@ export class DanmakuRuntimeSync {
         force: options?.force,
       });
       this.lastHeartbeat = Date.now();
-      await this.context.handleAccountConfigTagChange(result.configTag);
-      await this.context.handleClientsTagChange(result.clientsTag);
-      await this.context.handleRecordingTagChange(result.recordingTag);
-      if (this.context.consumeAssignmentTag(result.assignmentTag)) {
-        await this.context.refreshHoldingRoomsIfNeeded(this.context.getConfig().maxConnections, 'assignment-tag-changed', {
-          force: true,
-        });
-      }
+      await this.context.handleHeartbeatResult(result);
 
       const runtimeConnection = this.context.getRuntimeConnection();
       if (runtimeConnection && !runtimeConnection.getConnectionState()) {

@@ -51,11 +51,6 @@ interface ConnectionInfo {
   connectedAt: number;
 }
 
-interface QueuedRoomConnect {
-  roomId: number;
-  priority: 'high' | 'normal' | 'low' | 'server';
-}
-
 interface ClientErrorContext {
   category?: ErrorCategory;
   code?: string;
@@ -83,8 +78,8 @@ type LiveWsConnectionOptions = {
 export class DanmakuClient extends EventEmitter {
   private logger: ScopedLogger;
   private configManager: ConfigManager;
-  private authManager: AuthManager;
-  private bilibiliLiveWsAuthApi: BilibiliLiveWsAuthApi;
+  private authManager!: AuthManager;
+  private bilibiliLiveWsAuthApi!: BilibiliLiveWsAuthApi;
   private baseLocalCookieProvider?: () => string | null | undefined;
   private interactiveLoginProvider?: () => Promise<string | null | undefined>;
   private ephemeralLocalCookie = '';
@@ -95,9 +90,6 @@ export class DanmakuClient extends EventEmitter {
   private accountClient?: AccountApiClient;
   private clientId: string;
   private connections: Map<number, ConnectionInfo> = new Map();
-  private holdingRoomIds: number[] = [];
-  private holdingRoomRequestRefreshing = false;
-  private nextHoldingRoomRequestAt = 0;
   private holdingRoomCoordinator: DanmakuHoldingRoomCoordinator;
   private controlState: DanmakuControlState;
   private isRunning: boolean = false;
@@ -113,19 +105,29 @@ export class DanmakuClient extends EventEmitter {
   private messageQueue: DanmakuMessageQueue;
   private isStopping = false;
   private messageCount = 0;
-  private lastRoomAssigned?: number;
-  private holdingRoomShortfall: RuntimeRoomPullShortfallDto | null = null;
   private lastError?: string;
   private runtimeSync: DanmakuRuntimeSync;
   private roomConnectStartInterval = ROOM_CONNECT_START_INTERVAL;
-  private queuedRoomConnects: QueuedRoomConnect[] = [];
-  private queuedRoomIds: Set<number> = new Set();
-  private roomConnectQueueTimer?: ReturnType<typeof setTimeout>;
-  private lastRoomConnectStartAt = 0;
   private errorHistoryLimit = 50;
   private recentErrors: ClientErrorRecord[] = [];
   private suppressRuntimeAutoRegister = false;
   private runtimeGeneration = 0;
+
+  get holdingRoomIds(): number[] {
+    return this.holdingRoomCoordinator.getHoldingRoomIds();
+  }
+
+  set holdingRoomIds(value: number[]) {
+    this.holdingRoomCoordinator.replaceHoldingRoomIds(value);
+  }
+
+  get nextHoldingRoomRequestAt(): number {
+    return this.holdingRoomCoordinator.getNextHoldingRoomRequestAt();
+  }
+
+  set nextHoldingRoomRequestAt(value: number) {
+    this.holdingRoomCoordinator.setNextHoldingRoomRequestAt(value);
+  }
 
   constructor(config: Partial<DanmakuConfig> = {}) {
     super();
@@ -136,15 +138,6 @@ export class DanmakuClient extends EventEmitter {
     this.interactiveLoginProvider = config.interactiveLoginProvider;
     this.liveWsConfigProvider = config.liveWsConfigProvider;
     this.liveWsConnectionFactory = config.liveWsConnectionFactory;
-    this.authManager = new AuthManager({
-      localCookieProvider: () => this.readLocalCookie(),
-      cookieCloudKey: config.cookieCloudKey,
-      cookieCloudPassword: config.cookieCloudPassword,
-      cookieCloudHost: config.cookieCloudHost,
-      cookieRefreshInterval: config.cookieRefreshInterval,
-      fetchImpl: config.fetchImpl,
-    });
-    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(config.fetchImpl);
     this.messageQueue = new DanmakuMessageQueue({
       isRunning: () => this.isRunning,
       isStopping: () => this.isStopping,
@@ -170,12 +163,8 @@ export class DanmakuClient extends EventEmitter {
       recordError: (error, context) => this.recordError(error, context),
       buildRuntimeStateSnapshot: () => this.buildRuntimeStateSnapshot(),
       buildRuntimeHeartbeatPayload: () => this.buildRuntimeHeartbeatPayload(),
-      handleAccountConfigTagChange: (nextTag) => this.handleAccountConfigTagChange(nextTag),
-      handleClientsTagChange: (nextTag) => this.handleClientsTagChange(nextTag),
-      handleRecordingTagChange: (nextTag) => this.handleRecordingTagChange(nextTag),
-      consumeAssignmentTag: (nextTag) => this.consumeAssignmentTag(nextTag),
+      handleHeartbeatResult: (result) => this.handleRuntimeHeartbeatResult(result),
       refreshHoldingRoomsIfNeeded: (maxConnections, reason, options) => this.refreshHoldingRoomsIfNeeded(maxConnections, reason, options),
-      clearHoldingRooms: () => this.clearHoldingRooms(),
       updateConnections: () => this.updateConnections(),
     });
     this.holdingRoomCoordinator = new DanmakuHoldingRoomCoordinator({
@@ -198,40 +187,7 @@ export class DanmakuClient extends EventEmitter {
       updateHoldingRooms: (roomIds) => {
         this.statusManager?.updateHoldingRooms(roomIds);
       },
-      getHoldingRoomIds: () => this.holdingRoomIds,
-      setHoldingRoomIds: (roomIds) => {
-        this.holdingRoomIds = roomIds;
-      },
-      getHoldingRoomRequestRefreshing: () => this.holdingRoomRequestRefreshing,
-      setHoldingRoomRequestRefreshing: (value) => {
-        this.holdingRoomRequestRefreshing = value;
-      },
-      getNextHoldingRoomRequestAt: () => this.nextHoldingRoomRequestAt,
-      setNextHoldingRoomRequestAt: (value) => {
-        this.nextHoldingRoomRequestAt = value;
-      },
-      getQueuedRoomConnects: () => this.queuedRoomConnects,
-      setQueuedRoomConnects: (value) => {
-        this.queuedRoomConnects = value;
-      },
-      getQueuedRoomIds: () => this.queuedRoomIds,
-      getRoomConnectQueueTimer: () => this.roomConnectQueueTimer,
-      setRoomConnectQueueTimer: (value) => {
-        this.roomConnectQueueTimer = value;
-      },
-      getLastRoomConnectStartAt: () => this.lastRoomConnectStartAt,
-      setLastRoomConnectStartAt: (value) => {
-        this.lastRoomConnectStartAt = value;
-      },
       getRoomConnectStartInterval: () => this.roomConnectStartInterval,
-      getLastRoomAssigned: () => this.lastRoomAssigned,
-      setLastRoomAssigned: (value) => {
-        this.lastRoomAssigned = value;
-      },
-      getHoldingRoomShortfall: () => this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
-      setHoldingRoomShortfall: (value) => {
-        this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(value);
-      },
       notifyStatusChanged: () => {
         this.emitStatusChanged();
       },
@@ -256,40 +212,22 @@ export class DanmakuClient extends EventEmitter {
       refreshStatusNow: () => {
         this.statusManager?.refreshNow();
       },
-      updateRecordingRooms: (roomIds) => {
-        this.statusManager?.updateRecordingRooms(roomIds);
+      replaceUserInfo: (userInfo) => {
+        this.replaceUserInfo(userInfo);
       },
-      getUserInfo: () => this.userInfo,
-      setUserInfo: (userInfo) => {
-        this.userInfo = userInfo;
+      replaceRemoteClients: (remoteClients) => {
+        this.replaceRemoteClients(remoteClients);
       },
-      getRemoteClients: () => this.remoteClients,
-      setRemoteClients: (remoteClients) => {
-        this.remoteClients = remoteClients;
-      },
-      getRecordings: () => this.recordings,
-      setRecordings: (recordings) => {
-        this.recordings = recordings;
+      replaceRecordings: (recordings) => {
+        this.replaceRecordings(recordings);
       },
       getRecordingRoomIds: () => this.recordingRoomIds,
-      setRecordingRoomIds: (roomIds) => {
-        this.recordingRoomIds = roomIds;
-      },
       getAccountConfigTag: () => this.accountConfigTag,
-      setAccountConfigTag: (tag) => {
-        this.accountConfigTag = tag;
-      },
       getClientsTag: () => this.clientsTag,
-      setClientsTag: (tag) => {
-        this.clientsTag = tag;
-      },
       getRecordingTag: () => this.recordingTag,
-      setRecordingTag: (tag) => {
-        this.recordingTag = tag;
+      updateSyncTags: (tags) => {
+        this.updateControlSyncTags(tags);
       },
-      cloneUserInfo: (userInfo) => this.cloneUserInfo(userInfo),
-      cloneRemoteClients: (remoteClients) => this.cloneRemoteClients(remoteClients),
-      cloneRecordingList: (recordings) => this.cloneRecordingList(recordings),
       areRoomIdsEqual: (left, right) => this.areRoomIdsEqual(left, right),
     });
 
@@ -324,7 +262,7 @@ export class DanmakuClient extends EventEmitter {
     const finalConfig = this.configManager.getConfig();
     this.applyRuntimeTunings(finalConfig);
     this.rebuildAuthManager(finalConfig);
-    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(finalConfig.fetchImpl);
+    this.rebuildLiveWsAuthApi(finalConfig);
 
     if (this.runtimeConnection) {
       void this.runtimeConnection.disconnect().catch(() => undefined);
@@ -349,7 +287,7 @@ export class DanmakuClient extends EventEmitter {
       finalConfig.fetchImpl,
       this.logger.child('StatusManager')
     );
-    this.statusManager.updateHoldingRooms(this.holdingRoomIds);
+    this.statusManager.updateHoldingRooms(this.holdingRoomCoordinator.getHoldingRoomIds());
     this.statusManager.updateRecordingRooms(this.recordingRoomIds);
     this.setupStatusManagerEvents();
   }
@@ -448,7 +386,7 @@ export class DanmakuClient extends EventEmitter {
       // 启动状态管理器
       this.logger.info('启动状态检查器...');
       const statusManager = this.ensureStatusManager();
-      statusManager.updateHoldingRooms(this.holdingRoomIds);
+      statusManager.updateHoldingRooms(this.holdingRoomCoordinator.getHoldingRoomIds());
       statusManager.start();
       await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'client-register', { force: true });
 
@@ -499,14 +437,10 @@ export class DanmakuClient extends EventEmitter {
 
     // 断开Runtime连接
     await this.runtimeConnection?.disconnect();
-    this.holdingRoomIds = [];
-    this.holdingRoomRequestRefreshing = false;
-    this.nextHoldingRoomRequestAt = 0;
+    this.holdingRoomCoordinator.resetState();
     this.statusManager?.updateHoldingRooms([]);
     this.assignmentTag = null;
     this.messageCount = 0;
-    this.lastRoomAssigned = undefined;
-    this.holdingRoomShortfall = null;
     this.lastError = undefined;
     this.recentErrors = [];
     this.messageQueue.resetState();
@@ -806,8 +740,7 @@ export class DanmakuClient extends EventEmitter {
       if (connectionInfo?.priority === 'server') {
         const lifetimeMs = Date.now() - connectionInfo.connectedAt;
         if (lifetimeMs < 10_000) {
-          this.holdingRoomIds = this.holdingRoomIds.filter(id => id !== roomId);
-          this.statusManager?.updateHoldingRooms(this.holdingRoomIds);
+          this.holdingRoomCoordinator.removeHoldingRoom(roomId);
         }
       }
 
@@ -980,13 +913,13 @@ export class DanmakuClient extends EventEmitter {
       cookieValid: authState.hasUsableCookie,
       authState,
       streamerStatuses,
-      holdingRooms: [...this.holdingRoomIds],
+      holdingRooms: this.holdingRoomCoordinator.getHoldingRoomIds(),
       recordingRoomIds: [...this.recordingRoomIds],
       messageCount: this.messageCount,
       pendingMessageCount: this.messageQueue.getPendingCount(),
       recentErrors: this.recentErrors.map(item => ({ ...item })),
-      lastRoomAssigned: this.lastRoomAssigned,
-      holdingRoomShortfall: this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
+      lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned(),
+      holdingRoomShortfall: this.holdingRoomCoordinator.getHoldingRoomShortfall(),
       lastError: this.lastError,
       lastHeartbeat: this.runtimeSync.getLastHeartbeat(),
       config: this.configManager.getConfig()
@@ -1241,10 +1174,10 @@ export class DanmakuClient extends EventEmitter {
         priority: info.priority,
         connectedAt: new Date(info.connectedAt).toISOString()
       })),
-      holdingRooms: [...this.holdingRoomIds],
+      holdingRooms: this.holdingRoomCoordinator.getHoldingRoomIds(),
       messageCount: this.messageCount,
-      lastRoomAssigned: this.lastRoomAssigned ?? null,
-      holdingRoomShortfall: this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
+      lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned() ?? null,
+      holdingRoomShortfall: this.holdingRoomCoordinator.getHoldingRoomShortfall(),
       lastError: this.lastError ?? null,
       lastHeartbeat: new Date(this.runtimeSync.getLastHeartbeat() || now).toISOString()
     };
@@ -1261,8 +1194,8 @@ export class DanmakuClient extends EventEmitter {
       cookieValid: authState.hasUsableCookie,
       authState,
       messageCount: this.messageCount,
-      lastRoomAssigned: this.lastRoomAssigned ?? null,
-      holdingRoomShortfall: this.cloneHoldingRoomShortfall(this.holdingRoomShortfall),
+      lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned() ?? null,
+      holdingRoomShortfall: this.holdingRoomCoordinator.getHoldingRoomShortfall(),
       lastError: this.lastError ?? null
     };
   }
@@ -1293,18 +1226,6 @@ export class DanmakuClient extends EventEmitter {
   }
 
 
-  private async handleAccountConfigTagChange(nextTag: string | null): Promise<void> {
-    await this.controlState.handleAccountConfigTagChange(nextTag);
-  }
-
-  private async handleClientsTagChange(nextTag: string | null): Promise<void> {
-    await this.controlState.handleClientsTagChange(nextTag);
-  }
-
-  private async handleRecordingTagChange(nextTag: string | null): Promise<void> {
-    await this.controlState.handleRecordingTagChange(nextTag);
-  }
-
   private consumeAssignmentTag(nextTag: string | null): boolean {
     if (nextTag === null || nextTag === this.assignmentTag) {
       return false;
@@ -1312,6 +1233,48 @@ export class DanmakuClient extends EventEmitter {
 
     this.assignmentTag = nextTag;
     return true;
+  }
+
+  private updateControlSyncTags(tags: Partial<CoreSyncTagSnapshot>): void {
+    if (tags.configTag !== undefined && tags.configTag !== null) {
+      this.accountConfigTag = tags.configTag;
+    }
+    if (tags.clientsTag !== undefined && tags.clientsTag !== null) {
+      this.clientsTag = tags.clientsTag;
+    }
+    if (tags.recordingTag !== undefined && tags.recordingTag !== null) {
+      this.recordingTag = tags.recordingTag;
+    }
+  }
+
+  private async handleRuntimeHeartbeatResult(
+    result: Awaited<ReturnType<AccountApiClient['heartbeatRuntimeState']>>
+  ): Promise<void> {
+    await this.controlState.handleAccountConfigTagChange(result.configTag);
+    await this.controlState.handleClientsTagChange(result.clientsTag);
+    await this.controlState.handleRecordingTagChange(result.recordingTag);
+    if (this.consumeAssignmentTag(result.assignmentTag)) {
+      await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'assignment-tag-changed', {
+        force: true,
+      });
+    }
+  }
+
+  private replaceUserInfo(userInfo: UserInfo | null): void {
+    this.userInfo = this.cloneUserInfo(userInfo);
+  }
+
+  private replaceRemoteClients(remoteClients: CoreRuntimeStateDto[]): void {
+    this.remoteClients = this.cloneRemoteClients(remoteClients);
+  }
+
+  private replaceRecordings(recordings: RecordingInfoDto[]): void {
+    this.recordings = this.cloneRecordingList(recordings);
+    this.recordingRoomIds = Array.from(new Set(this.recordings
+      .map(item => Number(item.channel.roomId))
+      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
+      .map(roomId => Math.floor(roomId))));
+    this.statusManager?.updateRecordingRooms(this.recordingRoomIds);
   }
 
   private resetAccountConfigSyncState(): void {
@@ -1448,7 +1411,7 @@ export class DanmakuClient extends EventEmitter {
   private rebuildAuthManager(config: DanmakuConfig): void {
     this.baseLocalCookieProvider = config.cookieProvider;
     this.interactiveLoginProvider = config.interactiveLoginProvider;
-    this.authManager.dispose();
+    this.authManager?.dispose();
     this.authManager = new AuthManager({
       localCookieProvider: () => this.readLocalCookie(),
       cookieCloudKey: config.cookieCloudKey,
@@ -1461,11 +1424,14 @@ export class DanmakuClient extends EventEmitter {
       this.emit('authStateChanged', state);
       this.emit('cookieUpdated');
     });
-    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(config.fetchImpl);
     if (this.isRunning) {
       this.authManager.start();
     }
     void this.authManager.refreshState({ validateProfile: true, force: true }).catch(() => undefined);
+  }
+
+  private rebuildLiveWsAuthApi(config: DanmakuConfig): void {
+    this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(config.fetchImpl);
   }
 
   private readLocalCookie(): string {
@@ -1484,7 +1450,7 @@ export class DanmakuClient extends EventEmitter {
       config.fetchImpl,
       this.logger.child('StatusManager')
     );
-    this.statusManager.updateHoldingRooms(this.holdingRoomIds);
+    this.statusManager.updateHoldingRooms(this.holdingRoomCoordinator.getHoldingRoomIds());
     this.statusManager.updateRecordingRooms(this.recordingRoomIds);
     this.setupStatusManagerEvents();
     if (this.isRunning && !this.isStopping) {

@@ -36,7 +36,7 @@ const token = ref(getAuthToken());
 const currentPage = ref('dashboard');
 const isDesktopApp = isDesktopRuntime();
 const runtimeFixedUrl = RUNTIME_URL;
-const coreConfig = reactive<CoreControlConfigDto>({
+const createCoreConfigDraft = (): CoreControlConfigDto => ({
   maxConnections: 5,
   runtimeUrl: runtimeFixedUrl,
   autoReconnect: true,
@@ -47,6 +47,24 @@ const coreConfig = reactive<CoreControlConfigDto>({
   allowedAreas: [],
   allowedParentAreas: []
 });
+const cloneCoreConfigDraft = (config: CoreControlConfigDto): CoreControlConfigDto => ({
+  ...config,
+  runtimeUrl: config.runtimeUrl || runtimeFixedUrl,
+  allowedAreas: Array.isArray(config.allowedAreas) ? [...config.allowedAreas] : [],
+  allowedParentAreas: Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [],
+  streamers: []
+});
+const buildCoreConfigSyncKey = (config: CoreControlConfigDto): string => JSON.stringify({
+  maxConnections: config.maxConnections,
+  runtimeUrl: config.runtimeUrl || runtimeFixedUrl,
+  autoReconnect: config.autoReconnect,
+  reconnectInterval: config.reconnectInterval,
+  statusCheckInterval: config.statusCheckInterval,
+  requestServerRooms: config.requestServerRooms,
+  allowedAreas: config.allowedAreas,
+  allowedParentAreas: config.allowedParentAreas
+});
+const coreConfigDraft = reactive<CoreControlConfigDto>(createCoreConfigDraft());
 const localConfig = reactive<LocalAppConfigDto>(loadLocalAppConfig());
 const runtimeState = danmakuService.state;
 const userInfo = computed(() => runtimeState.userInfo);
@@ -83,8 +101,7 @@ const coreConfigAutoSaveThrottleMs = 1_200;
 let coreConfigAutoSaveTimer: number | undefined;
 let coreConfigAutoSavePending = false;
 let localConfigApplyTimer: number | undefined;
-let syncingCoreConfigFromRemote = false;
-let pendingRemoteCoreConfigSyncCount = 0;
+let hydratingCoreConfigDraft = false;
 let syncingAutoStartFromDesktop = false;
 let closeToTrayUnlisten: (() => void) | null = null;
 
@@ -123,10 +140,6 @@ const recordingStatsByRoom = computed(() => {
 
   return result;
 });
-const lastHeartbeatText = computed(() =>
-  runtimeState.lastHeartbeat ? new Date(runtimeState.lastHeartbeat).toLocaleString() : '—'
-);
-
 const ensureToken = () => {
   if (!token.value) {
     toast.error('请先输入 Token');
@@ -190,10 +203,10 @@ const clearCoreConfigAutoSaveTimer = () => {
 };
 
 const buildCoreConfigPayload = (): CoreControlConfigDto => ({
-  ...coreConfig,
-  runtimeUrl: coreConfig.runtimeUrl,
-  allowedAreas: [...coreConfig.allowedAreas],
-  allowedParentAreas: [...coreConfig.allowedParentAreas],
+  ...coreConfigDraft,
+  runtimeUrl: coreConfigDraft.runtimeUrl,
+  allowedAreas: [...coreConfigDraft.allowedAreas],
+  allowedParentAreas: [...coreConfigDraft.allowedParentAreas],
   streamers: []
 });
 
@@ -203,7 +216,6 @@ const persistCoreConfig = async (silentSuccess: boolean) => {
   try {
     savingConfig.value = true;
     await danmakuService.saveCoreConfig(buildCoreConfigPayload());
-    syncConfig(runtimeState.coreConfig);
     if (!silentSuccess) {
       toast.success('配置已保存');
     }
@@ -244,23 +256,22 @@ const scheduleCoreConfigAutoSave = () => {
   }, coreConfigAutoSaveThrottleMs);
 };
 
-const syncConfig = (config: CoreControlConfigDto) => {
-  pendingRemoteCoreConfigSyncCount += 1;
-  syncingCoreConfigFromRemote = true;
+const applyCoreConfigDraft = (config: CoreControlConfigDto) => {
+  hydratingCoreConfigDraft = true;
   try {
-    coreConfig.maxConnections = config.maxConnections;
-    coreConfig.runtimeUrl = config.runtimeUrl || runtimeFixedUrl;
-    coreConfig.autoReconnect = config.autoReconnect;
-    coreConfig.reconnectInterval = config.reconnectInterval;
-    coreConfig.statusCheckInterval = config.statusCheckInterval;
-    coreConfig.requestServerRooms = config.requestServerRooms;
-    coreConfig.allowedAreas = Array.isArray(config.allowedAreas) ? [...config.allowedAreas] : [];
-    coreConfig.allowedParentAreas = Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [];
-    coreConfig.streamers.splice(0);
+    const nextConfig = cloneCoreConfigDraft(config);
+    coreConfigDraft.maxConnections = nextConfig.maxConnections;
+    coreConfigDraft.runtimeUrl = nextConfig.runtimeUrl;
+    coreConfigDraft.autoReconnect = nextConfig.autoReconnect;
+    coreConfigDraft.reconnectInterval = nextConfig.reconnectInterval;
+    coreConfigDraft.statusCheckInterval = nextConfig.statusCheckInterval;
+    coreConfigDraft.requestServerRooms = nextConfig.requestServerRooms;
+    coreConfigDraft.allowedAreas = nextConfig.allowedAreas;
+    coreConfigDraft.allowedParentAreas = nextConfig.allowedParentAreas;
+    coreConfigDraft.streamers.splice(0);
   } finally {
     queueMicrotask(() => {
-      pendingRemoteCoreConfigSyncCount = Math.max(0, pendingRemoteCoreConfigSyncCount - 1);
-      syncingCoreConfigFromRemote = pendingRemoteCoreConfigSyncCount > 0;
+      hydratingCoreConfigDraft = false;
     });
   }
 };
@@ -284,7 +295,6 @@ const loadProfile = async () => {
     setAuthToken(token.value);
     await danmakuService.initialize(localConfig);
     await danmakuService.refreshControlState();
-    syncConfig(runtimeState.coreConfig);
     setServerLoggedIn(true);
     try {
       availableAreas.value = await getDanmakuAreas();
@@ -531,17 +541,17 @@ const syncDesktopLocalConfig = async () => {
   syncingAutoStartFromDesktop = false;
 };
 
-watch(coreConfig, () => {
-  if (syncingCoreConfigFromRemote) return;
+watch(coreConfigDraft, () => {
+  if (hydratingCoreConfigDraft) return;
   scheduleCoreConfigAutoSave();
 }, { deep: true });
 
 watch(
-  () => runtimeState.coreConfig,
-  (config) => {
-    syncConfig(config);
+  () => buildCoreConfigSyncKey(runtimeState.coreConfig),
+  () => {
+    applyCoreConfigDraft(runtimeState.coreConfig);
   },
-  { deep: true, immediate: true }
+  { immediate: true, flush: 'post' }
 );
 
 watch(localConfig, () => {
@@ -668,8 +678,6 @@ onBeforeUnmount(() => {
               :local-client-id="localClientId"
               :account-name="accountNameForDisplay"
               :account-id="accountIdForDisplay"
-              :auth-state="runtimeState.authState"
-              :last-heartbeat-text="lastHeartbeatText"
               :refreshing-state="refreshingState"
               :forcing-lock="forcingLock"
               :starting-core="startingCore"
@@ -683,7 +691,7 @@ onBeforeUnmount(() => {
             <CoreControlSettingsTab
               v-else-if="currentPage === 'settings'"
               key="settings"
-              :core-config="coreConfig"
+              :core-config="coreConfigDraft"
               :local-config="localConfig"
               :auth-state="runtimeState.authState"
               :available-areas="availableAreas"

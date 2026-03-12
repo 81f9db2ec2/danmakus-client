@@ -89,6 +89,16 @@ type RuntimeStateSnapshot = {
 
 const RUNTIME_ERROR_AUTO_DISMISS_MS = 5 * 60 * 1000;
 
+const getRuntimeErrorAutoDismissDelay = (
+  startedAt: number | null,
+  now: number = Date.now()
+): number | null => {
+  if (startedAt === null) {
+    return null;
+  }
+  return startedAt + RUNTIME_ERROR_AUTO_DISMISS_MS - now;
+};
+
 
 const normalizeRoomId = (value: unknown): number | null => {
   const roomId = typeof value === 'number' ? value : Number(value);
@@ -106,30 +116,30 @@ const props = defineProps<{
   localClientId: string;
   accountName: string;
   accountId: number | null;
-  authState: AuthStateSnapshot;
-  lastHeartbeatText: string;
   refreshingState: boolean;
   forcingLock: boolean;
   startingCore: boolean;
   stoppingCore: boolean;
 }>();
 
+const authState = computed(() => props.runtimeState.authState);
+
 const activeAuthProfile = computed(() =>
-  props.authState.cookieCloud.profile
-  ?? props.authState.local.profile
+  authState.value.cookieCloud.profile
+  ?? authState.value.local.profile
   ?? null
 );
 
 const cookieStatusText = computed(() => {
-  if (props.authState.phase === 'syncing') return '同步中';
-  if (props.authState.hasUsableCookie) {
-    return props.authState.activeSource === 'cookieCloud' ? 'CookieCloud 有效' : '本地登录有效';
+  if (authState.value.phase === 'syncing') return '同步中';
+  if (authState.value.hasUsableCookie) {
+    return authState.value.activeSource === 'cookieCloud' ? 'CookieCloud 有效' : '本地登录有效';
   }
-  if (props.authState.lastError) return '无效';
+  if (authState.value.lastError) return '无效';
   return '未配置';
 });
 
-const cookieStatusType = computed(() => props.authState.hasUsableCookie ? 'success' : 'warning');
+const cookieStatusType = computed(() => authState.value.hasUsableCookie ? 'success' : 'warning');
 
 const getHoldingRoomShortfallReasonText = (reason: string | null | undefined): string => {
   switch (reason) {
@@ -145,8 +155,8 @@ const getHoldingRoomShortfallReasonText = (reason: string | null | undefined): s
 };
 
 const authSourceText = computed(() => {
-  if (props.authState.activeSource === 'cookieCloud') return '当前使用 CookieCloud';
-  if (props.authState.activeSource === 'local') return '当前使用本地扫码登录';
+  if (authState.value.activeSource === 'cookieCloud') return '当前使用 CookieCloud';
+  if (authState.value.activeSource === 'local') return '当前使用本地扫码登录';
   return '当前无可用鉴权';
 });
 
@@ -453,8 +463,6 @@ const dismissRuntimeError = () => {
 watch(
   () => props.runtimeState.lastError,
   (nextError, previousError) => {
-    clearRuntimeErrorAutoDismissTimer();
-
     if (nextError) {
       if (nextError !== previousError) {
         dismissedRuntimeError.value = null;
@@ -484,14 +492,36 @@ watch(
       retainedRuntimeErrorStartedAt.value = Date.now();
     }
 
-    const closingError = previousError;
+  },
+  { immediate: true }
+);
+
+watch(
+  () => [visibleRuntimeError.value, retainedRuntimeErrorStartedAt.value] as const,
+  ([nextError, startedAt]) => {
+    clearRuntimeErrorAutoDismissTimer();
+
+    if (nextError === null) {
+      return;
+    }
+
+    const remainingMs = getRuntimeErrorAutoDismissDelay(startedAt);
+    if (remainingMs === null) {
+      return;
+    }
+
+    if (remainingMs <= 0) {
+      dismissRuntimeError();
+      return;
+    }
+
+    const closingError = nextError;
     runtimeErrorAutoDismissTimer = window.setTimeout(() => {
-      if (props.runtimeState.lastError !== null || retainedRuntimeError.value !== closingError) {
+      if (visibleRuntimeError.value !== closingError) {
         return;
       }
-      retainedRuntimeError.value = null;
-      retainedRuntimeErrorStartedAt.value = null;
-    }, RUNTIME_ERROR_AUTO_DISMISS_MS);
+      dismissRuntimeError();
+    }, remainingMs);
   },
   { immediate: true }
 );
@@ -571,7 +601,8 @@ onBeforeUnmount(() => {
         </div>
         <p class="text-xs text-destructive/80">
           发生于 {{ runtimeErrorOccurredAgo }}
-          <span v-if="isRuntimeErrorRecovered">，错误已消失，5 分钟后自动关闭</span>
+          <span>，提示最多保留 5 分钟</span>
+          <span v-if="isRuntimeErrorRecovered">，当前已恢复</span>
         </p>
       </div>
     </Alert>

@@ -65,17 +65,6 @@ const clearAreas = (field: 'allowedAreas' | 'allowedParentAreas') => {
   coreConfig.value[field].splice(0);
 };
 
-const recordingItems = computed(() =>
-  [...recordings.value].sort((a, b) => {
-    const liveA = a.channel?.isLiving ? 1 : 0;
-    const liveB = b.channel?.isLiving ? 1 : 0;
-    if (liveA !== liveB) {
-      return liveB - liveA;
-    }
-    return Number(a.channel?.uId ?? 0) - Number(b.channel?.uId ?? 0);
-  })
-);
-
 const submitAddRecording = () => {
   const rawUid = newRecordingUid.value;
   const uid = typeof rawUid === 'string' ? Number(rawUid.trim()) : rawUid;
@@ -426,7 +415,7 @@ const emit = defineEmits<{
             </Button>
           </div>
 
-          <div v-for="item in recordingItems" :key="item.channel.uId"
+          <div v-for="item in recordings" :key="item.channel.uId"
             class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 p-3">
             <a :href="`https://space.bilibili.com/${item.channel.uId}`" target="_blank" rel="noopener noreferrer"
               class="flex min-w-0 flex-1 items-center gap-2.5 transition-opacity hover:opacity-80">
@@ -469,7 +458,7 @@ const emit = defineEmits<{
             </div>
           </div>
 
-          <div v-if="recordingItems.length === 0" class="rounded-lg border border-dashed p-6 text-center">
+          <div v-if="recordings.length === 0" class="rounded-lg border border-dashed p-6 text-center">
             <p class="text-sm text-muted-foreground">当前账号还没有录制主播</p>
           </div>
         </CardContent>

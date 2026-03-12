@@ -32,24 +32,14 @@ interface DanmakuControlStateContext {
   refreshHoldingRoomsIfNeeded(maxConnections: number, reason: string, options?: { force?: boolean }): Promise<boolean>;
   updateConnections(): void;
   refreshStatusNow(): void;
-  updateRecordingRooms(roomIds: number[]): void;
-  getUserInfo(): UserInfo | null;
-  setUserInfo(userInfo: UserInfo | null): void;
-  getRemoteClients(): CoreRuntimeStateDto[];
-  setRemoteClients(remoteClients: CoreRuntimeStateDto[]): void;
-  getRecordings(): RecordingInfoDto[];
-  setRecordings(recordings: RecordingInfoDto[]): void;
+  replaceUserInfo(userInfo: UserInfo | null): void;
+  replaceRemoteClients(remoteClients: CoreRuntimeStateDto[]): void;
+  replaceRecordings(recordings: RecordingInfoDto[]): void;
   getRecordingRoomIds(): number[];
-  setRecordingRoomIds(roomIds: number[]): void;
   getAccountConfigTag(): string | null;
-  setAccountConfigTag(tag: string | null): void;
   getClientsTag(): string | null;
-  setClientsTag(tag: string | null): void;
   getRecordingTag(): string | null;
-  setRecordingTag(tag: string | null): void;
-  cloneUserInfo(userInfo: UserInfo | null): UserInfo | null;
-  cloneRemoteClients(remoteClients: CoreRuntimeStateDto[]): CoreRuntimeStateDto[];
-  cloneRecordingList(recordings: RecordingInfoDto[]): RecordingInfoDto[];
+  updateSyncTags(tags: Partial<CoreSyncTagSnapshot>): void;
   areRoomIdsEqual(left: number[], right: number[]): boolean;
 }
 
@@ -174,15 +164,7 @@ export class DanmakuControlState {
   }
 
   updateSyncTags(tags: CoreSyncTagSnapshot): void {
-    if (tags.configTag !== null) {
-      this.context.setAccountConfigTag(tags.configTag);
-    }
-    if (tags.clientsTag !== null) {
-      this.context.setClientsTag(tags.clientsTag);
-    }
-    if (tags.recordingTag !== null) {
-      this.context.setRecordingTag(tags.recordingTag);
-    }
+    this.context.updateSyncTags(tags);
   }
 
   async refreshUserInfo(): Promise<void> {
@@ -191,7 +173,7 @@ export class DanmakuControlState {
       return;
     }
 
-    this.context.setUserInfo(this.context.cloneUserInfo(await accountClient.getUserInfo()));
+    this.context.replaceUserInfo(await accountClient.getUserInfo());
     this.context.emitControlStateChanged();
   }
 
@@ -215,10 +197,10 @@ export class DanmakuControlState {
     }
 
     const result = await accountClient.getCoreClients();
-    this.context.setRemoteClients(this.context.cloneRemoteClients(result.data));
+    this.context.replaceRemoteClients(result.data);
     this.updateSyncTags(result.tags);
     if (nextTag !== null) {
-      this.context.setClientsTag(nextTag);
+      this.context.updateSyncTags({ clientsTag: nextTag });
     }
     this.context.emitControlStateChanged();
   }
@@ -234,15 +216,10 @@ export class DanmakuControlState {
 
     const result = await accountClient.getRecordingList();
     const previousRecordingRoomIds = [...this.context.getRecordingRoomIds()];
-    this.context.setRecordings(this.context.cloneRecordingList(result.data));
-    this.context.setRecordingRoomIds(Array.from(new Set(this.context.getRecordings()
-      .map(item => Number(item.channel.roomId))
-      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
-      .map(roomId => Math.floor(roomId)))));
-    this.context.updateRecordingRooms(this.context.getRecordingRoomIds());
+    this.context.replaceRecordings(result.data);
     this.updateSyncTags(result.tags);
     if (nextTag !== null) {
-      this.context.setRecordingTag(nextTag);
+      this.context.updateSyncTags({ recordingTag: nextTag });
     }
     if (
       this.context.isRunning()
