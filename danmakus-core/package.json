@@ -1,6 +1,6 @@
 {
   "name": "danmakus-core",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Danmakus的弹幕客户端核心",
   "main": "dist/lib/index.js",
   "types": "dist/lib/index.d.ts",

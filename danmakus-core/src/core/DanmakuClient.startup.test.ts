@@ -182,7 +182,7 @@ describe('DanmakuClient startup', () => {
         });
       }
 
-      if (url === 'https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id') {
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true') {
         return new Response(JSON.stringify({ code: 200, data: null }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -207,7 +207,7 @@ describe('DanmakuClient startup', () => {
       'GET https://ukamnads.icu/api/v2/account/info',
       'GET https://ukamnads.icu/api/v2/account/recording',
       'POST https://ukamnads.icu/api/v2/core-runtime/sync',
-      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id'
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true'
     ]);
   });
 
@@ -257,7 +257,7 @@ describe('DanmakuClient startup', () => {
         });
       }
 
-      if (url === 'https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id') {
+      if (url === 'https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true') {
         return new Response(JSON.stringify({ code: 200, data: null }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -286,8 +286,8 @@ describe('DanmakuClient startup', () => {
       'GET https://api.danmakus.com/api/v2/account/recording',
       'POST https://ukamnads.icu/api/v2/core-runtime/sync',
       'POST https://api.danmakus.com/api/v2/core-runtime/sync',
-      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id',
-      'DELETE https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id'
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true',
+      'DELETE https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true'
     ]);
   });
 

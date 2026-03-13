@@ -448,7 +448,7 @@ export class DanmakuClient extends EventEmitter {
     await this.syncRuntimeState();
     if (this.accountClient) {
       try {
-        await this.accountClient.releaseRuntimeState(this.clientId);
+        await this.accountClient.releaseRuntimeState(this.clientId, { force: true });
       } catch (releaseError) {
         this.recordError(releaseError, { category: 'lock', code: 'LOCK_RELEASE_FAILED', recoverable: true });
         if (options?.suppressReleaseErrors) {

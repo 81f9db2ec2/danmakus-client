@@ -46,6 +46,15 @@ const getOrCreateClientId = (): string => {
   return created;
 };
 
+const hasRuntimeLockConflict = (message: string | null | undefined): boolean => {
+  if (!message) {
+    return false;
+  }
+
+  const normalized = message.replace(/\s+/g, '');
+  return normalized.includes('同一IP已存在其他客户端连接');
+};
+
 class DanmakuService {
   private static instance: DanmakuService;
   private client: DanmakuClient | null = null;
@@ -66,11 +75,11 @@ class DanmakuService {
     holdingRooms: [] as number[],
     holdingRoomShortfall: null as RuntimeRoomPullShortfallDto | null,
     lastError: null as string | null,
+    lockConflict: false,
+    lockConflictOwnerClientId: null as string | null,
     lastRoomAssigned: null as number | null,
     cookieValid: false,
     authState: createEmptyAuthState() as AuthStateSnapshot,
-    lockedByOther: false,
-    ownerClientId: null as string | null,
     lastHeartbeat: null as number | null,
     remoteClients: [] as RemoteClientSnapshot[],
     recordings: [] as RecordingInfoDto[],
@@ -300,10 +309,10 @@ class DanmakuService {
     this.state.holdingRooms = [];
     this.state.holdingRoomShortfall = null;
     this.state.lastError = null;
+    this.state.lockConflict = false;
+    this.state.lockConflictOwnerClientId = null;
     this.state.lastRoomAssigned = null;
     this.state.cookieValid = false;
-    this.state.lockedByOther = false;
-    this.state.ownerClientId = null;
     this.state.lastHeartbeat = null;
   }
 
@@ -361,6 +370,7 @@ class DanmakuService {
 
     this.client.on('error', (error: Error) => {
       this.state.lastError = error.message;
+      this.refreshRuntimeIndicators();
     });
   }
 
@@ -372,22 +382,18 @@ class DanmakuService {
     this.state.syncTags.configTag = snapshot.tags.configTag;
     this.state.syncTags.clientsTag = snapshot.tags.clientsTag;
     this.state.syncTags.recordingTag = snapshot.tags.recordingTag;
-    this.refreshRemoteOwnership();
+    this.refreshRuntimeIndicators();
   }
 
-  private refreshRemoteOwnership(): void {
+  private refreshRuntimeIndicators(): void {
     const normalizedClients = this.state.remoteClients;
-    const self = normalizedClients.find(client => client.clientId === this.localClientId) ?? null;
-    const activeOwner = normalizedClients
-      .filter(client => client.clientId !== this.localClientId && (client.isRunning || client.runtimeConnected))
+    const conflictOwner = normalizedClients
+      .filter(client => client.clientId !== this.localClientId)
       .sort((a, b) => (b.lastHeartbeat ?? 0) - (a.lastHeartbeat ?? 0))[0]
-      ?? normalizedClients.find(client => client.clientId !== this.localClientId)
       ?? null;
 
-    const owner = self ?? activeOwner;
-    this.state.ownerClientId = owner?.clientId ?? null;
-    this.state.lastHeartbeat = owner?.lastHeartbeat ?? null;
-    this.state.lockedByOther = self === null && activeOwner !== null;
+    this.state.lockConflict = hasRuntimeLockConflict(this.state.lastError);
+    this.state.lockConflictOwnerClientId = this.state.lockConflict ? (conflictOwner?.clientId ?? null) : null;
 
     if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
       this.state.isRunning = false;
@@ -401,6 +407,8 @@ class DanmakuService {
       this.state.messageCmdCountMap = {};
       this.state.lastRoomAssigned = null;
       this.state.lastError = null;
+      this.state.lockConflict = false;
+      this.state.lockConflictOwnerClientId = null;
     }
   }
 
@@ -423,6 +431,7 @@ class DanmakuService {
     this.state.lastRoomAssigned = status.lastRoomAssigned ?? null;
     this.state.lastError = status.lastError ?? null;
     this.state.lastHeartbeat = status.lastHeartbeat ?? null;
+    this.refreshRuntimeIndicators();
   }
 
   private buildRuntimeHeaders(): Record<string, string> | undefined {

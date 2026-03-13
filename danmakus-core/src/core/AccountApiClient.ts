@@ -136,8 +136,9 @@ export class AccountApiClient {
     });
   }
 
-  async releaseRuntimeState(clientId: string): Promise<void> {
-    await this.requestRuntime(`/state?clientId=${encodeURIComponent(clientId)}`, {
+  async releaseRuntimeState(clientId: string, options?: { force?: boolean }): Promise<void> {
+    const suffix = options?.force ? `?clientId=${encodeURIComponent(clientId)}&force=true` : `?clientId=${encodeURIComponent(clientId)}`;
+    await this.requestRuntime(`/state${suffix}`, {
       method: 'DELETE'
     });
   }

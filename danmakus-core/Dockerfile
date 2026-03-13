@@ -27,4 +27,3 @@ COPY --from=build /app/dist/danmakus ./danmakus
 USER danmakus
 
 ENTRYPOINT ["./danmakus"]
-CMD ["--help"]

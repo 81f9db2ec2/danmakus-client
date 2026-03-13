@@ -80,9 +80,9 @@ type RuntimeStateSnapshot = {
   holdingRooms: number[];
   holdingRoomShortfall: RuntimeRoomPullShortfallDto | null;
   streamerStatuses: StreamerStatus[];
-  lockedByOther: boolean;
-  ownerClientId: string | null;
   lastError: string | null;
+  lockConflict: boolean;
+  lockConflictOwnerClientId: string | null;
   lastRoomAssigned: number | null;
   authState: AuthStateSnapshot;
 };
@@ -568,11 +568,16 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Alerts -->
-    <Alert v-if="runtimeState.lockedByOther" class="border-amber-300/80 bg-amber-500/10">
+    <Alert v-if="runtimeState.lockConflict" class="border-amber-300/80 bg-amber-500/10">
       <AlertCircle class="h-4 w-4 text-amber-600 dark:text-amber-300" />
-      <AlertTitle>核心锁被占用</AlertTitle>
+      <AlertTitle>核心锁冲突</AlertTitle>
       <AlertDescription class="flex items-center justify-between gap-3">
-        <span>当前核心锁由 <code class="rounded bg-muted px-1 text-xs">{{ runtimeState.ownerClientId || '未知' }}</code> 持有</span>
+        <span>
+          当前账号下已有同 IP 客户端持有核心锁
+          <template v-if="runtimeState.lockConflictOwnerClientId">
+            ：<code class="rounded bg-muted px-1 text-xs">{{ runtimeState.lockConflictOwnerClientId }}</code>
+          </template>
+        </span>
         <Button variant="outline" size="sm" :disabled="forcingLock" @click="emit('force-takeover')">
           <Loader2 v-if="forcingLock" class="h-3.5 w-3.5 animate-spin" />
           强制接管

@@ -13,7 +13,7 @@ const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
 program
   .name('danmakus')
   .description('轻量弹幕采集工具')
-  .version('1.0.1');
+  .version('1.0.2');
 
 program
   .option('-m, --max-connections <number>', '最大连接数 (1-100)', '15')
