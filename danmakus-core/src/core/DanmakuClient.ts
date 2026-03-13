@@ -98,6 +98,7 @@ export class DanmakuClient extends EventEmitter {
   private assignmentTag: string | null = null;
   private clientsTag: string | null = null;
   private recordingTag: string | null = null;
+  private runtimeLockConflictStopping = false;
   private userInfo: UserInfo | null = null;
   private remoteClients: CoreRuntimeStateDto[] = [];
   private recordings: RecordingInfoDto[] = [];
@@ -164,6 +165,7 @@ export class DanmakuClient extends EventEmitter {
       buildRuntimeStateSnapshot: () => this.buildRuntimeStateSnapshot(),
       buildRuntimeHeartbeatPayload: () => this.buildRuntimeHeartbeatPayload(),
       handleHeartbeatResult: (result) => this.handleRuntimeHeartbeatResult(result),
+      handleRuntimeLockConflict: (reason) => this.handleRuntimeLockConflict(reason),
       refreshHoldingRoomsIfNeeded: (maxConnections, reason, options) => this.refreshHoldingRoomsIfNeeded(maxConnections, reason, options),
       updateConnections: () => this.updateConnections(),
     });
@@ -356,7 +358,9 @@ export class DanmakuClient extends EventEmitter {
       this.logger.info('正在启动弹幕客户端...');
 
       await this.prepareAccountConfig();
+      this.logger.info('正在校验 Cookie 状态...');
       await this.ensureCookieReadyForStartup();
+      this.logger.info('正在获取核心运行锁...');
       await this.acquireRuntimeLock();
 
       this.authManager.start();
@@ -369,7 +373,7 @@ export class DanmakuClient extends EventEmitter {
         throw new Error('无法连接到Runtime服务器');
       }
 
-      // 首次注册前先强制同步空连接态，清理同 clientId 旧心跳残留导致的容量误判
+      // 首次注册前同步空连接态，清理同 clientId 旧心跳残留导致的容量误判
       await this.syncRuntimeState({
         isRunning: true,
         runtimeConnected: true,
@@ -378,7 +382,7 @@ export class DanmakuClient extends EventEmitter {
         holdingRooms: [],
         lastRoomAssigned: null,
         holdingRoomShortfall: null,
-      }, { force: true, strict: true });
+      }, { strict: true });
 
       this.isRunning = true;
       this.messageCount = 0;
@@ -406,7 +410,7 @@ export class DanmakuClient extends EventEmitter {
   /**
    * 停止客户端
    */
-  async stop(options?: { suppressReleaseErrors?: boolean }): Promise<void> {
+  async stop(options?: { suppressReleaseErrors?: boolean; skipRuntimeRelease?: boolean }): Promise<void> {
     this.runtimeGeneration += 1;
     this.logger.info('正在停止弹幕客户端...');
     this.isStopping = true;
@@ -445,8 +449,10 @@ export class DanmakuClient extends EventEmitter {
     this.recentErrors = [];
     this.messageQueue.resetState();
     this.clearHeartbeat();
-    await this.syncRuntimeState();
-    if (this.accountClient) {
+    if (!options?.skipRuntimeRelease) {
+      await this.syncRuntimeState();
+    }
+    if (this.accountClient && !options?.skipRuntimeRelease) {
       try {
         await this.accountClient.releaseRuntimeState(this.clientId, { force: true });
       } catch (releaseError) {
@@ -963,7 +969,7 @@ export class DanmakuClient extends EventEmitter {
     }
 
     if ((previous.capacityOverride ?? undefined) !== (next.capacityOverride ?? undefined) && this.isRunning) {
-      void this.syncRuntimeState({}, { force: true }).catch((error) => {
+      void this.syncRuntimeState().catch((error) => {
         this.logger.warn('热更新 capacityOverride 后同步运行态失败', error);
       });
     }
@@ -1503,6 +1509,26 @@ export class DanmakuClient extends EventEmitter {
 
   private handleRuntimeSessionInvalid(reason: string): void {
     this.runtimeSync.handleRuntimeSessionInvalid(reason);
+  }
+
+  private handleRuntimeLockConflict(reason: string): void {
+    if (!this.isRunning || this.isStopping || this.runtimeLockConflictStopping) {
+      return;
+    }
+
+    this.runtimeLockConflictStopping = true;
+    const normalizedReason = reason.trim() || '核心锁已失效';
+    const error = new Error(normalizedReason);
+    this.logger.warn(`检测到核心锁失效，停止客户端以避免重复录制: ${normalizedReason}`);
+    this.emit('error', error);
+    void this.stop({ suppressReleaseErrors: true, skipRuntimeRelease: true })
+      .catch((stopError) => {
+        this.recordError(stopError, { category: 'lock', code: 'LOCK_CONFLICT_STOP_FAILED' });
+        this.logger.error('核心锁失效后停止客户端失败', stopError);
+      })
+      .finally(() => {
+        this.runtimeLockConflictStopping = false;
+      });
   }
 
 

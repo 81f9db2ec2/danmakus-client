@@ -29,6 +29,7 @@ interface DanmakuRuntimeSyncContext {
   buildRuntimeStateSnapshot(): CoreRuntimeStateDto;
   buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string };
   handleHeartbeatResult(result: HeartbeatRuntimeStateResult): Promise<void>;
+  handleRuntimeLockConflict(reason: string): void;
   refreshHoldingRoomsIfNeeded(
     maxConnections: number,
     reason: string,
@@ -153,12 +154,16 @@ export class DanmakuRuntimeSync {
         await runtimeConnection.connect();
       }
     } catch (error) {
+      const lockConflict = this.isLockConflictError(error);
       this.context.recordError(error, {
-        category: 'runtime-sync',
-        code: 'RUNTIME_HEARTBEAT_FAILED',
-        recoverable: true,
+        category: lockConflict ? 'lock' : 'runtime-sync',
+        code: lockConflict ? 'LOCK_CONFLICT' : 'RUNTIME_HEARTBEAT_FAILED',
+        recoverable: !lockConflict,
       });
       this.context.logger.warn('同步核心心跳失败', error);
+      if (lockConflict && !options?.strict) {
+        this.context.handleRuntimeLockConflict(this.getErrorMessage(error));
+      }
       if (options?.strict) {
         throw error;
       }
@@ -186,12 +191,16 @@ export class DanmakuRuntimeSync {
       await accountClient.syncRuntimeState(payload as any, { force: options?.force });
       this.lastHeartbeat = Date.now();
     } catch (error) {
+      const lockConflict = this.isLockConflictError(error);
       this.context.recordError(error, {
-        category: 'runtime-sync',
-        code: 'RUNTIME_SYNC_FAILED',
-        recoverable: true,
+        category: lockConflict ? 'lock' : 'runtime-sync',
+        code: lockConflict ? 'LOCK_CONFLICT' : 'RUNTIME_SYNC_FAILED',
+        recoverable: !lockConflict,
       });
       this.context.logger.warn('同步核心运行状态失败', error);
+      if (lockConflict && !options?.strict) {
+        this.context.handleRuntimeLockConflict(this.getErrorMessage(error));
+      }
       if (options?.strict) {
         throw error;
       }
@@ -231,7 +240,15 @@ export class DanmakuRuntimeSync {
       return;
     }
 
-    await this.syncRuntimeState({}, { force: true });
+    try {
+      await this.syncRuntimeState({}, { strict: true });
+    } catch (error) {
+      if (this.isLockConflictError(error)) {
+        this.context.handleRuntimeLockConflict(this.getErrorMessage(error));
+        return;
+      }
+      throw error;
+    }
     await this.context.refreshHoldingRoomsIfNeeded(this.context.getConfig().maxConnections, 'runtime-reconnect', {
       force: true,
     });

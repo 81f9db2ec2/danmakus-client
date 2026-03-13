@@ -24,6 +24,7 @@ const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
 const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
 const HEARTBEAT_FEATURES = 'clients,recording';
 const DEFAULT_ACCOUNT_API_BASE = 'https://ukamnads.icu/api/v2/account';
+const DEFAULT_BACKEND_REQUEST_TIMEOUT_MS = 15000;
 
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -206,6 +207,8 @@ export class AccountApiClient {
     return fetchBackendApiWithFallback(this.fetchImpl, `${baseUrl}${path}`, {
       ...init,
       headers
+    }, {
+      timeoutMs: DEFAULT_BACKEND_REQUEST_TIMEOUT_MS,
     });
   }
 

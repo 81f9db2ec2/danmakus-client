@@ -7,6 +7,7 @@ import { mergeCookieJar } from './BilibiliCookie';
 import { wrapBilibiliFetch } from './BilibiliUserAgent';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+const DEFAULT_BILIBILI_REQUEST_TIMEOUT_MS = 15000;
 
 type BiliNavResponse = {
   code?: unknown;
@@ -193,10 +194,36 @@ export class BilibiliAuthApi {
       headers.set('Cookie', normalizedCookie);
     }
 
-    return this.fetchImpl(url, {
-      ...init,
-      headers,
-    });
+    const controller = new AbortController();
+    const sourceSignal = init?.signal;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const handleAbort = () => {
+      controller.abort(sourceSignal?.reason);
+    };
+
+    if (sourceSignal) {
+      if (sourceSignal.aborted) {
+        controller.abort(sourceSignal.reason);
+      } else {
+        sourceSignal.addEventListener('abort', handleAbort, { once: true });
+      }
+    }
+
+    timeoutId = setTimeout(() => {
+      controller.abort(new Error(`Bilibili 请求超时(${DEFAULT_BILIBILI_REQUEST_TIMEOUT_MS}ms): ${url}`));
+    }, DEFAULT_BILIBILI_REQUEST_TIMEOUT_MS);
+
+    try {
+      return await this.fetchImpl(url, {
+        ...init,
+        headers,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+      sourceSignal?.removeEventListener('abort', handleAbort);
+    }
   }
 
   private readMergedCookie(currentCookie: string, response: Response): string {
