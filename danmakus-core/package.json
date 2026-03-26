@@ -1,0 +1,47 @@
+{
+  "name": "danmakus-core",
+  "version": "1.0.3",
+  "description": "Danmakus的弹幕客户端核心",
+  "main": "dist/lib/index.js",
+  "types": "dist/lib/index.d.ts",
+  "bin": {
+    "danmakus": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "bun run clean && bun run compile",
+    "clean": "bun -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
+    "compile": "tsc",
+    "dev": "bun run src/cli/index.ts",
+    "docker:build": "docker build -t danmakus-core:local .",
+    "docker:run": "docker run --rm danmakus-core:local --help",
+    "docker:test": "bun run scripts/docker-smoke-test.ts",
+    "start": "bun dist/cli/index.js",
+    "test": "bun test"
+  },
+  "keywords": [
+    "bilibili",
+    "danmaku",
+    "live",
+    "runtime",
+    "cli",
+    "library"
+  ],
+  "author": "danmakus-core",
+  "license": "MIT",
+  "dependencies": {
+    "@hpcc-js/wasm-zstd": "^1.12.0",
+    "@msgpack/msgpack": "^3.1.3",
+    "bilibili-live-danmaku": "^0.7.14",
+    "commander": "^14.0.2",
+    "eventemitter3": "^5.0.1",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

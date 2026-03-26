@@ -1,0 +1,517 @@
+import { describe, expect, test } from 'bun:test';
+import { DanmakuClient } from './DanmakuClient';
+
+const TEST_AUTH_UID = 42;
+
+const remoteConfig = {
+  maxConnections: 5,
+  runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
+  autoReconnect: true,
+  reconnectInterval: 5000,
+  statusCheckInterval: 30,
+  cookieCloudKey: null,
+  cookieCloudPassword: null,
+  cookieCloudHost: null,
+  cookieRefreshInterval: 3600,
+  streamers: [],
+  requestServerRooms: true,
+  allowedAreas: [],
+  allowedParentAreas: []
+};
+
+describe('DanmakuClient startup', () => {
+  test('reloads user info and recording list on every start', async () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      requestServerRooms: false,
+      streamers: []
+    });
+
+    const updatedRecordingRooms: number[][] = [];
+    const statusManager = {
+      start: () => undefined,
+      stop: () => undefined,
+      updateHoldingRooms: () => undefined,
+      updateRecordingRooms: (rooms: number[]) => {
+        updatedRecordingRooms.push([...rooms]);
+      },
+      getAllStatuses: () => [],
+      getRoomsToConnect: () => [],
+      refreshNow: () => undefined,
+      getStreamerStatus: () => undefined,
+    };
+    const runtimeConnection = {
+      connect: async () => true,
+      disconnect: async () => undefined,
+      getConnectionState: () => true,
+      requestRooms: async () => null,
+      onConnected: undefined,
+      onReconnected: undefined,
+      onDisconnected: undefined,
+      onSessionInvalid: undefined,
+    };
+    let getUserInfoCallCount = 0;
+    let getRecordingListCallCount = 0;
+
+    client.initializeManagers = () => {
+      client.statusManager = statusManager;
+      client.runtimeConnection = runtimeConnection;
+    };
+    client.initializeManagers();
+    client.acquireRuntimeLock = async () => undefined;
+    client.ensureCookieReadyForStartup = async () => undefined;
+    client.refreshHoldingRoomsIfNeeded = async () => true;
+    client.syncRuntimeState = async () => undefined;
+    client.accountClient = {
+      getCoreConfig: async () => remoteConfig,
+      getCoreConfigTag: () => 'config-tag',
+      getUserInfo: async () => {
+        getUserInfoCallCount += 1;
+        return {
+          id: 42,
+          name: '测试用户',
+          bindedOAuth: [],
+          recievedDanmakusCount: 0,
+        };
+      },
+      getRecordingList: async () => {
+        getRecordingListCallCount += 1;
+        return {
+          data: [
+            {
+              channel: {
+                uId: 1001,
+                roomId: 2233,
+                uName: '测试主播',
+                faceUrl: '',
+                isLiving: true,
+              },
+              setting: {
+                isPublic: true,
+              },
+              todayDanmakusCount: 0,
+              providedDanmakuDataCount: 0,
+              providedMessageCount: 0,
+            },
+          ],
+          tags: {
+            recordingTag: 'recording-tag',
+            configTag: 'config-tag',
+            clientsTag: null,
+          },
+        };
+      },
+      releaseRuntimeState: async () => undefined,
+    };
+
+    await client.start();
+
+    expect(getUserInfoCallCount).toBe(1);
+    expect(getRecordingListCallCount).toBe(1);
+    expect(client.recordingRoomIds).toEqual([2233]);
+    expect(client.getControlState().userInfo?.id).toBe(42);
+    expect(client.getControlState().recordings.map((item: any) => item.channel.roomId)).toEqual([2233]);
+
+    await client.stop();
+    expect(client.recordingRoomIds).toEqual([]);
+
+    await client.start();
+
+    expect(getUserInfoCallCount).toBe(2);
+    expect(getRecordingListCallCount).toBe(2);
+    expect(client.recordingRoomIds).toEqual([2233]);
+    expect(updatedRecordingRooms).toContainEqual([2233]);
+  });
+
+  test('derives runtime auth headers from account token and client id', async () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      streamers: []
+    });
+
+    const connected = await client.runtimeConnection.connect();
+
+    expect(connected).toBe(true);
+    expect(client.runtimeConnection.getConnectionState()).toBe(true);
+  });
+
+  test('fails fast with clear error when no cookie source is available', async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(`${init?.method ?? 'GET'} ${url}`);
+
+      if (url === 'https://ukamnads.icu/api/v2/account/core-config') {
+        return new Response(JSON.stringify({ code: 200, data: remoteConfig }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://ukamnads.icu/api/v2/account/info') {
+        return new Response(JSON.stringify({
+          code: 200,
+          data: {
+            id: 1,
+            name: '测试用户',
+            bindedOAuth: [],
+            recievedDanmakusCount: 0,
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://ukamnads.icu/api/v2/account/recording') {
+        return new Response(JSON.stringify({ code: 200, data: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/sync') {
+        return new Response(JSON.stringify({ code: 200, data: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true') {
+        return new Response(JSON.stringify({ code: 200, data: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+    };
+
+    const client = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      fetchImpl,
+      maxConnections: 5,
+      streamers: []
+    });
+
+    await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
+    expect(requests).toEqual([
+      'GET https://ukamnads.icu/api/v2/account/core-config',
+      'GET https://ukamnads.icu/api/v2/account/info',
+      'GET https://ukamnads.icu/api/v2/account/recording',
+      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true'
+    ]);
+  });
+
+  test('falls back to api.danmakus.com for account and runtime api calls when ukamnads is unavailable', async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(`${init?.method ?? 'GET'} ${url}`);
+
+      if (url.startsWith('https://ukamnads.icu/api/')) {
+        return new Response('bad gateway', { status: 502 });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/account/core-config') {
+        return new Response(JSON.stringify({ code: 200, data: remoteConfig }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/account/info') {
+        return new Response(JSON.stringify({
+          code: 200,
+          data: {
+            id: 1,
+            name: '测试用户',
+            bindedOAuth: [],
+            recievedDanmakusCount: 0,
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/account/recording') {
+        return new Response(JSON.stringify({ code: 200, data: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/core-runtime/sync') {
+        return new Response(JSON.stringify({ code: 200, data: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (url === 'https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true') {
+        return new Response(JSON.stringify({ code: 200, data: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+    };
+
+    const client = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      fetchImpl,
+      maxConnections: 5,
+      streamers: []
+    });
+
+    await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
+    expect(requests).toEqual([
+      'GET https://ukamnads.icu/api/v2/account/core-config',
+      'GET https://api.danmakus.com/api/v2/account/core-config',
+      'GET https://ukamnads.icu/api/v2/account/info',
+      'GET https://api.danmakus.com/api/v2/account/info',
+      'GET https://ukamnads.icu/api/v2/account/recording',
+      'GET https://api.danmakus.com/api/v2/account/recording',
+      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
+      'POST https://api.danmakus.com/api/v2/core-runtime/sync',
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true',
+      'DELETE https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true'
+    ]);
+  });
+
+  test('resolves live ws auth config from bilibili api when provider is absent', async () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      streamers: [],
+      cookieProvider: () => `DedeUserID=${TEST_AUTH_UID}; buvid3=test-buvid;`,
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = String(input);
+
+        if (url === 'https://api.bilibili.com/x/web-interface/nav') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              isLogin: true,
+              mid: TEST_AUTH_UID,
+              uname: '测试用户',
+              face: '',
+              money: 0,
+              vipStatus: 0,
+              vip_label: { text: '' },
+              level_info: { current_level: 6 },
+              wbi_img: {
+                img_url: 'https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz123456.png',
+                sub_url: 'https://i0.hdslb.com/bfs/wbi/uvwxyzabcdefghijklmnopqrstuvwxyz1234.png'
+              }
+            }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url === 'https://api.bilibili.com/x/web-frontend/getbuvid') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: { buvid: 'test-buvid' }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url.startsWith('https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?')) {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              token: 'test-token',
+              host_list: [
+                { host: 'tx-bj-live-comet-01.chat.bilibili.com', wss_port: 2245 },
+                { host: 'broadcastlv.chat.bilibili.com', wss_port: 2245 },
+                { host: 'tx-bj-live-comet-01.chat.bilibili.com', wss_port: 2245 },
+              ]
+            }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url === 'https://api.live.bilibili.com/room/v1/Room/room_init?id=6154037') {
+          return new Response(JSON.stringify({ code: 0, data: { room_id: 6154037 } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        throw new Error(`unexpected request: ${url}`);
+      }
+    });
+
+    const options = await client.resolveLiveWsConnectionOptions(6154037);
+
+    expect(options.roomId).toBe(6154037);
+    expect(options.key).toBe('test-token');
+    expect(options.address).toBe('wss://broadcastlv.chat.bilibili.com:2245/sub');
+    expect(options.fallbackAddresses).toEqual(['wss://tx-bj-live-comet-01.chat.bilibili.com:2245/sub']);
+    expect(options.uid).toBe(TEST_AUTH_UID);
+    expect(options.buvid).toBe('test-buvid');
+  });
+
+  test('uses returned wss_port for the fixed broadcast host when host_list omits it', async () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      streamers: [],
+      cookieProvider: () => `DedeUserID=${TEST_AUTH_UID}; SESSDATA=test-session;`,
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = String(input);
+
+        if (url === 'https://api.bilibili.com/x/web-interface/nav') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              isLogin: true,
+              mid: TEST_AUTH_UID,
+              uname: '测试用户',
+              face: '',
+              money: 0,
+              wallet: { bcoin_balance: 0 },
+              level_info: { current_level: 6 },
+              vipStatus: 0,
+              vip_label: { text: '' },
+              wbi_img: {
+                img_url: 'https://i0.hdslb.com/bfs/wbi/test-image.png',
+                sub_url: 'https://i0.hdslb.com/bfs/wbi/test-sub.png',
+              },
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url === 'https://api.bilibili.com/x/web-frontend/getbuvid') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: { buvid: 'test-buvid' }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url.startsWith('https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?')) {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              token: 'test-token',
+              host_list: [
+                { host: 'tx-bj-live-comet-01.chat.bilibili.com', wss_port: 2245 },
+                { host: 'bd-bj-live-comet-10.chat.bilibili.com', wss_port: 2245 },
+              ]
+            }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        if (url === 'https://api.live.bilibili.com/room/v1/Room/room_init?id=6154037') {
+          return new Response(JSON.stringify({ code: 0, data: { room_id: 6154037 } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        throw new Error(`unexpected request: ${url}`);
+      }
+    });
+
+    const options = await client.resolveLiveWsConnectionOptions(6154037);
+
+    expect(options.address).toBe('wss://broadcastlv.chat.bilibili.com:2245/sub');
+    expect(options.fallbackAddresses).toEqual([
+      'wss://tx-bj-live-comet-01.chat.bilibili.com:2245/sub',
+      'wss://bd-bj-live-comet-10.chat.bilibili.com:2245/sub',
+    ]);
+  });
+
+  test('uses interactive login provider when no cookie source is configured', async () => {
+    let interactiveLoginCallCount = 0;
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      streamers: [],
+      interactiveLoginProvider: async () => {
+        interactiveLoginCallCount += 1;
+        return `DedeUserID=${TEST_AUTH_UID}; SESSDATA=test-session; buvid3=test-buvid;`;
+      },
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === 'https://api.bilibili.com/x/web-interface/nav') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              isLogin: true,
+              mid: TEST_AUTH_UID,
+              uname: '测试用户',
+              face: '',
+              money: 0,
+              vipStatus: 0,
+              vip_label: { text: '' },
+              level_info: { current_level: 6 }
+            }
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        throw new Error(`unexpected request: ${url}`);
+      }
+    });
+
+    await expect(client.ensureCookieReadyForStartup()).resolves.toBeUndefined();
+    expect(interactiveLoginCallCount).toBe(1);
+    expect(client.getStatus().authState.activeSource).toBe('local');
+    expect(client.getStatus().authState.hasUsableCookie).toBe(true);
+  });
+
+  test('does not rebuild managers when stopped and pulled account config is unchanged', async () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      accountToken: 'token',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    let initializeManagersCallCount = 0;
+    client.initializeManagers = () => {
+      initializeManagersCallCount += 1;
+    };
+
+    await client.applyAccountConfigSnapshot(client.getControlState().config, 'config-tag');
+
+    expect(initializeManagersCallCount).toBe(0);
+  });
+});

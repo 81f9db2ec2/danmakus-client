@@ -1,0 +1,58 @@
+import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+import tailwindcss from "@tailwindcss/vite";
+import tsconfigPaths from "vite-tsconfig-paths";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+
+const host = process.env.TAURI_DEV_HOST;
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const packageJson = JSON.parse(readFileSync(path.resolve(__dirname, "./package.json"), "utf8")) as { version?: string };
+const appVersion = packageJson.version?.trim() || "0.0.0";
+
+// https://vitejs.dev/config/
+export default defineConfig(async () => ({
+  plugins: [vue(), tailwindcss(), tsconfigPaths()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+      'danmakus-core': path.resolve(__dirname, './danmakus-core/src/lib')
+    }
+  },
+
+  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+  //
+  // 1. prevent vite from obscuring rust errors
+  clearScreen: false,
+  // 2. tauri expects a fixed port, fail if that port is not available
+  server: {
+    port: 1420,
+    strictPort: true,
+    host: host || false,
+    hmr: host
+      ? {
+          protocol: "ws",
+          host,
+          port: 1421,
+        }
+      : undefined,
+    watch: {
+      // 3. tell vite to ignore watching `src-tauri`
+      ignored: ["**/src-tauri/**"],
+    },
+    fs: {
+      allow: [
+        path.resolve(__dirname, '..'),
+        path.resolve(__dirname)
+      ]
+    }
+  },
+  optimizeDeps: {
+    exclude: ['danmakus-core']
+  }
+}));
