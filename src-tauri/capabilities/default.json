@@ -12,6 +12,7 @@
     "core:window:allow-unminimize",
     "core:window:allow-set-focus",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "opener:default",
     "websocket:default",
     "updater:default",
