@@ -129,13 +129,13 @@ const getHoldingRoomShortfallReasonText = (shortfall: RuntimeRoomPullShortfallDt
 
   switch (reason) {
     case 'no_candidates':
-      return '没有更多需要录制的直播间，请等待主播开播或状态更新';
+      return '暂时没有更多需要录制的直播间，请等待主播开播或状态更新';
     case 'blocked_by_reservations':
       return blockedBySameAccountCount > 0 && blockedByOtherAccountsCount <= 0
         ? '可分配的直播间已被同账号下的其他客户端占用'
-        : '没有更多需要录制的直播间';
+        : '暂时没有更多需要录制的直播间';
     case 'candidate_pool_exhausted':
-      return '已补充部分直播间，但是已经没有更多需要录制的主播';
+      return '已补充部分直播间，但是暂时已经没有更多需要录制的主播';
     default:
       return '暂时还不能补满录制位';
   }

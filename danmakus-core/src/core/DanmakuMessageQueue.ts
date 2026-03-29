@@ -406,6 +406,11 @@ export class DanmakuMessageQueue {
 
       const retryUpdates: LiveSessionOutboxRescheduleUpdate[] = [];
       const rejectedIds: number[] = [];
+      const rejectedRecords: Array<{
+        record: LiveSessionOutboxItem;
+        code: string;
+        message: string;
+      }> = [];
       for (const record of records) {
         if (ackedIdSet.has(record.id)) {
           continue;
@@ -414,9 +419,11 @@ export class DanmakuMessageQueue {
         const rejected = rejectedById.get(record.id);
         if (rejected) {
           rejectedIds.push(record.id);
-          this.context.emitError(new Error(
-            `归档弹幕被后端拒绝: streamerUid=${record.streamerUid}, localId=${record.id}, code=${rejected.code}, err=${rejected.message}`
-          ));
+          rejectedRecords.push({
+            record,
+            code: rejected.code,
+            message: rejected.message,
+          });
           continue;
         }
 
@@ -428,14 +435,20 @@ export class DanmakuMessageQueue {
         });
       }
 
-      if (retryUpdates.length > 0) {
-        await outbox.reschedule(retryUpdates);
-      }
       if (rejectedIds.length > 0) {
         const deleted = await outbox.ack(rejectedIds);
         this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
+        if (deleted !== rejectedIds.length) {
+          throw new Error(`live session outbox 删除 rejected 记录数量异常: expected=${rejectedIds.length}, actual=${deleted}`);
+        }
+      }
+      if (retryUpdates.length > 0) {
+        await outbox.reschedule(retryUpdates);
       }
       this.emitPendingCountChanged();
+      if (rejectedRecords.length > 0) {
+        this.emitRejectedOutboxErrors(rejectedRecords);
+      }
     } catch (error) {
       const retryUpdates: LiveSessionOutboxRescheduleUpdate[] = [];
 
@@ -454,6 +467,46 @@ export class DanmakuMessageQueue {
 
       this.emitPendingCountChanged();
       this.context.logger.error('live session outbox 上传失败:', error);
+    }
+  }
+
+  private emitRejectedOutboxErrors(rejectedRecords: Array<{
+    record: LiveSessionOutboxItem;
+    code: string;
+    message: string;
+  }>): void {
+    const summaries = new Map<string, {
+      streamerUid: number;
+      code: string;
+      message: string;
+      count: number;
+      firstLocalId: number;
+    }>();
+
+    for (const item of rejectedRecords) {
+      const key = `${item.record.streamerUid}:${item.code}\u0000${item.message}`;
+      const existing = summaries.get(key);
+      if (existing) {
+        existing.count += 1;
+        continue;
+      }
+
+      summaries.set(key, {
+        streamerUid: item.record.streamerUid,
+        code: item.code,
+        message: item.message,
+        count: 1,
+        firstLocalId: item.record.id,
+      });
+    }
+
+    for (const summary of summaries.values()) {
+      const localIdText = summary.count > 1
+        ? `count=${summary.count}, firstLocalId=${summary.firstLocalId}`
+        : `localId=${summary.firstLocalId}`;
+      this.context.emitError(new Error(
+        `归档弹幕被后端拒绝: streamerUid=${summary.streamerUid}, ${localIdText}, code=${summary.code}, err=${summary.message}`
+      ));
     }
   }
 
