@@ -2,9 +2,9 @@ import {
   BiliAuthProfile,
   BilibiliQrLoginPollResult,
   BilibiliQrLoginSessionInfo,
-} from '../types';
-import { mergeCookieJar } from './BilibiliCookie';
-import { wrapBilibiliFetch } from './BilibiliUserAgent';
+} from '../types/index.js';
+import { mergeCookieJar } from './BilibiliCookie.js';
+import { wrapBilibiliFetch } from './BilibiliUserAgent.js';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 const DEFAULT_BILIBILI_REQUEST_TIMEOUT_MS = 15000;

@@ -7,8 +7,8 @@ import {
   ResponseValue,
   UpdateRecordingSettingPayload,
   UserInfo,
-} from '../types';
-import { fetchBackendApiWithFallback } from './BackendApiFallback';
+} from '../types/index.js';
+import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
 
 type HeartbeatRuntimeStateResult = {
   configTag: string | null;

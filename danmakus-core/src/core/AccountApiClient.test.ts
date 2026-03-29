@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { AccountApiClient } from './AccountApiClient';
+import { AccountApiClient } from './AccountApiClient.js';
 
 describe('AccountApiClient', () => {
   test('heartbeatRuntimeState should read config and assignment tags from headers', async () => {

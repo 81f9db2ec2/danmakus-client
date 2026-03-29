@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ConfigManager } from './ConfigManager';
+import { ConfigManager } from './ConfigManager.js';
 
 describe('ConfigManager CookieCloud overrides', () => {
   test('keeps local CookieCloud config when applying account config', () => {

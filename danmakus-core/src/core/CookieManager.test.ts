@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CookieManager } from './CookieManager';
+import { CookieManager } from './CookieManager.js';
 
 const cookieCloudResponse = {
   cookie_data: {

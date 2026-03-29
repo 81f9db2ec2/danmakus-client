@@ -13,7 +13,7 @@
         "./*"
       ],
       "@/*": ["./src/*"],
-      "danmakus-core": ["./danmakus-core/src/lib"],
+      "danmakus-core": ["./danmakus-core/src/lib/index.ts"],
       "danmakus-core/*": ["./danmakus-core/src/*"]
     },
     "allowImportingTsExtensions": true,

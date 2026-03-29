@@ -1,17 +1,17 @@
-import EventEmitter from 'eventemitter3';
+import { EventEmitter } from 'eventemitter3';
 import { LiveWS } from 'bilibili-live-danmaku';
-import { AuthManager } from './AuthManager';
-import { BilibiliLiveWsAuthApi } from './BilibiliLiveWsAuthApi';
-import { ConfigManager } from './ConfigManager';
-import { RuntimeConnection } from './RuntimeConnection';
-import { StreamerStatusManager } from './StreamerStatusManager';
-import { AccountApiClient } from './AccountApiClient';
-import { readCookieValue } from './BilibiliCookie';
-import { DanmakuMessageQueue } from './DanmakuMessageQueue';
-import { DanmakuRuntimeSync } from './DanmakuRuntimeSync';
-import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator';
-import { DanmakuControlState } from './DanmakuControlState';
-import { createInMemoryLiveSessionOutbox } from './InMemoryLiveSessionOutbox';
+import { AuthManager } from './AuthManager.js';
+import { BilibiliLiveWsAuthApi } from './BilibiliLiveWsAuthApi.js';
+import { ConfigManager } from './ConfigManager.js';
+import { RuntimeConnection } from './RuntimeConnection.js';
+import { StreamerStatusManager } from './StreamerStatusManager.js';
+import { AccountApiClient } from './AccountApiClient.js';
+import { readCookieValue } from './BilibiliCookie.js';
+import { DanmakuMessageQueue } from './DanmakuMessageQueue.js';
+import { DanmakuRuntimeSync } from './DanmakuRuntimeSync.js';
+import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator.js';
+import { DanmakuControlState } from './DanmakuControlState.js';
+import { createInMemoryLiveSessionOutbox } from './InMemoryLiveSessionOutbox.js';
 import {
   DanmakuMessage,
   DanmakuClientEvents,
@@ -30,8 +30,8 @@ import {
   RecordingInfoDto,
   RuntimeRoomPullShortfallDto,
   UserInfo,
-} from '../types';
-import { ScopedLogger, normalizeLogLevel } from './Logger';
+} from '../types/index.js';
+import { ScopedLogger, normalizeLogLevel } from './Logger.js';
 
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
@@ -79,7 +79,7 @@ type LiveWsConnectionOptions = {
   protover?: 1 | 2 | 3;
 };
 
-export class DanmakuClient extends EventEmitter {
+export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private logger: ScopedLogger;
   private configManager: ConfigManager;
   private authManager!: AuthManager;

@@ -2,8 +2,8 @@ import type {
   ClientDanmakuArchiveItem,
   LiveSessionOutboxItem,
   UploadDanmakusV2Request,
-} from '../types';
-import { normalizeBinaryPayload } from './RawPacketCodec';
+} from '../types/index.js';
+import { normalizeBinaryPayload } from './RawPacketCodec.js';
 
 const toArchiveItem = (record: LiveSessionOutboxItem): ClientDanmakuArchiveItem => ({
   localId: record.id,

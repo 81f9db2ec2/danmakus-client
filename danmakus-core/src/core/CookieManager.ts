@@ -1,4 +1,4 @@
-import { CookieCloudResponse } from '../types';
+import { CookieCloudResponse } from '../types/index.js';
 
 export class CookieManager {
   private cookies: string = '';

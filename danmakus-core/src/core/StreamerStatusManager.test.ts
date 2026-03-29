@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { StreamerStatusManager } from "./StreamerStatusManager";
+import { StreamerStatusManager } from "./StreamerStatusManager.js";
 
 const TEST_STREAMER_STATUS_UID = 126;
 

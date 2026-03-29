@@ -1,5 +1,5 @@
-import { DanmakuClient } from '../core/DanmakuClient';
-import { CliOptions } from '../types';
+import { DanmakuClient } from '../core/DanmakuClient.js';
+import type { CliOptions } from '../types/index.js';
 
 type CliLogger = Pick<Console, 'log' | 'error'>;
 

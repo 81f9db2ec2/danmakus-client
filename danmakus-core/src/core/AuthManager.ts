@@ -3,9 +3,9 @@ import {
   AuthSourceStateSnapshot,
   AuthStateSnapshot,
   AuthSyncPhase,
-} from '../types';
-import { BilibiliAuthApi } from './BilibiliAuthApi';
-import { CookieManager } from './CookieManager';
+} from '../types/index.js';
+import { BilibiliAuthApi } from './BilibiliAuthApi.js';
+import { CookieManager } from './CookieManager.js';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 

@@ -1,6 +1,6 @@
 # danmakus-client
 
-`danmakus-client` 是Danmakus的弹幕客户端, 可以帮你记录弹幕并查询 😋
+`danmakus-client` 是 Danmakus 的桌面弹幕客户端，负责账号登录、采集核心控制、本地系统集成和更新能力。
 
 ## 文档
 
@@ -9,9 +9,11 @@
 
 ## 目录说明
 
-- `src/`: 前端界面与业务逻辑
+- `src/`: Vue 3 前端界面与业务逻辑
+- `src/components/core-control/`: 核心控制面板的各个标签页
+- `src/services/`: 本地应用桥接、更新、网络与运行时集成
 - `danmakus-core/`: 采集核心（可独立作为库/CLI）
-- `src-tauri/`: Tauri 相关代码
+- `src-tauri/`: Tauri 2 壳层与桌面集成
 
 ## 开发命令
 

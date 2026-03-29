@@ -3,7 +3,7 @@ import type {
   LiveSessionOutboxRescheduleUpdate,
   LiveSessionOutboxStore,
   LiveSessionOutboxInsert,
-} from './LocalArchiveTypes';
+} from './LocalArchiveTypes.js';
 
 export const createInMemoryLiveSessionOutbox = (): LiveSessionOutboxStore => {
   let nextId = 1;

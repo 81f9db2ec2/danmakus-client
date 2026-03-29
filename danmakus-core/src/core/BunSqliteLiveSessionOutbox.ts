@@ -1,11 +1,11 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import type { LiveSessionOutboxStore } from './LocalArchiveTypes';
+import type { LiveSessionOutboxStore } from './LocalArchiveTypes.js';
 import {
   createSqliteLiveSessionOutbox,
   type SqliteLiveSessionOutboxBackend,
   type SqliteLiveSessionOutboxValue,
-} from './SqliteLiveSessionOutbox';
+} from './SqliteLiveSessionOutbox.js';
 
 export const DEFAULT_BUN_LIVE_SESSION_OUTBOX_PATH = resolve(
   process.cwd(),

@@ -1,7 +1,7 @@
-import { StreamerStatus } from '../types';
-import { ScopedLogger } from './Logger';
-import { fetchBackendApiWithFallback } from './BackendApiFallback';
-import { wrapBilibiliFetch } from './BilibiliUserAgent';
+import { StreamerStatus } from '../types/index.js';
+import { ScopedLogger } from './Logger.js';
+import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
+import { wrapBilibiliFetch } from './BilibiliUserAgent.js';
 
 const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
   try {

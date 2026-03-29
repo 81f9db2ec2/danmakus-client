@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { DanmakuClient } from "./DanmakuClient";
+import { DanmakuClient } from "./DanmakuClient.js";
 
 const TEST_RECORDING_UID = 84;
 const TEST_STATUS_UID = 126;

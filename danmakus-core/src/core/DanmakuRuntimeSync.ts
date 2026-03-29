@@ -1,7 +1,7 @@
-import { AccountApiClient } from './AccountApiClient';
-import { ScopedLogger } from './Logger';
-import { RuntimeConnection } from './RuntimeConnection';
-import { CoreRuntimeStateDto, DanmakuConfig, ErrorCategory } from '../types';
+import { AccountApiClient } from './AccountApiClient.js';
+import { ScopedLogger } from './Logger.js';
+import { RuntimeConnection } from './RuntimeConnection.js';
+import { CoreRuntimeStateDto, DanmakuConfig, ErrorCategory } from '../types/index.js';
 
 const HEARTBEAT_MIN_INTERVAL = 2000;
 const LOCK_RETRY_MIN_COUNT = 1;

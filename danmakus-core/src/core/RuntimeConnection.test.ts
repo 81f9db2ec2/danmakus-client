@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { decode } from "@msgpack/msgpack";
 import { Zstd } from "@hpcc-js/wasm-zstd";
-import { RuntimeConnection } from "./RuntimeConnection";
+import { RuntimeConnection } from "./RuntimeConnection.js";
 
 const TEST_STREAMER_UID = 84;
 

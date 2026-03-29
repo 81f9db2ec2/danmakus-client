@@ -3,7 +3,7 @@ import type {
   LiveSessionOutboxItem,
   LiveSessionOutboxRescheduleUpdate,
   LiveSessionOutboxStore,
-} from './LocalArchiveTypes';
+} from './LocalArchiveTypes.js';
 
 const LIST_DUE_LIMIT_DEFAULT = 200;
 const LIST_DUE_LIMIT_MAX = 2000;

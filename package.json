@@ -8,9 +8,7 @@
     "sync:version": "bun run scripts/sync-version.ts",
     "build": "bun run sync:version && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "bun run sync:version && tauri",
-    "smoke:e2e": "bun run scripts/smoke-core-runtime.ts",
-    "contract:check": "bun run scripts/contract-check.ts"
+    "tauri": "bun run sync:version && tauri"
   },
   "dependencies": {
     "@hpcc-js/wasm-zstd": "^1.12.0",

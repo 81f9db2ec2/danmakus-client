@@ -1,4 +1,4 @@
-import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types';
+import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types/index.js';
 
 const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
 const DEFAULT_RUNTIME_URL = 'https://ukamnads.icu/api/v2/core-runtime';

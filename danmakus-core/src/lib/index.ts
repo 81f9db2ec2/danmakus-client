@@ -1,23 +1,23 @@
 // 导出核心类
-export { DanmakuClient } from '../core/DanmakuClient';
-export { AuthManager } from '../core/AuthManager';
-export { BilibiliAuthApi, BilibiliQrLoginSession } from '../core/BilibiliAuthApi';
-export { ConfigManager } from '../core/ConfigManager';
-export { CookieManager } from '../core/CookieManager';
-export { RuntimeConnection } from '../core/RuntimeConnection';
-export { StreamerStatusManager } from '../core/StreamerStatusManager';
-export { createSqliteLiveSessionOutbox } from '../core/SqliteLiveSessionOutbox';
+export { DanmakuClient } from '../core/DanmakuClient.js';
+export { AuthManager } from '../core/AuthManager.js';
+export { BilibiliAuthApi, BilibiliQrLoginSession } from '../core/BilibiliAuthApi.js';
+export { ConfigManager } from '../core/ConfigManager.js';
+export { CookieManager } from '../core/CookieManager.js';
+export { RuntimeConnection } from '../core/RuntimeConnection.js';
+export { StreamerStatusManager } from '../core/StreamerStatusManager.js';
+export { createSqliteLiveSessionOutbox } from '../core/SqliteLiveSessionOutbox.js';
 export type {
   SqliteLiveSessionOutboxBackend,
   SqliteLiveSessionOutboxValue,
-} from '../core/SqliteLiveSessionOutbox';
+} from '../core/SqliteLiveSessionOutbox.js';
 
 // 导出类型
-export * from '../types';
+export * from '../types/index.js';
 
 // 导出工具函数
-import { DanmakuClient } from '../core/DanmakuClient';
-import { DanmakuConfig } from '../types';
+import { DanmakuClient } from '../core/DanmakuClient.js';
+import { DanmakuConfig } from '../types/index.js';
 
 export const createDanmakuClient = (config?: Partial<DanmakuConfig>) => {
   return new DanmakuClient(config);

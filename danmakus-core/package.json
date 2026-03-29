@@ -2,8 +2,16 @@
   "name": "danmakus-core",
   "version": "1.0.3",
   "description": "Danmakus的弹幕客户端核心",
+  "type": "module",
   "main": "dist/lib/index.js",
   "types": "dist/lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib/index.d.ts",
+      "import": "./dist/lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "danmakus": "dist/cli/index.js"
   },

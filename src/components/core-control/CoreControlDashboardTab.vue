@@ -579,7 +579,7 @@ onBeforeUnmount(() => {
     </Alert>
 
     <!-- Status banner -->
-    <Card :class="['border transition-all', runtimeState.isRunning ? 'border-emerald-500/40 bg-gradient-to-r from-emerald-500/5 via-transparent to-transparent' : 'bg-card/60']">
+    <Card :class="['border transition-all', runtimeState.isRunning ? 'border-emerald-500/40 bg-linear-to-r from-emerald-500/5 via-transparent to-transparent' : 'bg-card/60']">
       <CardContent class="flex items-center gap-4 p-4">
         <div :class="['flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors', runtimeState.isRunning ? 'bg-emerald-500/15' : 'bg-muted']">
           <Server :class="['h-5 w-5', runtimeState.isRunning ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground']" />
@@ -736,7 +736,7 @@ onBeforeUnmount(() => {
               <img v-if="room.faceUrl" :src="room.faceUrl" :alt="room.username" referrerpolicy="no-referrer" class="h-6 w-6 rounded-full object-cover" />
               <div v-else class="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">?</div>
               <div class="min-w-0">
-                <p class="max-w-[140px] truncate text-xs font-medium" :title="room.username">
+                <p class="max-w-35 truncate text-xs font-medium" :title="room.username">
                   {{ room.username }}
                 </p>
                 <p class="text-[10px] text-muted-foreground">#{{ room.roomId }}</p>

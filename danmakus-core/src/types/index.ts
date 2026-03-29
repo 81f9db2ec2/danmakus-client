@@ -1,4 +1,4 @@
-import type { LiveSessionOutboxStore } from '../core/LocalArchiveTypes';
+import type { LiveSessionOutboxStore } from '../core/LocalArchiveTypes.js';
 
 export interface DanmakuMessage {
   roomId: number;
@@ -268,7 +268,7 @@ export interface CoreTaggedApiResult<T> {
   tags: CoreSyncTagSnapshot;
 }
 
-export * from '../core/LocalArchiveTypes';
+export * from '../core/LocalArchiveTypes.js';
 
 export type CoreConnectionPriority = 'high' | 'normal' | 'low' | 'server';
 

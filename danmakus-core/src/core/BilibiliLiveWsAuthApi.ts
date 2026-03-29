@@ -1,7 +1,7 @@
-import { LiveWsRoomConfig } from '../types';
-import { mergeCookieJar, readCookieValue } from './BilibiliCookie';
-import { BilibiliAuthApi } from './BilibiliAuthApi';
-import { getStartupBilibiliUserAgent } from './BilibiliUserAgent';
+import { LiveWsRoomConfig } from '../types/index.js';
+import { mergeCookieJar, readCookieValue } from './BilibiliCookie.js';
+import { BilibiliAuthApi } from './BilibiliAuthApi.js';
+import { getStartupBilibiliUserAgent } from './BilibiliUserAgent.js';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 

@@ -1,7 +1,7 @@
-import { DanmakuConfig, RuntimeRoomPullShortfallDto } from '../types';
-import { RuntimeConnection } from './RuntimeConnection';
-import { ScopedLogger } from './Logger';
-import { StreamerStatusManager } from './StreamerStatusManager';
+import { DanmakuConfig, RuntimeRoomPullShortfallDto } from '../types/index.js';
+import { RuntimeConnection } from './RuntimeConnection.js';
+import { ScopedLogger } from './Logger.js';
+import { StreamerStatusManager } from './StreamerStatusManager.js';
 
 type RoomPriority = 'high' | 'normal' | 'low' | 'server';
 

@@ -5,10 +5,10 @@ import {
   LiveSessionOutboxItem,
   LiveSessionOutboxRescheduleUpdate,
   LiveSessionOutboxStore,
-} from '../types';
-import { compressRawPacket } from './RawPacketCodec';
-import { ScopedLogger } from './Logger';
-import type { RuntimeConnection } from './RuntimeConnection';
+} from '../types/index.js';
+import { compressRawPacket } from './RawPacketCodec.js';
+import { ScopedLogger } from './Logger.js';
+import type { RuntimeConnection } from './RuntimeConnection.js';
 
 const MESSAGE_QUEUE_MIN_SIZE = 100;
 const MESSAGE_RETRY_MIN_DELAY = 200;

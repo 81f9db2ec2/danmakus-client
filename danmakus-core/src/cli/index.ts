@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { DanmakuClient } from '../core/DanmakuClient';
-import { createBunSqliteLiveSessionOutbox } from '../core/BunSqliteLiveSessionOutbox';
-import { createCliInteractiveLoginProvider } from './auth';
-import { attachCliEventListeners } from './runtime';
-import { CliOptions } from '../types';
+import * as readline from 'node:readline';
+import { DanmakuClient } from '../core/DanmakuClient.js';
+import { createBunSqliteLiveSessionOutbox } from '../core/BunSqliteLiveSessionOutbox.js';
+import { createCliInteractiveLoginProvider } from './auth.js';
+import { attachCliEventListeners } from './runtime.js';
+import type { CliOptions } from '../types/index.js';
 
 const program = new Command();
 const DEFAULT_RUNTIME_URL = 'https://ukamnads.icu/api/v2/core-runtime';
@@ -123,7 +124,6 @@ program
         console.log('  输入 "rooms" - 查看连接的房间');
 
         // 简单的命令行交互
-        const readline = require('readline');
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout

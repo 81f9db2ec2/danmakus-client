@@ -1,5 +1,5 @@
-import { AccountApiClient } from './AccountApiClient';
-import { ScopedLogger } from './Logger';
+import { AccountApiClient } from './AccountApiClient.js';
+import { ScopedLogger } from './Logger.js';
 import {
   CoreControlConfigDto,
   CoreControlStateSnapshot,
@@ -7,7 +7,7 @@ import {
   CoreSyncTagSnapshot,
   RecordingInfoDto,
   UserInfo,
-} from '../types';
+} from '../types/index.js';
 
 const CONTROL_SYNC_INTERVAL_MS = 5000;
 

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
-import { RuntimeConnection } from "./RuntimeConnection";
+import { RuntimeConnection } from "./RuntimeConnection.js";
 
 type StartedHost = {
   port: number;

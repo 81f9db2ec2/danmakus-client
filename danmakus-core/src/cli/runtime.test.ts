@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { attachCliEventListeners } from './runtime';
+import { attachCliEventListeners } from './runtime.js';
 
 describe('attachCliEventListeners', () => {
   test('does not register danmaku or gift payload logging in cli mode', () => {

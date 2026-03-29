@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { DanmakuMessage, LiveSessionOutboxItem, LiveSessionOutboxStore } from "../types";
-import { DanmakuMessageQueue } from "./DanmakuMessageQueue";
-import { ScopedLogger } from "./Logger";
+import type { DanmakuMessage, LiveSessionOutboxItem, LiveSessionOutboxStore } from "../types/index.js";
+import { DanmakuMessageQueue } from "./DanmakuMessageQueue.js";
+import { ScopedLogger } from "./Logger.js";
 
 const TEST_STREAMER_UID = 84;
 

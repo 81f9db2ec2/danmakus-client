@@ -16,6 +16,8 @@ const ensureZstdReady = async (): Promise<Zstd> => {
   return zstdInstancePromise;
 };
 
+void ensureZstdReady();
+
 export const encodeZstdMessagePack = async (payload: unknown): Promise<Uint8Array> => {
   const payloadBytes = messagePackEncoder.encode(payload);
   const zstd = await ensureZstdReady();

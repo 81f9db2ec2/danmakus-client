@@ -1,11 +1,11 @@
 import {
   LiveSessionOutboxItem,
   UploadDanmakusV2Response,
-} from '../types';
-import { ScopedLogger } from './Logger';
-import { encodeZstdMessagePack } from './DanmakuUploadCodec';
-import { fetchBackendApiWithFallback } from './BackendApiFallback';
-import { buildUploadDanmakusV2Request } from './UploadV2Client';
+} from '../types/index.js';
+import { ScopedLogger } from './Logger.js';
+import { encodeZstdMessagePack } from './DanmakuUploadCodec.js';
+import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
+import { buildUploadDanmakusV2Request } from './UploadV2Client.js';
 
 type RuntimeEnvelope<T> = {
   code?: number;

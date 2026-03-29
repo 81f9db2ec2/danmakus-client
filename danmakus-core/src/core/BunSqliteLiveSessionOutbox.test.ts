@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBunSqliteLiveSessionOutbox } from './BunSqliteLiveSessionOutbox';
+import { createBunSqliteLiveSessionOutbox } from './BunSqliteLiveSessionOutbox.js';
 
 const TEST_STREAMER_UID = 84;
 

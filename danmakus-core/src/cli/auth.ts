@@ -1,5 +1,5 @@
 import QRCode from 'qrcode';
-import { BilibiliAuthApi } from '../core/BilibiliAuthApi';
+import { BilibiliAuthApi } from '../core/BilibiliAuthApi.js';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { DanmakuConfig, RuntimeRoomPullShortfallDto } from "../types";
-import { DanmakuHoldingRoomCoordinator } from "./DanmakuHoldingRoomCoordinator";
-import { StreamerStatusManager } from "./StreamerStatusManager";
+import type { DanmakuConfig, RuntimeRoomPullShortfallDto } from "../types/index.js";
+import { DanmakuHoldingRoomCoordinator } from "./DanmakuHoldingRoomCoordinator.js";
+import { StreamerStatusManager } from "./StreamerStatusManager.js";
 
 function createCoordinatorContext(options?: {
   requestServerRooms?: boolean;
