@@ -8,6 +8,7 @@ type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 const WBI_KEY_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_BILIBILI_LIVE_WS_HOST = 'broadcastlv.chat.bilibili.com';
 const DEFAULT_BILIBILI_LIVE_WS_PORT = 2245;
+const DEFAULT_BILIBILI_LIVE_TCP_PORT = 2243;
 const WBI_MIXIN_KEY_ENC_TAB = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
   27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
@@ -157,6 +158,21 @@ function resolvePrimaryWssAddress(validHosts: Array<{ host: string; wss_port?: u
   );
 }
 
+function resolvePrimaryTcpPort(validHosts: Array<{ host: string; port?: unknown }>): number {
+  const broadcastHost = validHosts.find((hostInfo) => normalizeWsHostName(hostInfo.host) === DEFAULT_BILIBILI_LIVE_WS_HOST);
+  const broadcastPort = Number(broadcastHost?.port);
+  if (Number.isFinite(broadcastPort) && broadcastPort > 0) {
+    return broadcastPort;
+  }
+
+  const fallbackHost = validHosts.find((hostInfo) => {
+    const port = Number(hostInfo.port);
+    return Number.isFinite(port) && port > 0;
+  });
+  const fallbackPort = Number(fallbackHost?.port);
+  return Number.isFinite(fallbackPort) && fallbackPort > 0 ? fallbackPort : DEFAULT_BILIBILI_LIVE_TCP_PORT;
+}
+
 export class BilibiliLiveWsAuthApi {
   private readonly fetchImpl: FetchImpl;
   private readonly authApi: BilibiliAuthApi;
@@ -198,7 +214,7 @@ export class BilibiliLiveWsAuthApi {
       msg?: unknown;
       data?: {
         token?: unknown;
-        host_list?: Array<{ host?: unknown; wss_port?: unknown }>;
+        host_list?: Array<{ host?: unknown; port?: unknown; wss_port?: unknown }>;
       };
     };
 
@@ -248,7 +264,7 @@ export class BilibiliLiveWsAuthApi {
       throw new Error(`获取房间 ${roomId} 鉴权信息失败: token 为空`);
     }
 
-    const validHosts = (payload.data?.host_list ?? []).filter((item): item is { host: string; wss_port?: unknown } => {
+    const validHosts = (payload.data?.host_list ?? []).filter((item): item is { host: string; port?: unknown; wss_port?: unknown } => {
       return typeof item?.host === 'string' && item.host.trim().length > 0;
     });
     if (validHosts.length === 0) {
@@ -256,10 +272,19 @@ export class BilibiliLiveWsAuthApi {
     }
 
     const primaryAddress = resolvePrimaryWssAddress(validHosts);
-    const fallbackAddresses = validHosts
-      .map((hostInfo) => buildWssAddress(hostInfo.host, Number(hostInfo.wss_port)))
-      .filter((address, index, addresses) => addresses.indexOf(address) === index)
+    const defaultTcpPort = resolvePrimaryTcpPort(validHosts);
+    const addressToTcpPort = new Map<string, number | undefined>();
+    for (const hostInfo of validHosts) {
+      const address = buildWssAddress(hostInfo.host, Number(hostInfo.wss_port));
+      if (!addressToTcpPort.has(address)) {
+        const tcpPort = Number(hostInfo.port);
+        addressToTcpPort.set(address, Number.isFinite(tcpPort) && tcpPort > 0 ? tcpPort : undefined);
+      }
+    }
+
+    const fallbackAddresses = Array.from(addressToTcpPort.keys())
       .filter((address) => address !== primaryAddress);
+    const fallbackTcpPorts = fallbackAddresses.map((address) => addressToTcpPort.get(address) ?? defaultTcpPort);
 
     const roomInitResponse = await this.queryBiliApi(`https://api.live.bilibili.com/room/v1/Room/room_init?id=${roomId}`);
     if (!roomInitResponse.ok) {
@@ -299,6 +324,8 @@ export class BilibiliLiveWsAuthApi {
       roomId: resolvedRoomId,
       address: primaryAddress,
       fallbackAddresses,
+      tcpPort: defaultTcpPort,
+      fallbackTcpPorts,
       key: token,
       uid,
       buvid,

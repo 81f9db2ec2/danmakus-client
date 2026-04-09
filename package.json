@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hpcc-js/wasm-zstd": "^1.12.0",
+    "@laplace.live/ws": "^7.1.8",
     "@msgpack/msgpack": "^3.1.3",
     "@tanstack/vue-table": "^8.21.3",
     "@tauri-apps/api": "^2.10.1",

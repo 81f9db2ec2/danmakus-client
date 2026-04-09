@@ -5,6 +5,7 @@ import * as readline from 'node:readline';
 import { DanmakuClient } from '../core/DanmakuClient.js';
 import { createBunSqliteLiveSessionOutbox } from '../core/BunSqliteLiveSessionOutbox.js';
 import { createCliInteractiveLoginProvider } from './auth.js';
+import { createCliLiveWsConnection } from './liveWsConnectionFactory.js';
 import { attachCliEventListeners } from './runtime.js';
 import type { CliOptions } from '../types/index.js';
 
@@ -92,6 +93,7 @@ program
         clientVersion: 'cli',
         logLevel,
         liveSessionOutbox: createBunSqliteLiveSessionOutbox(),
+        liveWsConnectionFactory: createCliLiveWsConnection,
       });
 
       // 从CLI选项更新配置

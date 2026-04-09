@@ -1,5 +1,5 @@
 import { EventEmitter } from 'eventemitter3';
-import { LiveWS } from 'bilibili-live-danmaku';
+import { LiveWS } from '@laplace.live/ws/client';
 import { AuthManager } from './AuthManager.js';
 import { BilibiliLiveWsAuthApi } from './BilibiliLiveWsAuthApi.js';
 import { ConfigManager } from './ConfigManager.js';
@@ -73,6 +73,8 @@ type LiveWsConnectionOptions = {
   roomId?: number;
   address?: string;
   fallbackAddresses?: string[];
+  tcpPort?: number;
+  fallbackTcpPorts?: Array<number | undefined>;
   key?: string;
   uid?: number;
   buvid?: string;
@@ -558,6 +560,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       const roomConfig: LiveWsRoomConfig = {
         address: liveOptions.address ?? '',
         fallbackAddresses: liveOptions.fallbackAddresses,
+        tcpPort: liveOptions.tcpPort,
+        fallbackTcpPorts: liveOptions.fallbackTcpPorts,
         key: liveOptions.key ?? '',
         uid: liveOptions.uid,
         buvid: liveOptions.buvid,
@@ -681,6 +685,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     roomConfig: LiveWsRoomConfig
   ): Promise<{ liveWS: LiveWsConnection; awaitedOpen: boolean; }> {
     const addresses = this.normalizeLiveWsAddresses(roomConfig.address, roomConfig.fallbackAddresses);
+    const fallbackTcpPorts = Array.isArray(roomConfig.fallbackTcpPorts) ? roomConfig.fallbackTcpPorts : [];
     let lastError: unknown = null;
 
     for (let index = 0; index < addresses.length; index += 1) {
@@ -688,6 +693,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       const attemptConfig: LiveWsRoomConfig = {
         ...roomConfig,
         address,
+        tcpPort: index === 0 ? roomConfig.tcpPort : fallbackTcpPorts[index - 1],
       };
 
       try {
@@ -753,7 +759,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       const cleanup = () => {
         clearTimeout(timeoutHandle);
         target.removeEventListener?.('open', handleReady);
-        target.removeEventListener?.('CONNECT_SUCCESS', handleReady);
+        target.removeEventListener?.('live', handleReady);
         target.removeEventListener?.('error', handleError);
         target.removeEventListener?.('close', handleClose);
       };
@@ -789,7 +795,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       }, LIVEWS_CONNECT_ATTEMPT_TIMEOUT_MS);
 
       liveWS.addEventListener('open', handleReady);
-      liveWS.addEventListener('CONNECT_SUCCESS', handleReady);
+      liveWS.addEventListener('live', handleReady);
       liveWS.addEventListener('error', handleError);
       liveWS.addEventListener('close', handleClose);
     });
@@ -832,29 +838,18 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.logger.info(`房间 ${roomId} WebSocket连接已建立`);
     });
 
-    liveWS.addEventListener('CONNECT_SUCCESS', ({ data }: any) => {
+    liveWS.addEventListener('live', () => {
       if (!isCurrentConnection()) {
         return;
       }
-      this.logger.debug(`房间 ${roomId} CONNECT_SUCCESS`, data);
+      this.logger.debug(`房间 ${roomId} 已进入直播间`);
     });
 
-    liveWS.addEventListener('HEARTBEAT_REPLY', ({ data }: any) => {
+    liveWS.addEventListener('heartbeat', ({ data }: any) => {
       if (!isCurrentConnection()) {
         return;
       }
-      this.logger.debug(`房间 ${roomId} HEARTBEAT_REPLY`, data);
-    });
-
-    liveWS.addEventListener('error:decode', (event: any) => {
-      if (!isCurrentConnection()) {
-        return;
-      }
-      const reason = event?.error instanceof Error ? event.error.message : String(event?.error ?? 'unknown');
-      const decodeError = new Error(`房间 ${roomId} 消息解码失败: ${reason}`);
-      this.logger.error(decodeError.message, event?.error ?? event);
-      this.recordError(decodeError, { category: 'livews', code: 'MESSAGE_DECODE_FAILED', roomId, recoverable: true });
-      this.emit('error', decodeError, roomId);
+      this.logger.debug(`房间 ${roomId} heartbeat`, data);
     });
 
     liveWS.addEventListener('close', (event: any) => {
@@ -894,7 +889,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     });
 
     // 监听所有消息，统一处理
-    liveWS.addEventListener('MESSAGE', ({ data }: any) => {
+    liveWS.addEventListener('msg', ({ data }: any) => {
       if (!isCurrentConnection()) {
         return;
       }

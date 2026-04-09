@@ -45,6 +45,8 @@ export interface LiveWsRoomConfig {
   roomId?: number;
   address: string;
   fallbackAddresses?: string[];
+  tcpPort?: number;
+  fallbackTcpPorts?: Array<number | undefined>;
   key: string;
   uid?: number;
   buvid?: string;
@@ -53,6 +55,7 @@ export interface LiveWsRoomConfig {
 
 export interface LiveWsConnection {
   addEventListener(type: string, listener: (event: any) => void): void;
+  removeEventListener?(type: string, listener: (event: any) => void): void;
   close(): void;
 }
 

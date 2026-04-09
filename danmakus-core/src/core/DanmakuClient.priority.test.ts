@@ -65,7 +65,7 @@ describe("DanmakuClient room pull flow", () => {
 
     await client.connectToRoom(4455, "server");
 
-    listeners.get("CONNECT_SUCCESS")?.({ data: {} });
+    listeners.get("live")?.();
     listeners.get("close")?.({ code: 1000, reason: "" });
 
     expect(client.messageQueue.getPendingCount()).toBe(0);

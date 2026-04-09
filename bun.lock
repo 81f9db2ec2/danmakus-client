@@ -6,6 +6,7 @@
       "name": "danmakus-client",
       "dependencies": {
         "@hpcc-js/wasm-zstd": "^1.12.0",
+        "@laplace.live/ws": "^7.1.8",
         "@msgpack/msgpack": "^3.1.3",
         "@tanstack/vue-table": "^8.21.3",
         "@tauri-apps/api": "^2.10.1",
@@ -129,6 +130,10 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@laplace.live/internal": ["@laplace.live/internal@1.3.7", "", { "peerDependencies": { "typescript": "^5.9.3" } }, "sha512-u8u1IubmRT5vK3yjNQkskPVViXk+JSTm/VkuLBxaEDEbmzB3+rua3UTt5/HxV6SqpmSZNxgSE6QN+v1xQUnnBQ=="],
+
+    "@laplace.live/ws": ["@laplace.live/ws@7.1.8", "", { "dependencies": { "@laplace.live/internal": "^1.3.4" } }, "sha512-SGd+S4RGYJFsyuACsBOckx9HxZUgdQ7A5YPPmdfXZgz0HYq3NlaW0fj+2Ao1pFqpAZrtvx2mB6Ql0gwBy5ug+A=="],
 
     "@microsoft/signalr": ["@microsoft/signalr@10.0.0", "", { "dependencies": { "abort-controller": "^3.0.0", "eventsource": "^2.0.2", "fetch-cookie": "^2.0.3", "node-fetch": "^2.6.7", "ws": "^7.5.10" } }, "sha512-0BRqz/uCx3JdrOqiqgFhih/+hfTERaUfCZXFB52uMaZJrKaPRzHzMuqVsJC/V3pt7NozcNXGspjKiQEK+X7P2w=="],
 

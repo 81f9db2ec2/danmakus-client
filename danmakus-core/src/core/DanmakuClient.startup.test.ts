@@ -341,9 +341,9 @@ describe('DanmakuClient startup', () => {
             data: {
               token: 'test-token',
               host_list: [
-                { host: 'tx-bj-live-comet-01.chat.bilibili.com', wss_port: 2245 },
-                { host: 'broadcastlv.chat.bilibili.com', wss_port: 2245 },
-                { host: 'tx-bj-live-comet-01.chat.bilibili.com', wss_port: 2245 },
+                { host: 'tx-bj-live-comet-01.chat.bilibili.com', port: 2243, wss_port: 2245 },
+                { host: 'broadcastlv.chat.bilibili.com', port: 2243, wss_port: 2245 },
+                { host: 'tx-bj-live-comet-01.chat.bilibili.com', port: 2243, wss_port: 2245 },
               ]
             }
           }), {
@@ -369,6 +369,8 @@ describe('DanmakuClient startup', () => {
     expect(options.key).toBe('test-token');
     expect(options.address).toBe('wss://broadcastlv.chat.bilibili.com:2245/sub');
     expect(options.fallbackAddresses).toEqual(['wss://tx-bj-live-comet-01.chat.bilibili.com:2245/sub']);
+    expect(options.tcpPort).toBe(2243);
+    expect(options.fallbackTcpPorts).toEqual([2243]);
     expect(options.uid).toBe(TEST_AUTH_UID);
     expect(options.buvid).toBe('test-buvid');
   });
@@ -423,8 +425,8 @@ describe('DanmakuClient startup', () => {
             data: {
               token: 'test-token',
               host_list: [
-                { host: 'tx-bj-live-comet-01.chat.bilibili.com', wss_port: 2245 },
-                { host: 'bd-bj-live-comet-10.chat.bilibili.com', wss_port: 2245 },
+                { host: 'tx-bj-live-comet-01.chat.bilibili.com', port: 2243, wss_port: 2245 },
+                { host: 'bd-bj-live-comet-10.chat.bilibili.com', port: 2243, wss_port: 2245 },
               ]
             }
           }), {
@@ -447,10 +449,12 @@ describe('DanmakuClient startup', () => {
     const options = await client.resolveLiveWsConnectionOptions(6154037);
 
     expect(options.address).toBe('wss://broadcastlv.chat.bilibili.com:2245/sub');
+    expect(options.tcpPort).toBe(2243);
     expect(options.fallbackAddresses).toEqual([
       'wss://tx-bj-live-comet-01.chat.bilibili.com:2245/sub',
       'wss://bd-bj-live-comet-10.chat.bilibili.com:2245/sub',
     ]);
+    expect(options.fallbackTcpPorts).toEqual([2243, 2243]);
   });
 
   test('uses interactive login provider when no cookie source is configured', async () => {
