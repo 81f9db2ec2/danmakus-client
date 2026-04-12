@@ -37,7 +37,7 @@ type RequestRoomResponse = {
   } | null;
 };
 
-const RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
+const RUNTIME_REQUEST_TIMEOUT_MS = 30_000;
 
 export class RuntimeConnection {
   private isConnected = false;
