@@ -1,5 +1,5 @@
 import { LiveWS } from '@laplace.live/ws/client'
-import type { LiveWsConnection, LiveWsRoomConfig } from 'danmakus-core'
+import { createWireRawLiveWsConnection, type LiveWsConnection, type LiveWsRoomConfig } from 'danmakus-core'
 
 const fallbackUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 
@@ -198,16 +198,16 @@ export async function createLiveWsConnection(
   }
 
   if (!isTauriRuntime()) {
-    return new LiveWS(roomId, {
+    return createWireRawLiveWsConnection(new LiveWS(roomId, {
       address: options.address,
       key: options.key,
       uid: options.uid,
       buvid: options.buvid,
       protover: options.protover ?? 3
-    })
+    }))
   }
 
-  return new LiveWS(roomId, {
+  return createWireRawLiveWsConnection(new LiveWS(roomId, {
     address: options.address,
     key: options.key,
     uid: options.uid,
@@ -216,5 +216,5 @@ export async function createLiveWsConnection(
     createWebSocket: (address) => {
       return new TauriBrowserWebSocket(address, buildLiveWsHeaders()) as unknown as WebSocket
     }
-  })
+  }))
 }

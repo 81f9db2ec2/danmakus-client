@@ -214,7 +214,7 @@ describe("RuntimeConnection room pull", () => {
     }]);
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v2");
+    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v3");
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/x-msgpack");
     expect(requests[0]?.headers.get("Content-Encoding")).toBe("zstd");
     expect(requests[0]?.body).toEqual({

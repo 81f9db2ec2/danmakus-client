@@ -31,19 +31,19 @@ export interface ClientDanmakuArchiveItem {
   payload: Uint8Array;
 }
 
-export interface UploadDanmakusV2Request {
+export interface ArchiveUploadRequest {
   batchId: string;
   clientId?: string | null;
   items: ClientDanmakuArchiveItem[];
 }
 
-export interface UploadDanmakusV2RejectedItem {
+export interface ArchiveUploadRejectedItem {
   localId: number;
   code: string;
   message: string;
 }
 
-export interface UploadDanmakusV2Response {
+export interface ArchiveUploadResponse {
   ackedLocalIds: number[];
-  rejected: UploadDanmakusV2RejectedItem[];
+  rejected: ArchiveUploadRejectedItem[];
 }

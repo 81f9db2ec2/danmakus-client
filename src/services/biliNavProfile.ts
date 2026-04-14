@@ -1,36 +1,16 @@
+import { BilibiliAuthApi, type BiliAuthProfile } from 'danmakus-core'
 import { reactive } from 'vue'
-import { QueryBiliAPI } from './biliApi'
+import { biliCookie } from './biliCookieStore'
 import { onBiliCookieJarChanged } from './biliCookieStore'
+import { fetchImpl } from './fetchImpl'
 
-export interface BiliNavProfile {
-  uid: number
-  uname: string
-  face: string
-  level: number
-  money: number
-  vipStatus: number
-  vipLabel: string
-}
-
-type BiliNavResponse = {
-  code?: unknown
-  message?: unknown
-  data?: {
-    isLogin?: unknown
-    mid?: unknown
-    uname?: unknown
-    face?: unknown
-    money?: unknown
-    vipStatus?: unknown
-    vip_label?: { text?: unknown }
-    level_info?: { current_level?: unknown }
-  }
-}
+export type BiliNavProfile = BiliAuthProfile
 
 const navProfileCacheTtlMs = 5 * 60_000
 let navProfileInflight: Promise<BiliNavProfile | null> | null = null
 let navProfileRefreshTimer: number | undefined
 let navProfileRefreshRefCount = 0
+const bilibiliAuthApi = new BilibiliAuthApi(fetchImpl)
 
 export const biliNavProfileState = reactive({
   profile: null as BiliNavProfile | null,
@@ -59,52 +39,7 @@ onBiliCookieJarChanged((nextCookie) => {
 })
 
 async function requestNavProfileAsync(): Promise<BiliNavProfile | null> {
-  const url = 'https://api.bilibili.com/x/web-interface/nav'
-  const response = await QueryBiliAPI(url)
-  if (!response.ok) {
-    throw new Error(`检查 Bilibili 登录状态失败: HTTP ${response.status}`)
-  }
-
-  const payload = await response.json() as BiliNavResponse
-  const code = typeof payload.code === 'number' ? payload.code : Number(payload.code)
-  if (!Number.isFinite(code)) {
-    throw new Error('检查 Bilibili 登录状态失败: nav 返回无效 code')
-  }
-
-  if (code !== 0) {
-    if (code === -101) {
-      return null
-    }
-    throw new Error(`检查 Bilibili 登录状态失败: ${String(payload.message ?? code)}`)
-  }
-
-  const data = payload.data
-  const isLogin = data?.isLogin === true || data?.isLogin === 1 || data?.isLogin === '1'
-  if (!isLogin) {
-    return null
-  }
-
-  const uidValue = typeof data?.mid === 'number' ? data.mid : Number(data?.mid)
-  if (!Number.isFinite(uidValue) || uidValue <= 0) {
-    throw new Error('检查 Bilibili 登录状态失败: nav 返回无效 mid')
-  }
-  const uid = Math.floor(uidValue)
-
-  const levelValue = typeof data?.level_info?.current_level === 'number'
-    ? data.level_info.current_level
-    : Number(data?.level_info?.current_level)
-  const moneyValue = typeof data?.money === 'number' ? data.money : Number(data?.money)
-  const vipValue = typeof data?.vipStatus === 'number' ? data.vipStatus : Number(data?.vipStatus)
-
-  return {
-    uid,
-    uname: typeof data?.uname === 'string' && data.uname.trim() ? data.uname.trim() : `UID ${uid}`,
-    face: typeof data?.face === 'string' ? data.face : '',
-    level: Number.isFinite(levelValue) ? Math.floor(levelValue) : 0,
-    money: Number.isFinite(moneyValue) ? moneyValue : 0,
-    vipStatus: Number.isFinite(vipValue) ? Math.floor(vipValue) : 0,
-    vipLabel: typeof data?.vip_label?.text === 'string' ? data.vip_label.text : ''
-  }
+  return await bilibiliAuthApi.getNavProfile(biliCookie.getBiliCookie())
 }
 
 export async function getNavProfileAsync(options?: { force?: boolean }): Promise<BiliNavProfile | null> {

@@ -2,10 +2,13 @@
 export { DanmakuClient } from '../core/DanmakuClient.js';
 export { AuthManager } from '../core/AuthManager.js';
 export { BilibiliAuthApi, BilibiliQrLoginSession } from '../core/BilibiliAuthApi.js';
+export { mergeCookieJar, parseCookieHeader, readCookieValue } from '../core/BilibiliCookie.js';
 export { ConfigManager } from '../core/ConfigManager.js';
 export { CookieManager } from '../core/CookieManager.js';
 export { RuntimeConnection } from '../core/RuntimeConnection.js';
 export { StreamerStatusManager } from '../core/StreamerStatusManager.js';
+export { getStartupBilibiliUserAgent, wrapBilibiliFetch } from '../core/BilibiliUserAgent.js';
+export { createWireRawLiveWsConnection } from '../core/WireRawLiveWsConnection.js';
 export { createSqliteLiveSessionOutbox } from '../core/SqliteLiveSessionOutbox.js';
 export type {
   SqliteLiveSessionOutboxBackend,
@@ -24,4 +27,4 @@ export const createDanmakuClient = (config?: Partial<DanmakuConfig>) => {
 };
 
 // 版本信息
-export const version = '1.0.3';
+export const version = '1.0.4';

@@ -1,4 +1,4 @@
-import { getStartupBilibiliUserAgent } from './bilibiliUserAgent';
+import { getStartupBilibiliUserAgent } from 'danmakus-core';
 
 const isTauri = () => {
   if (typeof window === 'undefined') return false;

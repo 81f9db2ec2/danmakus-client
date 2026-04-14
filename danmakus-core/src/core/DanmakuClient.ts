@@ -12,6 +12,7 @@ import { DanmakuRuntimeSync } from './DanmakuRuntimeSync.js';
 import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator.js';
 import { DanmakuControlState } from './DanmakuControlState.js';
 import { createInMemoryLiveSessionOutbox } from './InMemoryLiveSessionOutbox.js';
+import { createWireRawLiveWsConnection } from './WireRawLiveWsConnection.js';
 import {
   DanmakuMessage,
   DanmakuClientEvents,
@@ -699,7 +700,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       try {
         const liveWS = this.liveWsConnectionFactory
           ? await this.liveWsConnectionFactory(roomId, attemptConfig)
-          : new LiveWS(roomId, attemptConfig);
+          : createWireRawLiveWsConnection(new LiveWS(roomId, attemptConfig));
 
         try {
           if (!this.liveWsConnectionFactory && addresses.length > 1) {
@@ -889,11 +890,17 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     });
 
     // 监听所有消息，统一处理
-    liveWS.addEventListener('msg', ({ data }: any) => {
+    liveWS.addEventListener('msg', ({ data, raw }: any) => {
       if (!isCurrentConnection()) {
         return;
       }
-      const message = this.parseMessage(data, roomId);
+      if (typeof raw !== 'string' || raw.length === 0) {
+        const error = new Error(`房间 ${roomId} 收到缺少 wire raw 的消息`);
+        this.recordError(error, { category: 'livews', code: 'MESSAGE_RAW_MISSING', roomId, recoverable: true });
+        this.emit('error', error, roomId);
+        return;
+      }
+      const message = this.parseMessage(data, roomId, raw);
       this.logger.debug(`房间 ${roomId} 收到消息 cmd=${message.cmd}`);
       this.handleMessage(message).catch(error => {
         this.logger.error(`处理房间 ${roomId} 消息时发生错误:`, error);
@@ -907,40 +914,16 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   /**
    * 解析消息为统一格式
    */
-  private parseMessage(data: any, roomId: number, cmd?: string): DanmakuMessage {
+  private parseMessage(data: any, roomId: number, raw: string, cmd?: string): DanmakuMessage {
     const actualCmd = cmd || data?.cmd || data?.msg?.cmd || 'UNKNOWN';
 
     return {
       roomId,
       cmd: actualCmd,
       data: data,
-      raw: this.safeStringify(data),
+      raw,
       timestamp: Date.now()
     };
-  }
-
-  private safeStringify(value: unknown): string {
-    const seen = new WeakSet<object>();
-    try {
-      const serialized = JSON.stringify(value, (_key, item) => {
-        if (typeof item === 'bigint') {
-          return item.toString();
-        }
-        if (item && typeof item === 'object') {
-          if (seen.has(item)) {
-            return '[Circular]';
-          }
-          seen.add(item);
-        }
-        return item;
-      });
-      if (typeof serialized === 'string' && serialized.length > 0) {
-        return serialized;
-      }
-      return '[Unserializable Message]';
-    } catch {
-      return '[Unserializable Message]';
-    }
   }
 
   /**

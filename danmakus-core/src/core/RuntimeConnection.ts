@@ -1,11 +1,13 @@
 import {
+  ArchiveUploadRequest,
+  ArchiveUploadResponse,
+  ClientDanmakuArchiveItem,
   LiveSessionOutboxItem,
-  UploadDanmakusV2Response,
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import { encodeZstdMessagePack } from './DanmakuUploadCodec.js';
 import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
-import { buildUploadDanmakusV2Request } from './UploadV2Client.js';
+import { normalizeBinaryPayload } from './RawPacketCodec.js';
 
 type RuntimeEnvelope<T> = {
   code?: number;
@@ -38,6 +40,23 @@ type RequestRoomResponse = {
 };
 
 const RUNTIME_REQUEST_TIMEOUT_MS = 30_000;
+
+const toArchiveItem = (record: LiveSessionOutboxItem): ClientDanmakuArchiveItem => ({
+  localId: record.id,
+  streamerUid: record.streamerUid,
+  eventTsMs: record.eventTsMs,
+  payload: normalizeBinaryPayload(record.payload),
+});
+
+const buildArchiveUploadRequest = (
+  batchId: string,
+  items: LiveSessionOutboxItem[],
+  clientId?: string | null,
+): ArchiveUploadRequest => ({
+  batchId,
+  clientId,
+  items: items.map(toArchiveItem),
+});
 
 export class RuntimeConnection {
   private isConnected = false;
@@ -100,7 +119,7 @@ export class RuntimeConnection {
     this.logger.info('核心运行态接口连接已断开');
   }
 
-  async sendArchiveBatch(records: LiveSessionOutboxItem[]): Promise<UploadDanmakusV2Response> {
+  async sendArchiveBatch(records: LiveSessionOutboxItem[]): Promise<ArchiveUploadResponse> {
     if (records.length === 0) {
       return {
         ackedLocalIds: [],
@@ -116,9 +135,9 @@ export class RuntimeConnection {
       ? crypto.randomUUID()
       : `archive_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
-    return await this.requestRuntimeZstd<UploadDanmakusV2Response>(
-      '/upload-danmakus-v2',
-      buildUploadDanmakusV2Request(batchId, records, this.clientId),
+    return await this.requestRuntimeZstd<ArchiveUploadResponse>(
+      '/upload-danmakus-v3',
+      buildArchiveUploadRequest(batchId, records, this.clientId),
     );
   }
 

@@ -16,7 +16,7 @@ const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
 program
   .name('danmakus')
   .description('danmakus.com 弹幕采集客户端')
-  .version('1.0.3');
+  .version('1.0.4');
 
 program
   .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
