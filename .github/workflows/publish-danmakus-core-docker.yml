@@ -48,12 +48,7 @@ jobs:
               latest="true"
             fi
           else
-            version="$(python3 - <<'PY'
-import json
-from pathlib import Path
-print(json.loads(Path('danmakus-core/package.json').read_text(encoding='utf-8'))['version'])
-PY
-)"
+            version="$(python3 -c "import json, pathlib; print(json.loads(pathlib.Path('danmakus-core/package.json').read_text(encoding='utf-8'))['version'])")"
             latest="false"
             publish_mode="edge"
           fi
