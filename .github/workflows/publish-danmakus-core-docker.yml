@@ -13,8 +13,13 @@ on:
         default: false
         type: boolean
   push:
+    branches:
+      - main
     tags:
       - 'danmakus-core-v*'
+    paths:
+      - 'danmakus-core/**'
+      - '.github/workflows/publish-danmakus-core-docker.yml'
 
 jobs:
   publish-danmakus-core-docker:
@@ -33,13 +38,24 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             version="${{ inputs.version }}"
             latest="${{ inputs.latest }}"
-          else
+            publish_mode="release"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#danmakus-core-v}"
+            publish_mode="release"
             if [[ "$version" == *-* ]]; then
               latest="false"
             else
               latest="true"
             fi
+          else
+            version="$(python3 - <<'PY'
+import json
+from pathlib import Path
+print(json.loads(Path('danmakus-core/package.json').read_text(encoding='utf-8'))['version'])
+PY
+)"
+            latest="false"
+            publish_mode="edge"
           fi
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
@@ -49,6 +65,7 @@ jobs:
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "publish_mode=$publish_mode" >> "$GITHUB_OUTPUT"
 
       - name: set up docker buildx
         uses: docker/setup-buildx-action@v3
@@ -63,10 +80,13 @@ jobs:
             org.opencontainers.image.description=Danmakus core Docker image
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}},value=v${{ steps.vars.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.vars.outputs.version }}
-            type=semver,pattern={{major}},value=v${{ steps.vars.outputs.version }},enable=${{ !startsWith(steps.vars.outputs.version, '0.') }}
+            type=semver,pattern={{version}},value=v${{ steps.vars.outputs.version }},enable=${{ steps.vars.outputs.publish_mode == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.vars.outputs.version }},enable=${{ steps.vars.outputs.publish_mode == 'release' }}
+            type=semver,pattern={{major}},value=v${{ steps.vars.outputs.version }},enable=${{ steps.vars.outputs.publish_mode == 'release' && !startsWith(steps.vars.outputs.version, '0.') }}
             type=raw,value=latest,enable=${{ steps.vars.outputs.latest == 'true' }}
+            type=raw,value=edge,enable=${{ steps.vars.outputs.publish_mode == 'edge' }}
+            type=raw,value=v${{ steps.vars.outputs.version }}-edge,enable=${{ steps.vars.outputs.publish_mode == 'edge' }}
+            type=sha,prefix=sha-,format=short,enable=${{ steps.vars.outputs.publish_mode == 'edge' }}
 
       - name: login to ghcr
         uses: docker/login-action@v4
