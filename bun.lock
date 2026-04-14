@@ -5,6 +5,7 @@
     "": {
       "name": "danmakus-client",
       "dependencies": {
+        "@faker-js/faker": "^10.4.0",
         "@hpcc-js/wasm-zstd": "^1.12.0",
         "@laplace.live/ws": "^7.1.8",
         "@msgpack/msgpack": "^3.1.3",
@@ -19,6 +20,7 @@
         "@tauri-apps/plugin-websocket": "^2.4.2",
         "@types/bun": "^1.3.10",
         "@vueuse/core": "^14.2.1",
+        "brotli": "^1.3.3",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "danmakus-core": "file:./danmakus-core",
@@ -104,6 +106,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.27.3", "", { "os": "win32", "cpu": "ia32" }, "sha512-QLKSFeXNS8+tHW7tZpMtjlNb7HKau0QDpwm49u0vUp9y1WOF+PEzkU84y9GqYaAVW8aH8f3GcBck26jh54cX4Q=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.27.3", "", { "os": "win32", "cpu": "x64" }, "sha512-4uJGhsxuptu3OcpVAzli+/gWusVGwZZHTlS63hh++ehExkVT8SgiEf7/uC/PclrPPkLhZqGgCTjd0VWLo6xMqA=="],
+
+    "@faker-js/faker": ["@faker-js/faker@10.4.0", "", {}, "sha512-sDBWI3yLy8EcDzgobvJTWq1MJYzAkQdpjXuPukga9wXonhpMRvd1Izuo2Qgwey2OiEoRIBr35RMU9HJRoOHzpw=="],
 
     "@floating-live/cookies": ["@floating-live/cookies@0.1.0", "", {}, "sha512-5Er4jnuojKxjB1o1SAx7YEAcKgtUGhRsrRQrmPe91ReIw5Fst7e1lyWUbMC0jZy2fNVC6V84ekBZw3LoLgUpHA=="],
 
@@ -339,7 +343,11 @@
 
     "aria-hidden": ["aria-hidden@1.2.6", "", { "dependencies": { "tslib": "^2.0.0" } }, "sha512-ik3ZgC9dY/lYVVM++OISsaYDeg1tb0VtP5uL3ouh1koGOaUMDPpbFIei4JkFimWUFPn90sbMNMXQAIVOlnYKJA=="],
 
+    "base64-js": ["base64-js@1.5.1", "", {}, "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA=="],
+
     "bilibili-live-danmaku": ["bilibili-live-danmaku@0.7.14", "", { "dependencies": { "@floating-live/cookies": "^0.1.0", "md5": "^2.3.0", "pako": "^2.1.0", "protobufjs": "^7.5.4" } }, "sha512-Qnqqm6ou00JAmMTbiTbqR8KgUV7oEIWROHo7luUOn/PdwKD5bOKmSJ/epx2SQbB2WBbXZU6w73w/CjklfKa1RA=="],
+
+    "brotli": ["brotli@1.3.3", "", { "dependencies": { "base64-js": "^1.1.2" } }, "sha512-oTKjJdShmDuGW94SyyaoQvAjf30dZaHnjJ8uAF+u2/vGJkJbJPJAT1gDiOJP5v1Zb6f9KEyW/1HpuaWIXtGHPg=="],
 
     "bun-types": ["bun-types@1.3.10", "", { "dependencies": { "@types/node": "*" } }, "sha512-tcpfCCl6XWo6nCVnpcVrxQ+9AYN1iqMIzgrSKYMB/fjLtV2eyAVEg7AxQJuCq/26R6HpKWykQXuSOq/21RYcbg=="],
 
