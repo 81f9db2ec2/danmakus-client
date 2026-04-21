@@ -8,6 +8,7 @@ import { createCliInteractiveLoginProvider } from './auth.js';
 import { createCliLiveWsConnection } from './liveWsConnectionFactory.js';
 import { attachCliEventListeners } from './runtime.js';
 import type { CliOptions } from '../types/index.js';
+import { DEFAULT_CLI_CLIENT_VERSION, CORE_VERSION } from '../version.js';
 
 const program = new Command();
 const DEFAULT_RUNTIME_URL = 'https://ukamnads.icu/api/v2/core-runtime';
@@ -16,7 +17,7 @@ const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
 program
   .name('danmakus')
   .description('danmakus.com 弹幕采集客户端')
-  .version('1.0.4');
+  .version(CORE_VERSION);
 
 program
   .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
@@ -90,7 +91,7 @@ program
         autoReconnect: true,
         reconnectInterval: 5000,
         accountToken,
-        clientVersion: 'cli',
+        clientVersion: DEFAULT_CLI_CLIENT_VERSION,
         logLevel,
         liveSessionOutbox: createBunSqliteLiveSessionOutbox(),
         liveWsConnectionFactory: createCliLiveWsConnection,

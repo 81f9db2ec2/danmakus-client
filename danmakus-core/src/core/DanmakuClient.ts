@@ -33,6 +33,7 @@ import {
   UserInfo,
 } from '../types/index.js';
 import { ScopedLogger, normalizeLogLevel } from './Logger.js';
+import { DEFAULT_CORE_CLIENT_VERSION } from '../version.js';
 
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
@@ -1287,7 +1288,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
     return {
       clientId: this.clientId,
-      clientVersion: config.clientVersion ?? 'core',
+      clientVersion: config.clientVersion ?? DEFAULT_CORE_CLIENT_VERSION,
       isRunning: this.isRunning,
       runtimeConnected,
       cookieValid: authState.hasUsableCookie,
@@ -1313,7 +1314,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     const lastError = this.getActiveErrorText() ?? null;
     return {
       clientId: this.clientId,
-      clientVersion: config.clientVersion ?? 'core',
+      clientVersion: config.clientVersion ?? DEFAULT_CORE_CLIENT_VERSION,
       isRunning: this.isRunning,
       runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
       cookieValid: authState.hasUsableCookie,

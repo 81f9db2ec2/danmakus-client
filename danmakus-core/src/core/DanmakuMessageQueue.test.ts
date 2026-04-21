@@ -118,7 +118,6 @@ describe("DanmakuMessageQueue", () => {
         sendArchiveBatch: async (records) => {
           sentArchiveBatches.push(records.map(record => ({ ...record })));
           return {
-            ackedLocalIds: records.map(record => record.id),
             rejected: [],
           };
         },
@@ -199,7 +198,6 @@ describe("DanmakuMessageQueue", () => {
           expect(records).toHaveLength(1);
           expect(records[0]?.id).toBe(7);
           return {
-            ackedLocalIds: [7],
             rejected: [],
           };
         },
@@ -245,7 +243,6 @@ describe("DanmakuMessageQueue", () => {
       getRuntimeConnection: () => ({
         getConnectionState: () => true,
         sendArchiveBatch: async () => ({
-          ackedLocalIds: [],
           rejected: [{
             localId: 7,
             code: "historical_upload_window_expired",

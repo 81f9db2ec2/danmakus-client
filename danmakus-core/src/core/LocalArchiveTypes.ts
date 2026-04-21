@@ -32,8 +32,6 @@ export interface ClientDanmakuArchiveItem {
 }
 
 export interface ArchiveUploadRequest {
-  batchId: string;
-  clientId?: string | null;
   items: ClientDanmakuArchiveItem[];
 }
 
@@ -44,6 +42,5 @@ export interface ArchiveUploadRejectedItem {
 }
 
 export interface ArchiveUploadResponse {
-  ackedLocalIds: number[];
   rejected: ArchiveUploadRejectedItem[];
 }

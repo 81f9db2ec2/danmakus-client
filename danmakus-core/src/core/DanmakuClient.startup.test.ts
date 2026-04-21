@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { DanmakuClient } from './DanmakuClient.js';
+import { DEFAULT_CORE_CLIENT_VERSION } from '../version.js';
 
 const TEST_AUTH_UID = 42;
 
@@ -517,5 +518,20 @@ describe('DanmakuClient startup', () => {
     await client.applyAccountConfigSnapshot(client.getControlState().config, 'config-tag');
 
     expect(initializeManagersCallCount).toBe(0);
+  });
+
+  test('reports default core client version with package version suffix', () => {
+    const client: any = new DanmakuClient({
+      clientId: 'client-id',
+      runtimeUrl: 'https://example.com/api/v2/core-runtime',
+      maxConnections: 5,
+      streamers: [],
+    });
+
+    const stateSnapshot = client.buildRuntimeStateSnapshot();
+    const heartbeatPayload = client.buildRuntimeHeartbeatPayload();
+
+    expect(stateSnapshot.clientVersion).toBe(DEFAULT_CORE_CLIENT_VERSION);
+    expect(heartbeatPayload.clientVersion).toBe(DEFAULT_CORE_CLIENT_VERSION);
   });
 });

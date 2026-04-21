@@ -385,26 +385,13 @@ export class DanmakuMessageQueue {
   ): Promise<void> {
     try {
       const response = await runtimeConnection.sendArchiveBatch(records);
-      const ackedIds = [...new Set(
-        (response.ackedLocalIds ?? [])
-          .map(id => Number(id))
-          .filter(id => Number.isFinite(id) && id > 0)
-          .map(id => Math.floor(id)),
-      )];
-
-      if (ackedIds.length > 0) {
-        const deleted = await outbox.ack(ackedIds);
-        this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
-      }
-
       const rejectedById = new Map(
         (response.rejected ?? [])
           .filter(item => item && Number.isFinite(Number(item.localId)) && Number(item.localId) > 0)
           .map(item => [Math.floor(Number(item.localId)), item] as const),
       );
-      const ackedIdSet = new Set(ackedIds);
 
-      const retryUpdates: LiveSessionOutboxRescheduleUpdate[] = [];
+      const ackedIds: number[] = [];
       const rejectedIds: number[] = [];
       const rejectedRecords: Array<{
         record: LiveSessionOutboxItem;
@@ -412,10 +399,6 @@ export class DanmakuMessageQueue {
         message: string;
       }> = [];
       for (const record of records) {
-        if (ackedIdSet.has(record.id)) {
-          continue;
-        }
-
         const rejected = rejectedById.get(record.id);
         if (rejected) {
           rejectedIds.push(record.id);
@@ -427,12 +410,12 @@ export class DanmakuMessageQueue {
           continue;
         }
 
-        const retryCount = record.retryCount + 1;
-        retryUpdates.push({
-          id: record.id,
-          retryCount,
-          nextRetryAtMs: now + this.calculateMessageRetryDelay(retryCount),
-        });
+        ackedIds.push(record.id);
+      }
+
+      if (ackedIds.length > 0) {
+        const deleted = await outbox.ack(ackedIds);
+        this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
       }
 
       if (rejectedIds.length > 0) {
@@ -441,9 +424,6 @@ export class DanmakuMessageQueue {
         if (deleted !== rejectedIds.length) {
           throw new Error(`live session outbox 删除 rejected 记录数量异常: expected=${rejectedIds.length}, actual=${deleted}`);
         }
-      }
-      if (retryUpdates.length > 0) {
-        await outbox.reschedule(retryUpdates);
       }
       this.emitPendingCountChanged();
       if (rejectedRecords.length > 0) {

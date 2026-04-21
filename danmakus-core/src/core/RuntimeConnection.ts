@@ -49,12 +49,8 @@ const toArchiveItem = (record: LiveSessionOutboxItem): ClientDanmakuArchiveItem 
 });
 
 const buildArchiveUploadRequest = (
-  batchId: string,
   items: LiveSessionOutboxItem[],
-  clientId?: string | null,
 ): ArchiveUploadRequest => ({
-  batchId,
-  clientId,
   items: items.map(toArchiveItem),
 });
 
@@ -122,7 +118,6 @@ export class RuntimeConnection {
   async sendArchiveBatch(records: LiveSessionOutboxItem[]): Promise<ArchiveUploadResponse> {
     if (records.length === 0) {
       return {
-        ackedLocalIds: [],
         rejected: [],
       };
     }
@@ -131,13 +126,9 @@ export class RuntimeConnection {
       throw new Error('核心运行态接口未连接，无法上传归档弹幕');
     }
 
-    const batchId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `archive_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-
     return await this.requestRuntimeZstd<ArchiveUploadResponse>(
-      '/upload-danmakus-v3',
-      buildArchiveUploadRequest(batchId, records, this.clientId),
+      '/upload-danmakus-v4',
+      buildArchiveUploadRequest(records),
     );
   }
 

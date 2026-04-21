@@ -192,7 +192,6 @@ describe("RuntimeConnection room pull", () => {
       return new Response(JSON.stringify({
         code: 200,
         data: {
-          ackedLocalIds: [7],
           rejected: [],
         },
       }), {
@@ -214,12 +213,10 @@ describe("RuntimeConnection room pull", () => {
     }]);
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v3");
+    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v4");
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/x-msgpack");
     expect(requests[0]?.headers.get("Content-Encoding")).toBe("zstd");
     expect(requests[0]?.body).toEqual({
-      batchId: expect.any(String),
-      clientId: "test-client",
       items: [{
         localId: 7,
         streamerUid: TEST_STREAMER_UID,

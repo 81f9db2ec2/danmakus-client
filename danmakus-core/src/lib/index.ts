@@ -21,10 +21,11 @@ export * from '../types/index.js';
 // 导出工具函数
 import { DanmakuClient } from '../core/DanmakuClient.js';
 import { DanmakuConfig } from '../types/index.js';
+import { CORE_VERSION } from '../version.js';
 
 export const createDanmakuClient = (config?: Partial<DanmakuConfig>) => {
   return new DanmakuClient(config);
 };
 
 // 版本信息
-export const version = '1.0.4';
+export const version = CORE_VERSION;

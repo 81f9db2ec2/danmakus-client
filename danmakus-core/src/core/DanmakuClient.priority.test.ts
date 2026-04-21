@@ -400,7 +400,6 @@ describe("DanmakuClient room pull flow", () => {
       sendArchiveBatch: async (records: Array<{ id: number }>) => {
         phases.push("send");
         return {
-          ackedLocalIds: records.map((record) => record.id),
           rejected: [],
         };
       },
@@ -458,7 +457,6 @@ describe("DanmakuClient room pull flow", () => {
       sendArchiveBatch: async (records: Array<{ id: number; streamerUid: number; eventTsMs: number }>) => {
         uploadedBatches.push(records);
         return {
-          ackedLocalIds: records.map(record => record.id),
           rejected: [],
         };
       },
@@ -502,7 +500,6 @@ describe("DanmakuClient room pull flow", () => {
       sendArchiveBatch: async (records: Array<{ id: number; streamerUid: number; eventTsMs: number }>) => {
         uploadedBatches.push(records);
         return {
-          ackedLocalIds: records.map(record => record.id),
           rejected: [],
         };
       },
