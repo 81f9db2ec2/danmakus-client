@@ -224,6 +224,7 @@ export interface RecordingChannelDto {
   roomId: number;
   faceUrl: string;
   isLiving: boolean;
+  isDeleted?: boolean;
   livingInfo?: RecordingLiveInfoDto | null;
 }
 

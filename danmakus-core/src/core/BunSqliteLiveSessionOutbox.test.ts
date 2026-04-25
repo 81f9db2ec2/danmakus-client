@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBunSqliteLiveSessionOutbox } from './BunSqliteLiveSessionOutbox.js';
@@ -33,5 +34,29 @@ describe('BunSqliteLiveSessionOutbox', () => {
 
     await reopenedOutbox.ack([dueRecords[0]!.id]);
     expect(await reopenedOutbox.countPending()).toBe(0);
+  });
+
+  it('rebuilds the database automatically when the sqlite file is corrupted', async () => {
+    const nowMs = Date.now();
+    const databasePath = join(
+      tmpdir(),
+      `danmakus-live-session-outbox-corrupted-${randomUUID()}.sqlite3`,
+    );
+
+    writeFileSync(databasePath, 'not a sqlite database');
+
+    const outbox = createBunSqliteLiveSessionOutbox({ databasePath });
+
+    await outbox.append([
+      {
+        streamerUid: TEST_STREAMER_UID,
+        eventTsMs: nowMs,
+        payload: new Uint8Array([9, 8, 7]),
+      },
+    ]);
+
+    const dueRecords = await outbox.listDue({ nowMs, limit: 10 });
+    expect(dueRecords).toHaveLength(1);
+    expect(dueRecords[0]?.payload).toEqual(new Uint8Array([9, 8, 7]));
   });
 });

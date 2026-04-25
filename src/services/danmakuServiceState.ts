@@ -132,6 +132,12 @@ export const normalizeConnectionInfo = (info: {
 
 export const sortRecordings = (items: RecordingInfoDto[]): RecordingInfoDto[] => {
   return [...items].sort((a, b) => {
+    const deletedA = a.channel?.isDeleted ? 1 : 0
+    const deletedB = b.channel?.isDeleted ? 1 : 0
+    if (deletedA !== deletedB) {
+      return deletedA - deletedB
+    }
+
     const liveA = a.channel?.isLiving ? 1 : 0
     const liveB = b.channel?.isLiving ? 1 : 0
     if (liveA !== liveB) {

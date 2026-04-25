@@ -509,7 +509,12 @@ const emit = defineEmits<{
                 class="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">
                 ?</div>
               <div class="min-w-0">
-                <p class="truncate text-sm font-medium">{{ item.channel.uName || item.channel.uId }}</p>
+                <div class="flex min-w-0 items-center gap-1.5">
+                  <p class="truncate text-sm font-medium">{{ item.channel.uName || item.channel.uId }}</p>
+                  <Badge v-if="item.channel.isDeleted" variant="destructive" class="shrink-0 text-[10px]">
+                    已注销
+                  </Badge>
+                </div>
                 <p class="text-[11px] text-muted-foreground">
                   UID: {{ item.channel.uId }} · 房间: {{ item.channel.roomId }}
                 </p>
@@ -521,9 +526,9 @@ const emit = defineEmits<{
             </a>
             <div class="flex items-center gap-2">
               <Badge variant="outline"
-                :class="item.channel.isLiving ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : ''"
+                :class="item.channel.isDeleted ? 'border-destructive/40 bg-destructive/10 text-destructive' : item.channel.isLiving ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : ''"
                 class="text-[10px]">
-                {{ item.channel.isLiving ? '直播中' : '未开播' }}
+                {{ item.channel.isDeleted ? '已注销' : item.channel.isLiving ? '直播中' : '未开播' }}
               </Badge>
               <div class="flex items-center gap-1 rounded-md border bg-background/60 px-2 py-1">
                 <span class="text-[10px] text-muted-foreground">开播通知</span>

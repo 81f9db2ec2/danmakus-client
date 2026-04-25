@@ -9,8 +9,13 @@ export { RuntimeConnection } from '../core/RuntimeConnection.js';
 export { StreamerStatusManager } from '../core/StreamerStatusManager.js';
 export { getStartupBilibiliUserAgent, wrapBilibiliFetch } from '../core/BilibiliUserAgent.js';
 export { createWireRawLiveWsConnection } from '../core/WireRawLiveWsConnection.js';
-export { createSqliteLiveSessionOutbox } from '../core/SqliteLiveSessionOutbox.js';
+export {
+  createResettableSqliteLiveSessionOutboxBackend,
+  createSqliteLiveSessionOutbox,
+  isSqliteCorruptionError,
+} from '../core/SqliteLiveSessionOutbox.js';
 export type {
+  ResettableSqliteLiveSessionOutboxBackend,
   SqliteLiveSessionOutboxBackend,
   SqliteLiveSessionOutboxValue,
 } from '../core/SqliteLiveSessionOutbox.js';

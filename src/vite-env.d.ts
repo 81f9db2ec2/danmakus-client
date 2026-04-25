@@ -7,13 +7,3 @@ declare module "*.vue" {
   const component: DefineComponent<{}, {}, any>;
   export default component;
 }
-
-declare module "wa-sqlite/src/examples/IDBBatchAtomicVFS.js" {
-  export class IDBBatchAtomicVFS {
-    constructor(name?: string, options?: {
-      durability?: "default" | "strict" | "relaxed";
-      purge?: "deferred" | "manual";
-      purgeAtLeast?: number;
-    });
-  }
-}

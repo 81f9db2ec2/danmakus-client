@@ -19,6 +19,8 @@
     "autostart:default",
     "process:default",
     "notification:default",
+    "sql:default",
+    "sql:allow-execute",
     "http:allow-fetch-cancel-body",
     {
       "identifier": "http:default",

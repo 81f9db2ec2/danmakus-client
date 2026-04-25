@@ -1,117 +1,82 @@
+import Database from '@tauri-apps/plugin-sql'
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import type {
   LiveSessionOutboxStore,
-  SqliteLiveSessionOutboxBackend,
+  ResettableSqliteLiveSessionOutboxBackend,
   SqliteLiveSessionOutboxValue,
 } from 'danmakus-core'
 import {
+  createResettableSqliteLiveSessionOutboxBackend,
   createSqliteLiveSessionOutbox,
 } from 'danmakus-core'
-import SQLiteESMFactory from 'wa-sqlite/dist/wa-sqlite-async.mjs'
-import waSqliteAsyncWasmUrl from 'wa-sqlite/dist/wa-sqlite-async.wasm?url'
-import * as SQLite from 'wa-sqlite'
-import { IDBBatchAtomicVFS } from 'wa-sqlite/src/examples/IDBBatchAtomicVFS.js'
 
-const VFS_NAME = 'danmakus-live-session-outbox-vfs'
-const DATABASE_FILE_NAME = 'danmakus-live-session-outbox-streamer.sqlite3'
+const DATABASE_PATH = 'sqlite:live-session-outbox.sqlite3'
 
-type SQLiteApi = typeof SQLite & {
-  Factory(module: unknown): {
-    vfs_register(vfs: unknown, makeDefault?: boolean): number
-    open_v2(name: string): Promise<number>
-    exec(db: number, sql: string): Promise<number>
-    execWithParams(
-      db: number,
-      sql: string,
-      params?: SqliteLiveSessionOutboxValue[],
-    ): Promise<{ rows: unknown[][]; columns: string[] }>
-    run(
-      db: number,
-      sql: string,
-      params?: SqliteLiveSessionOutboxValue[],
-    ): Promise<number>
-    changes(db: number): number
+type SqlQueryRow = Record<string, unknown>
+
+const deleteDatabaseFile = async (database: Database): Promise<void> => {
+  try {
+    await database.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+  } catch {
+    // ignore checkpoint failures and proceed to hard reset
   }
+  await database.close()
+  await invoke('reset_live_session_outbox')
 }
 
-type DbContext = {
-  sqlite3: ReturnType<SQLiteApi['Factory']>
-  db: number
-}
-
-let dbContextPromise: Promise<DbContext> | null = null
-
-const hasIndexedDb = (): boolean =>
-  typeof indexedDB !== 'undefined'
-
-const getWaSqliteAsyncWasmUrl = (): string => {
-  if (typeof waSqliteAsyncWasmUrl !== 'string' || waSqliteAsyncWasmUrl.length === 0) {
-    throw new Error('wa-sqlite wasm 资源地址无效')
-  }
-
-  return waSqliteAsyncWasmUrl
-}
-
-const ensureDbContext = async (): Promise<DbContext> => {
-  if (!hasIndexedDb()) {
-    throw new Error('当前运行时不支持 IndexedDB，无法初始化 live session outbox')
-  }
-
-  if (!dbContextPromise) {
-    dbContextPromise = (async () => {
-      const module = await SQLiteESMFactory({
-        locateFile(path: string) {
-          if (path === 'wa-sqlite-async.wasm') {
-            return getWaSqliteAsyncWasmUrl()
-          }
-          return path
-        },
-      })
-      const sqlite3 = (SQLite as SQLiteApi).Factory(module)
-      const vfs = new IDBBatchAtomicVFS(VFS_NAME)
-      ;(sqlite3 as any).vfs_register(vfs, true)
-      const db = await sqlite3.open_v2(DATABASE_FILE_NAME)
-      return { sqlite3, db }
-    })().catch((error: unknown) => {
-      dbContextPromise = null
-      throw error
-    })
-  }
-
-  return await dbContextPromise
-}
-
-const createWaSqliteBackend = async (): Promise<SqliteLiveSessionOutboxBackend> => {
-  const { sqlite3, db } = await ensureDbContext()
+const createTauriSqlBackend = async (): Promise<ResettableSqliteLiveSessionOutboxBackend> => {
+  const database = await Database.load(DATABASE_PATH)
+  await database.execute('PRAGMA journal_mode = WAL')
+  await database.execute('PRAGMA synchronous = NORMAL')
 
   return {
     exec: async (sql: string): Promise<void> => {
-      await sqlite3.exec(db, sql)
+      await database.execute(sql)
     },
 
     run: async (
       sql: string,
       params?: SqliteLiveSessionOutboxValue[],
     ): Promise<number> => {
-      await sqlite3.run(db, sql, params)
-      return sqlite3.changes(db)
+      const result = await database.execute(sql, params)
+      return result.rowsAffected
     },
 
     query: async (
       sql: string,
       params?: SqliteLiveSessionOutboxValue[],
     ): Promise<unknown[][]> => {
-      const result = await sqlite3.execWithParams(db, sql, params)
-      return result.rows
+      const rows = await database.select<SqlQueryRow[]>(sql, params)
+      return rows.map((row) => {
+        if ('a_count' in row) {
+          return [row.a_count]
+        }
+
+        return [
+          row.a_id,
+          row.b_streamer_uid,
+          row.c_event_ts_ms,
+          row.d_payload,
+          row.e_retry_count,
+          row.f_next_retry_at_ms,
+        ]
+      })
+    },
+
+    reset: async (): Promise<void> => {
+      await deleteDatabaseFile(database)
     },
   }
 }
 
 const createLiveSessionOutboxAdapter = (): LiveSessionOutboxStore | undefined => {
-  if (!hasIndexedDb()) {
+  if (!isTauri()) {
     return undefined
   }
 
-  return createSqliteLiveSessionOutbox(createWaSqliteBackend)
+  return createSqliteLiveSessionOutbox(
+    createResettableSqliteLiveSessionOutboxBackend(createTauriSqlBackend),
+  )
 }
 
 export const liveSessionOutbox = {

@@ -1,9 +1,11 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { LiveSessionOutboxStore } from './LocalArchiveTypes.js';
 import {
+  createResettableSqliteLiveSessionOutboxBackend,
   createSqliteLiveSessionOutbox,
-  type SqliteLiveSessionOutboxBackend,
+  isSqliteCorruptionError,
+  type ResettableSqliteLiveSessionOutboxBackend,
   type SqliteLiveSessionOutboxValue,
 } from './SqliteLiveSessionOutbox.js';
 
@@ -22,6 +24,7 @@ type BunSqliteDatabase = {
   query(sql: string): {
     values(params?: SqliteLiveSessionOutboxValue[]): unknown[][];
   };
+  close(force?: boolean): void;
 };
 
 let sqliteModulePromise: Promise<any> | null = null;
@@ -41,12 +44,45 @@ const loadBunSqlite = async (): Promise<{
   };
 };
 
-const createBunSqliteBackend = async (databasePath: string): Promise<SqliteLiveSessionOutboxBackend> => {
+const deleteSqliteDatabaseFiles = (databasePath: string): void => {
+  rmSync(databasePath, { force: true });
+  rmSync(`${databasePath}-wal`, { force: true });
+  rmSync(`${databasePath}-shm`, { force: true });
+};
+
+const hasValidSqliteHeader = (databasePath: string): boolean => {
+  try {
+    const header = readFileSync(databasePath, { encoding: 'utf8', flag: 'r' }).slice(0, 16);
+    return header === 'SQLite format 3\u0000';
+  } catch {
+    return true;
+  }
+};
+
+const createBunSqliteBackend = async (databasePath: string): Promise<ResettableSqliteLiveSessionOutboxBackend> => {
   mkdirSync(dirname(databasePath), { recursive: true });
   const { Database } = await loadBunSqlite();
-  const db = new Database(databasePath, { create: true });
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA synchronous = NORMAL;');
+  if (!hasValidSqliteHeader(databasePath)) {
+    deleteSqliteDatabaseFiles(databasePath);
+  }
+  const openDatabase = (): BunSqliteDatabase => {
+    const db = new Database(databasePath, { create: true });
+    db.exec('SELECT 1;');
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA synchronous = NORMAL;');
+    return db;
+  };
+
+  let db: BunSqliteDatabase;
+  try {
+    db = openDatabase();
+  } catch (error) {
+    if (!isSqliteCorruptionError(error)) {
+      throw error;
+    }
+    deleteSqliteDatabaseFiles(databasePath);
+    db = openDatabase();
+  }
 
   return {
     exec: async (sql: string): Promise<void> => {
@@ -62,6 +98,11 @@ const createBunSqliteBackend = async (databasePath: string): Promise<SqliteLiveS
       sql: string,
       params?: SqliteLiveSessionOutboxValue[],
     ): Promise<unknown[][]> => db.query(sql).values(params),
+
+    reset: async (): Promise<void> => {
+      db.close(true);
+      deleteSqliteDatabaseFiles(databasePath);
+    },
   };
 };
 
@@ -70,6 +111,8 @@ export const createBunSqliteLiveSessionOutbox = (options?: {
 }): LiveSessionOutboxStore => {
   const databasePath = resolve(options?.databasePath ?? DEFAULT_BUN_LIVE_SESSION_OUTBOX_PATH);
   return createSqliteLiveSessionOutbox(
-    async () => await createBunSqliteBackend(databasePath),
+    createResettableSqliteLiveSessionOutboxBackend(
+      async () => await createBunSqliteBackend(databasePath),
+    ),
   );
 };
