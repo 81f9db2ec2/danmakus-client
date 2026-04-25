@@ -55,7 +55,7 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: install frontend dependencies
-        run: bun install --frozen-lockfile --no-cache
+        run: bun install
 
       - name: sync tauri version
         run: bun run sync:version
