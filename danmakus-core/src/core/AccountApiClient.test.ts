@@ -31,7 +31,7 @@ describe('AccountApiClient', () => {
       async (input) => {
         const url = String(input);
         requests.push(url);
-        if (url.startsWith('https://ukamnads.icu/')) {
+        if (url.startsWith('https://backend.danmakus.com/')) {
           return new Response('bad gateway', { status: 502 });
         }
 
@@ -55,7 +55,7 @@ describe('AccountApiClient', () => {
     const result = await client.getCoreConfig();
 
     expect(requests).toEqual([
-      'https://ukamnads.icu/api/v2/account/core-config',
+      'https://backend.danmakus.com/api/v2/account/core-config',
       'https://api.danmakus.com/api/v2/account/core-config'
     ]);
     expect(result.runtimeUrl).toBe('https://api.danmakus.com/api/v2/core-runtime');

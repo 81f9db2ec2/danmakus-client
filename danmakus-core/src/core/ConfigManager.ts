@@ -1,7 +1,7 @@
 import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types/index.js';
 
 const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
-const DEFAULT_RUNTIME_URL = 'https://ukamnads.icu/api/v2/core-runtime';
+const DEFAULT_RUNTIME_URL = 'https://backend.danmakus.com/api/v2/core-runtime';
 
 export class ConfigManager {
   private config: DanmakuConfig;

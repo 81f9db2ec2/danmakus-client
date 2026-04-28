@@ -23,7 +23,7 @@ const CLIENTS_TAG_HEADER = 'X-Core-Clients-Tag';
 const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
 const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
 const HEARTBEAT_FEATURES = 'clients,recording';
-const DEFAULT_ACCOUNT_API_BASE = 'https://ukamnads.icu/api/v2/account';
+const DEFAULT_ACCOUNT_API_BASE = 'https://backend.danmakus.com/api/v2/account';
 const DEFAULT_BACKEND_REQUEST_TIMEOUT_MS = 15000;
 
 export class AccountApiClient {
