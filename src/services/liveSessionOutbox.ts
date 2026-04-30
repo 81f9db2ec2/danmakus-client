@@ -21,6 +21,23 @@ type RustLiveSessionOutboxItem = {
   nextRetryAtMs: number
 }
 
+export type LiveSessionOutboxDatabaseInfo = {
+  databasePath: string
+  databaseExists: boolean
+  walExists: boolean
+  shmExists: boolean
+  databaseSizeBytes: number
+  walSizeBytes: number
+  shmSizeBytes: number
+  totalSizeBytes: number
+  schemaVersion: number
+  expectedSchemaVersion: number
+  journalMode: string
+  pendingCount: number
+  busyTimeoutMs: number
+  lastModifiedMs: number | null
+}
+
 const toRustInsert = (item: LiveSessionOutboxInsert): RustLiveSessionOutboxInsert => ({
   streamerUid: Math.floor(item.streamerUid),
   eventTsMs: Math.floor(item.eventTsMs),
@@ -91,5 +108,19 @@ export const liveSessionOutbox = {
     const adapter = createLiveSessionOutboxAdapter()
     await adapter.countPending()
     return adapter
+  },
+
+  async getDatabaseInfo(): Promise<LiveSessionOutboxDatabaseInfo> {
+    if (!isTauri()) {
+      throw new Error('当前环境不支持本地数据库信息')
+    }
+    return await invoke<LiveSessionOutboxDatabaseInfo>('live_session_outbox_database_info')
+  },
+
+  async rebuildDatabase(): Promise<LiveSessionOutboxDatabaseInfo> {
+    if (!isTauri()) {
+      throw new Error('当前环境不支持重建本地数据库')
+    }
+    return await invoke<LiveSessionOutboxDatabaseInfo>('live_session_outbox_rebuild_database')
   },
 }

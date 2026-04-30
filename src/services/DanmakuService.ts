@@ -179,6 +179,14 @@ class DanmakuService {
     this.applyControlStateSnapshot(snapshot);
   }
 
+  public async refreshArchiveStats(): Promise<void> {
+    if (!this.client) {
+      return;
+    }
+    await this.client.refreshArchiveStats();
+    this.applyStatusSnapshot();
+  }
+
   public async refreshAuthState(options?: { force?: boolean }): Promise<void> {
     await this.requireClient().refreshAuthState(options);
     this.applyStatusSnapshot();

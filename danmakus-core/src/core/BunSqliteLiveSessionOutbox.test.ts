@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBunSqliteLiveSessionOutbox } from './BunSqliteLiveSessionOutbox.js';
-import { createSqliteLiveSessionOutbox, type SqliteLiveSessionOutboxBackend } from './SqliteLiveSessionOutbox.js';
+import {
+  createResettableSqliteLiveSessionOutboxBackend,
+  createSqliteLiveSessionOutbox,
+  isSqliteLockedError,
+  isSqliteResettableError,
+  type ResettableSqliteLiveSessionOutboxBackend,
+  type SqliteLiveSessionOutboxBackend,
+} from './SqliteLiveSessionOutbox.js';
 
 const TEST_STREAMER_UID = 84;
 
@@ -36,6 +43,7 @@ describe('BunSqliteLiveSessionOutbox', () => {
 
     await reopenedOutbox.ack([dueRecords[0]!.id]);
     expect(await reopenedOutbox.countPending()).toBe(0);
+    expect(existsSync(`${databasePath}-wal`)).toBe(false);
   });
 
   it('rebuilds the database automatically when the sqlite file is corrupted', async () => {
@@ -60,6 +68,83 @@ describe('BunSqliteLiveSessionOutbox', () => {
     const dueRecords = await outbox.listDue({ nowMs, limit: 10 });
     expect(dueRecords).toHaveLength(1);
     expect(dueRecords[0]?.payload).toEqual(new Uint8Array([9, 8, 7]));
+  });
+
+  it('reconnects once before rebuilding a locked sqlite database', async () => {
+    let backendId = 0;
+    let reconnectCount = 0;
+    let resetCount = 0;
+
+    const outbox = createSqliteLiveSessionOutbox(
+      createResettableSqliteLiveSessionOutboxBackend(async (): Promise<ResettableSqliteLiveSessionOutboxBackend> => {
+        backendId += 1;
+        const currentBackendId = backendId;
+        return {
+          exec: async () => undefined,
+          run: async () => 0,
+          query: async (sql) => {
+            if (currentBackendId === 1) {
+              throw new Error('error returned from database: (code: 5) database is locked');
+            }
+            if (sql === 'PRAGMA user_version') {
+              return [[4]];
+            }
+            return [[0]];
+          },
+          reconnect: async () => {
+            reconnectCount += 1;
+          },
+          reset: async () => {
+            resetCount += 1;
+          },
+        };
+      }),
+    );
+
+    expect(await outbox.countPending()).toBe(0);
+    expect(reconnectCount).toBe(1);
+    expect(resetCount).toBe(1);
+    expect(backendId).toBe(2);
+  });
+
+  it('does not rebuild the database when reconnect clears a sqlite lock', async () => {
+    let locked = true;
+    let reconnectCount = 0;
+    let resetCount = 0;
+
+    const outbox = createSqliteLiveSessionOutbox(
+      createResettableSqliteLiveSessionOutboxBackend(async (): Promise<ResettableSqliteLiveSessionOutboxBackend> => ({
+        exec: async () => undefined,
+        run: async () => 0,
+        query: async (sql) => {
+          if (locked) {
+            throw new Error('error returned from database: (code: 5) database is locked');
+          }
+          if (sql === 'PRAGMA user_version') {
+            return [[4]];
+          }
+          return [[0]];
+        },
+        reconnect: async () => {
+          reconnectCount += 1;
+          locked = false;
+        },
+        reset: async () => {
+          resetCount += 1;
+        },
+      })),
+    );
+
+    expect(await outbox.countPending()).toBe(0);
+    expect(reconnectCount).toBe(1);
+    expect(resetCount).toBe(0);
+  });
+
+  it('classifies sqlite locked errors as resettable', () => {
+    const error = new Error('error returned from database: (code: 5) database is locked');
+
+    expect(isSqliteLockedError(error)).toBe(true);
+    expect(isSqliteResettableError(error)).toBe(true);
   });
 
   it('deletes the sqlite database when the schema version does not match', async () => {

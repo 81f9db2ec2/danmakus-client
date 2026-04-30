@@ -44,7 +44,9 @@ pub fn run() {
             live_session_outbox::live_session_outbox_list_due,
             live_session_outbox::live_session_outbox_ack,
             live_session_outbox::live_session_outbox_reschedule,
-            live_session_outbox::live_session_outbox_count_pending
+            live_session_outbox::live_session_outbox_count_pending,
+            live_session_outbox::live_session_outbox_database_info,
+            live_session_outbox::live_session_outbox_rebuild_database
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

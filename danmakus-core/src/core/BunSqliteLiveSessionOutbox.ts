@@ -48,6 +48,7 @@ const deleteSqliteDatabaseFiles = (databasePath: string): void => {
   rmSync(databasePath, { force: true });
   rmSync(`${databasePath}-wal`, { force: true });
   rmSync(`${databasePath}-shm`, { force: true });
+  rmSync(`${databasePath}-journal`, { force: true });
 };
 
 const hasValidSqliteHeader = (databasePath: string): boolean => {
@@ -68,8 +69,9 @@ const createBunSqliteBackend = async (databasePath: string): Promise<ResettableS
   const openDatabase = (): BunSqliteDatabase => {
     const db = new Database(databasePath, { create: true });
     db.exec('SELECT 1;');
-    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA journal_mode = DELETE;');
     db.exec('PRAGMA synchronous = NORMAL;');
+    db.exec('PRAGMA busy_timeout = 30000;');
     return db;
   };
 
@@ -98,6 +100,11 @@ const createBunSqliteBackend = async (databasePath: string): Promise<ResettableS
       sql: string,
       params?: SqliteLiveSessionOutboxValue[],
     ): Promise<unknown[][]> => db.query(sql).values(params),
+
+    reconnect: async (): Promise<void> => {
+      db.close(true);
+      db = openDatabase();
+    },
 
     reset: async (): Promise<void> => {
       db.close(true);

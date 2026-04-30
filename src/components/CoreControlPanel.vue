@@ -6,6 +6,7 @@ import { danmakuService } from '../services/DanmakuService';
 import { RUNTIME_URL } from '../services/env';
 import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http';
 import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
+import { liveSessionOutbox, type LiveSessionOutboxDatabaseInfo } from '../services/liveSessionOutbox';
 import { APP_UPDATE_CHECK_INTERVAL_MS, checkForUpdate, installLatestUpdate, updaterEnabled, type AvailableUpdate } from '../services/updater';
 import type { CoreControlConfigDto, LocalAppConfigDto } from '../types/api';
 import AppSidebar from './AppSidebar.vue';
@@ -81,6 +82,9 @@ const installingAppUpdate = ref(false);
 const autoCheckingAppUpdate = ref(false);
 const appUpdateBusy = computed(() => checkingAppUpdate.value || installingAppUpdate.value || autoCheckingAppUpdate.value);
 const availableUpdateVersion = ref<string | null>(null);
+const databaseInfo = ref<LiveSessionOutboxDatabaseInfo | null>(null);
+const loadingDatabaseInfo = ref(false);
+const rebuildingDatabase = ref(false);
 let autoAppUpdateTimer: number | undefined;
 let announcedAppUpdateVersion: string | null = null;
 const coreConfigAutoSaveThrottleMs = 1_200;
@@ -466,6 +470,42 @@ const handleInstallAppUpdate = async () => {
   });
 };
 
+const refreshDatabaseInfo = async (silent = false) => {
+  if (!isDesktopApp || loadingDatabaseInfo.value || rebuildingDatabase.value) {
+    return;
+  }
+
+  loadingDatabaseInfo.value = true;
+  try {
+    databaseInfo.value = await liveSessionOutbox.getDatabaseInfo();
+  } catch (error) {
+    console.error(error);
+    if (!silent) {
+      toast.error(error instanceof Error ? error.message : '读取本地数据库信息失败');
+    }
+  } finally {
+    loadingDatabaseInfo.value = false;
+  }
+};
+
+const handleRebuildDatabase = async () => {
+  if (!isDesktopApp || rebuildingDatabase.value) {
+    return;
+  }
+
+  rebuildingDatabase.value = true;
+  try {
+    databaseInfo.value = await liveSessionOutbox.rebuildDatabase();
+    await danmakuService.refreshArchiveStats();
+    toast.success('本地数据库已重建');
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '重建本地数据库失败');
+  } finally {
+    rebuildingDatabase.value = false;
+  }
+};
+
 const handleStartCore = async () => {
   try {
     if (!ensureToken()) return;
@@ -711,6 +751,15 @@ watch(
 );
 
 watch(
+  currentPage,
+  (page) => {
+    if (page === 'app') {
+      void refreshDatabaseInfo(true);
+    }
+  }
+);
+
+watch(
   recordingLiveSnapshots,
   (nextSnapshots) => {
     const enabledNotificationUids = new Set(localConfig.recordingLiveNotificationUids);
@@ -797,7 +846,7 @@ onBeforeUnmount(() => {
 
             <CoreControlSettingsTab v-else-if="currentPage === 'settings'" key="settings" :core-config="coreConfigDraft" :local-config="localConfig" :auth-state="runtimeState.authState" :core-running="runtimeState.isRunning" :available-areas="availableAreas" :recordings="recordings" :refreshing-recordings="refreshingRecordings" :adding-recording="addingRecording" :removing-recording-uid="removingRecordingUid" :updating-recording-uid="updatingRecordingUid" :saving-config="savingConfig" @save-config="handleSaveConfig" @refresh-recordings="refreshRecordingList" @add-recording="handleAddRecording" @remove-recording="handleRemoveRecording" @update-recording-public="handleUpdateRecordingPublic" @sync-cookie-cloud="handleSyncCookieCloud" />
 
-            <CoreControlAppTab v-else-if="currentPage === 'app'" key="app" :local-config="localConfig" :is-desktop-runtime="isDesktopApp" :updater-supported="isUpdaterSupported" :app-update-busy="appUpdateBusy" :checking-app-update="checkingAppUpdate" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" @check-app-update="handleCheckAppUpdate" @install-app-update="handleInstallAppUpdate" />
+            <CoreControlAppTab v-else-if="currentPage === 'app'" key="app" :local-config="localConfig" :is-desktop-runtime="isDesktopApp" :updater-supported="isUpdaterSupported" :app-update-busy="appUpdateBusy" :checking-app-update="checkingAppUpdate" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" :database-info="databaseInfo" :loading-database-info="loadingDatabaseInfo" :rebuilding-database="rebuildingDatabase" @check-app-update="handleCheckAppUpdate" @install-app-update="handleInstallAppUpdate" @refresh-database-info="refreshDatabaseInfo(false)" @rebuild-database="handleRebuildDatabase" />
 
             <div v-else-if="currentPage === 'bilibili'" key="bilibili">
               <h2 class="mb-4 text-xl font-semibold tracking-tight">Bilibili 连接管理</h2>

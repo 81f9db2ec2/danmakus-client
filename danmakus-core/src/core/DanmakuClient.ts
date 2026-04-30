@@ -1085,6 +1085,11 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     return this.controlState.refreshRuntimeControlState();
   }
 
+  async refreshArchiveStats(): Promise<void> {
+    await this.messageQueue.refreshArchiveStats();
+    this.emit('statusChanged');
+  }
+
   async refreshRecordingControlState(): Promise<CoreControlStateSnapshot> {
     return this.controlState.refreshRecordingControlState();
   }

@@ -20,6 +20,13 @@ const SQLITE_CORRUPTION_PATTERNS = [
   'sqlite_corrupt',
   'sqlite_notadb',
 ];
+const SQLITE_LOCKED_PATTERNS = [
+  'database is locked',
+  'database table is locked',
+  'sqlite_busy',
+  'sqlite_locked',
+  'code: 5',
+];
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS live_session_outbox (
@@ -44,6 +51,7 @@ export interface SqliteLiveSessionOutboxBackend {
 }
 
 export interface ResettableSqliteLiveSessionOutboxBackend extends SqliteLiveSessionOutboxBackend {
+  reconnect?(reason: unknown): Promise<void>;
   reset(reason: unknown): Promise<void>;
 }
 
@@ -57,6 +65,15 @@ export const isSqliteCorruptionError = (error: unknown): boolean => {
   const normalized = message.toLowerCase();
   return SQLITE_CORRUPTION_PATTERNS.some(pattern => normalized.includes(pattern));
 };
+
+export const isSqliteLockedError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const normalized = message.toLowerCase();
+  return SQLITE_LOCKED_PATTERNS.some(pattern => normalized.includes(pattern));
+};
+
+export const isSqliteResettableError = (error: unknown): boolean =>
+  isSqliteCorruptionError(error) || isSqliteLockedError(error);
 
 export const createResettableSqliteLiveSessionOutboxBackend = (
   getBackend: ResettableBackendFactory,
@@ -220,7 +237,7 @@ export const createSqliteLiveSessionOutbox = (
         return backend;
       })().catch((error: unknown) => {
         initializedPromise = null;
-        if (!isSqliteCorruptionError(error)) {
+        if (!isSqliteResettableError(error)) {
           backendPromise = null;
           currentBackend = null;
         }
@@ -253,7 +270,7 @@ export const createSqliteLiveSessionOutbox = (
     return freshBackend;
   };
 
-  const resetCorruptedBackend = async (
+  const resetFailedBackend = async (
     backend: SqliteLiveSessionOutboxBackend,
     reason: unknown,
   ): Promise<void> => {
@@ -265,24 +282,50 @@ export const createSqliteLiveSessionOutbox = (
     await resettableBackend.reset(reason);
   };
 
+  const reconnectFailedBackend = async (
+    backend: SqliteLiveSessionOutboxBackend,
+    reason: unknown,
+  ): Promise<void> => {
+    const resettableBackend = getResettableBackend(backend);
+    resetBackendState();
+    if (!resettableBackend?.reconnect) {
+      return;
+    }
+    await resettableBackend.reconnect(reason);
+  };
+
   const withAutoRecovery = async <T>(
     operation: () => Promise<T>,
   ): Promise<T> => {
-    try {
-      return await operation();
-    } catch (error) {
-      if (!isSqliteCorruptionError(error)) {
-        throw error;
-      }
-
-      const backend = currentBackend;
-      if (!backend) {
-        resetBackendState();
+    let reconnectedAfterLocked = false;
+    let rebuilt = false;
+    for (;;) {
+      try {
         return await operation();
-      }
+      } catch (error) {
+        const backend = currentBackend;
+        if (isSqliteLockedError(error) && !reconnectedAfterLocked) {
+          reconnectedAfterLocked = true;
+          if (backend) {
+            await reconnectFailedBackend(backend, error);
+          } else {
+            resetBackendState();
+          }
+          continue;
+        }
 
-      await resetCorruptedBackend(backend, error);
-      return await operation();
+        if (!isSqliteResettableError(error) || rebuilt) {
+          throw error;
+        }
+
+        rebuilt = true;
+        if (!backend) {
+          resetBackendState();
+          continue;
+        }
+
+        await resetFailedBackend(backend, error);
+      }
     }
   };
 
@@ -294,11 +337,11 @@ export const createSqliteLiveSessionOutbox = (
       return;
     }
 
-    lastPruneAtMs = nowMs;
     await backend.run(
       'DELETE FROM live_session_outbox WHERE event_ts_ms < ?',
       [Math.floor(nowMs - OUTBOX_RETENTION_MS)],
     );
+    lastPruneAtMs = nowMs;
   };
 
   return {
