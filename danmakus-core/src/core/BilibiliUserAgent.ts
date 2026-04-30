@@ -1,6 +1,14 @@
-import { faker } from '@faker-js/faker'
+const randomInt = (min: number, max: number): number =>
+  min + Math.floor(Math.random() * (max - min + 1))
 
-const startupBilibiliUserAgent = faker.internet.userAgent()
+const createBilibiliUserAgent = (): string => {
+  const chromeMajor = randomInt(120, 131)
+  const chromeBuild = randomInt(6000, 6900)
+  const chromePatch = randomInt(100, 240)
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.${chromeBuild}.${chromePatch} Safari/537.36`
+}
+
+const startupBilibiliUserAgent = createBilibiliUserAgent()
 
 function toUrlString(input: RequestInfo | URL): string {
   if (typeof input === 'string') {

@@ -8,7 +8,6 @@ export { CookieManager } from '../core/CookieManager.js';
 export { RuntimeConnection } from '../core/RuntimeConnection.js';
 export { StreamerStatusManager } from '../core/StreamerStatusManager.js';
 export { getStartupBilibiliUserAgent, wrapBilibiliFetch } from '../core/BilibiliUserAgent.js';
-export { createWireRawLiveWsConnection } from '../core/WireRawLiveWsConnection.js';
 export {
   createResettableSqliteLiveSessionOutboxBackend,
   createSqliteLiveSessionOutbox,

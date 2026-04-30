@@ -58,6 +58,14 @@ const hasRuntimeLockConflict = (message: string | null | undefined): boolean => 
   return normalized.includes('同一IP已存在其他客户端连接');
 };
 
+const normalizeRoomId = (value: unknown): number | null => {
+  const roomId = Number(value);
+  if (!Number.isFinite(roomId) || roomId <= 0) {
+    return null;
+  }
+  return Math.floor(roomId);
+};
+
 class DanmakuService {
   private static instance: DanmakuService;
   private client: DanmakuClient | null = null;
@@ -128,6 +136,7 @@ class DanmakuService {
     }
 
     await this.disposeExistingClient();
+    const outbox = await liveSessionOutbox.createAdapter();
 
     this.client = new DanmakuClient({
       clientId: this.localClientId,
@@ -142,7 +151,7 @@ class DanmakuService {
       accountToken: token,
       clientVersion: desktopClientVersion,
       runtimeUrl: RUNTIME_URL,
-      liveSessionOutbox: liveSessionOutbox.getAdapter() as LiveSessionOutboxStore | undefined,
+      liveSessionOutbox: outbox as LiveSessionOutboxStore,
     });
     this.lastInitializationSignature = signature;
 
@@ -385,7 +394,11 @@ class DanmakuService {
       this.state.messageCount += 1;
       const cmd = message.cmd;
       this.state.messageCmdCountMap[cmd] = (this.state.messageCmdCountMap[cmd] || 0) + 1;
-      const roomKey = String(message.roomId);
+      const roomId = normalizeRoomId(message.roomId);
+      if (roomId === null) {
+        return;
+      }
+      const roomKey = String(roomId);
       this.state.roomMessageCountMap[roomKey] = (this.state.roomMessageCountMap[roomKey] || 0) + 1;
     });
 
@@ -426,6 +439,7 @@ class DanmakuService {
       this.state.messageCount = 0;
       this.state.pendingMessageCount = 0;
       this.state.messageCmdCountMap = {};
+      this.state.roomMessageCountMap = {};
       this.state.lastRoomAssigned = null;
       this.state.lastError = null;
       this.state.lockConflict = false;
@@ -446,6 +460,7 @@ class DanmakuService {
     this.state.cookieValid = status.cookieValid;
     this.state.authState = cloneAuthState(status.authState);
     this.state.holdingRooms = [...status.holdingRooms];
+    this.pruneRoomMessageCounts([...status.connectedRooms, ...status.holdingRooms]);
     this.state.holdingRoomShortfall = cloneHoldingRoomShortfall(status.holdingRoomShortfall);
     this.state.messageCount = status.messageCount;
     this.state.pendingMessageCount = status.pendingMessageCount;
@@ -453,6 +468,21 @@ class DanmakuService {
     this.state.lastError = status.lastError ?? null;
     this.state.lastHeartbeat = status.lastHeartbeat ?? null;
     this.refreshRuntimeIndicators();
+  }
+
+  private pruneRoomMessageCounts(roomIds: number[]): void {
+    const activeRoomKeys = new Set(
+      roomIds
+        .map(normalizeRoomId)
+        .filter((roomId): roomId is number => roomId !== null)
+        .map(roomId => String(roomId))
+    );
+
+    for (const roomKey of Object.keys(this.state.roomMessageCountMap)) {
+      if (!activeRoomKeys.has(roomKey)) {
+        delete this.state.roomMessageCountMap[roomKey];
+      }
+    }
   }
 
   private buildRuntimeHeaders(): Record<string, string> | undefined {

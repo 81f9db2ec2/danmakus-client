@@ -1,18 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import type { DanmakuMessage, LiveSessionOutboxItem, LiveSessionOutboxStore } from "../types/index.js";
+import type { LiveSessionOutboxItem, LiveSessionOutboxStore } from "../types/index.js";
 import { DanmakuMessageQueue } from "./DanmakuMessageQueue.js";
 import { ScopedLogger } from "./Logger.js";
 
 const TEST_STREAMER_UID = 84;
+const textEncoder = new TextEncoder();
 
-function createMessage(roomId: number, timestamp: number): DanmakuMessage {
-  return {
-    roomId,
-    cmd: "DANMU_MSG",
-    raw: `{"cmd":"DANMU_MSG","roomId":${roomId},"ts":${timestamp}}`,
-    timestamp,
-  };
-}
+const createPacket = (roomId: number, timestamp: number): Uint8Array =>
+  textEncoder.encode(`{"cmd":"DANMU_MSG","roomId":${roomId},"ts":${timestamp}}`);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -67,7 +62,7 @@ describe("DanmakuMessageQueue", () => {
     expect(queue.getFailedCount()).toBe(0);
   });
 
-  it("flushes buffered messages into the live session outbox when a streamerUid is available", async () => {
+  it("flushes buffered messages into the live session outbox after the 1 second persist window", async () => {
     let appendCallCount = 0;
     let appendedCount = 0;
     const queue = new DanmakuMessageQueue({
@@ -91,16 +86,114 @@ describe("DanmakuMessageQueue", () => {
       emitQueueChanged: () => undefined,
     });
 
-    (queue as any).messageUploadInterval = 10_000;
     (queue as any).messageBatchSize = 1;
 
-    queue.enqueueMessage(createMessage(1001, Date.now()));
-    await sleep(100);
+    queue.enqueuePacket(1001, createPacket(1001, 1710000001000), 1710000001000);
+    queue.enqueuePacket(1001, createPacket(1001, 1710000001001), 1710000001001);
+    queue.enqueuePacket(1001, createPacket(1001, 1710000001002), 1710000001002);
+    await sleep(1100);
 
     expect(appendCallCount).toBe(1);
-    expect(appendedCount).toBe(1);
-    expect(queue.getPendingMessages()).toHaveLength(0);
-    expect(queue.getPendingCount()).toBe(1);
+    expect(appendedCount).toBe(3);
+    expect((queue as any).pendingPackets).toHaveLength(0);
+    expect(queue.getPendingCount()).toBe(3);
+  });
+
+  it("skips the scheduled persist when no buffered packets remain", async () => {
+    let appendCallCount = 0;
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => undefined,
+      getLiveSessionOutbox: () => createOutboxStore({
+        append: async (items) => {
+          appendCallCount += 1;
+          return items.length;
+        },
+      }),
+      resolveRecordingStreamerUid: () => TEST_STREAMER_UID,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: () => undefined,
+      emitError: () => undefined,
+      emitQueueChanged: () => undefined,
+    });
+
+    queue.enqueuePacket(1001, createPacket(1001, 1710000001000), 1710000001000);
+    queue.clearPendingPackets();
+    await sleep(1100);
+
+    expect(appendCallCount).toBe(0);
+    expect(queue.getPendingCount()).toBe(0);
+  });
+
+  it("does not drop buffered raw packets at the legacy 20000 memory queue limit when an outbox is configured", async () => {
+    let appendedCount = 0;
+    const errors: string[] = [];
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => undefined,
+      getLiveSessionOutbox: () => createOutboxStore({
+        append: async (items) => {
+          appendedCount += items.length;
+          return items.length;
+        },
+      }),
+      resolveRecordingStreamerUid: () => TEST_STREAMER_UID,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: (error) => {
+        errors.push(error instanceof Error ? error.message : String(error));
+      },
+      emitError: (error) => {
+        errors.push(error.message);
+      },
+      emitQueueChanged: () => undefined,
+    });
+
+    for (let index = 0; index < 20_001; index += 1) {
+      queue.enqueuePacket(1001, createPacket(1001, 1710000001000 + index), 1710000001000 + index);
+    }
+    await queue.flushPendingMessages();
+
+    expect(appendedCount).toBe(20_001);
+    expect(errors).toEqual([]);
+    expect((queue as any).pendingPackets).toHaveLength(0);
+    expect(queue.getPendingCount()).toBe(20_001);
+  });
+
+  it("drops buffered messages that still have no streamerUid when they become due", async () => {
+    const appendedItems: unknown[] = [];
+    const errors: Error[] = [];
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => undefined,
+      getLiveSessionOutbox: () => createOutboxStore({
+        append: async (items) => {
+          appendedItems.push(...items);
+          return items.length;
+        },
+      }),
+      resolveRecordingStreamerUid: () => null,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: (error) => {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      },
+      emitError: (error) => {
+        errors.push(error);
+      },
+      emitQueueChanged: () => undefined,
+    });
+
+    (queue as any).messageBatchSize = 1;
+
+    queue.enqueuePacket(1001, createPacket(1001, Date.now()));
+    await sleep(1100);
+
+    expect(appendedItems).toHaveLength(0);
+    expect((queue as any).pendingPackets).toHaveLength(0);
+    expect(queue.getPendingCount()).toBe(0);
+    expect(errors.some(error => error.message.includes("streamerUid"))).toBe(true);
   });
 
   it("uploads freshly persisted outbox records without requiring a second flush cycle", async () => {
@@ -162,8 +255,8 @@ describe("DanmakuMessageQueue", () => {
 
     (queue as any).messageBatchSize = 1;
 
-    queue.enqueueMessage(createMessage(1001, 1710000001000));
-    await sleep(100);
+    queue.enqueuePacket(1001, createPacket(1001, 1710000001000), 1710000001000);
+    await sleep(1100);
 
     expect(appendedItems).toEqual([{
       streamerUid: TEST_STREAMER_UID,
@@ -221,6 +314,51 @@ describe("DanmakuMessageQueue", () => {
     await queue.flushPendingMessages();
 
     expect(ackedIds).toEqual([7]);
+    expect(queue.getPendingCount()).toBe(0);
+  });
+
+  it("attempts archive upload even when the runtime soft connection flag is false", async () => {
+    const sentIds: number[] = [];
+    const ackedIds: number[] = [];
+    const dueRecords: LiveSessionOutboxItem[] = [{
+      id: 9,
+      streamerUid: TEST_STREAMER_UID,
+      eventTsMs: 1710000001000,
+      payload: new Uint8Array([1, 2, 3]),
+      retryCount: 0,
+      nextRetryAtMs: 1710000001000,
+    }];
+
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => ({
+        getConnectionState: () => false,
+        sendArchiveBatch: async (records) => {
+          sentIds.push(...records.map(record => record.id));
+          return { rejected: [] };
+        },
+      }),
+      getLiveSessionOutbox: () => createOutboxStore({
+        countPending: async () => 1,
+        listDue: async () => dueRecords,
+        ack: async (ids) => {
+          ackedIds.push(...ids);
+          return ids.length;
+        },
+      }),
+      resolveRecordingStreamerUid: () => null,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: () => undefined,
+      emitError: () => undefined,
+      emitQueueChanged: () => undefined,
+    });
+
+    await queue.refreshArchiveStats();
+    await queue.flushPendingMessages();
+
+    expect(sentIds).toEqual([9]);
+    expect(ackedIds).toEqual([9]);
     expect(queue.getPendingCount()).toBe(0);
   });
 
@@ -334,5 +472,53 @@ describe("DanmakuMessageQueue", () => {
     expect(rescheduled.ids).toEqual([7]);
     expect(rescheduled.retryCounts).toEqual([1000]);
     expect(queue.getPendingCount()).toBe(1);
+    queue.clearMessageDispatch();
+  });
+
+  it("keeps persisting buffered packets while an outbox upload is pending", async () => {
+    let appendedCount = 0;
+    const dueRecords: LiveSessionOutboxItem[] = [{
+      id: 7,
+      streamerUid: TEST_STREAMER_UID,
+      eventTsMs: 1710000001000,
+      payload: new Uint8Array([1, 2, 3]),
+      retryCount: 0,
+      nextRetryAtMs: 1710000001000,
+    }];
+
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => ({
+        getConnectionState: () => true,
+        sendArchiveBatch: async () => await new Promise<never>(() => undefined),
+      }),
+      getLiveSessionOutbox: () => createOutboxStore({
+        countPending: async () => dueRecords.length + appendedCount,
+        append: async (items) => {
+          appendedCount += items.length;
+          return items.length;
+        },
+        listDue: async () => dueRecords,
+      }),
+      resolveRecordingStreamerUid: () => TEST_STREAMER_UID,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: () => undefined,
+      emitError: () => undefined,
+      emitQueueChanged: () => undefined,
+    });
+
+    (queue as any).messageUploadInterval = 20;
+
+    await queue.refreshArchiveStats();
+    void queue.flushPendingMessages();
+    await sleep(30);
+    queue.enqueuePacket(1001, createPacket(1001, 1710000002000), 1710000002000);
+    await sleep(1100);
+    queue.clearMessageDispatch();
+
+    expect(appendedCount).toBe(1);
+    expect((queue as any).pendingPackets).toHaveLength(0);
+    expect(queue.getPendingCount()).toBe(2);
   });
 });

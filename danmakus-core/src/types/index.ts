@@ -4,7 +4,6 @@ export interface DanmakuMessage {
   roomId: number;
   cmd: string;
   data: any;
-  raw: string;
   timestamp: number;
 }
 
@@ -89,7 +88,6 @@ export interface DanmakuConfig {
   clientId?: string;
   clientVersion?: string;
   logLevel?: LogLevel;
-  messageQueueMaxSize?: number;
   messageRetryBaseDelay?: number;
   messageRetryMaxDelay?: number;
   messageRetryMaxAttempts?: number;

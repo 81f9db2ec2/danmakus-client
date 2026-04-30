@@ -1,7 +1,6 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
-import tsconfigPaths from "vite-tsconfig-paths";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
@@ -14,11 +13,12 @@ const appVersion = packageJson.version?.trim() || "0.0.0";
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [vue(), tailwindcss(), tsconfigPaths()],
+  plugins: [vue(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
   },
   resolve: {
+    tsconfigPaths: true,
     alias: {
       "@": path.resolve(__dirname, "./src"),
       'danmakus-core': path.resolve(__dirname, './danmakus-core/src/lib')

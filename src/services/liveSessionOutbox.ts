@@ -1,86 +1,95 @@
-import Database from '@tauri-apps/plugin-sql'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import type {
+  LiveSessionOutboxInsert,
+  LiveSessionOutboxItem,
+  LiveSessionOutboxRescheduleUpdate,
   LiveSessionOutboxStore,
-  ResettableSqliteLiveSessionOutboxBackend,
-  SqliteLiveSessionOutboxValue,
-} from 'danmakus-core'
-import {
-  createResettableSqliteLiveSessionOutboxBackend,
-  createSqliteLiveSessionOutbox,
 } from 'danmakus-core'
 
-const DATABASE_PATH = 'sqlite:live-session-outbox.sqlite3'
-
-type SqlQueryRow = Record<string, unknown>
-
-const deleteDatabaseFile = async (database: Database): Promise<void> => {
-  try {
-    await database.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-  } catch {
-    // ignore checkpoint failures and proceed to hard reset
-  }
-  await database.close()
-  await invoke('reset_live_session_outbox')
+type RustLiveSessionOutboxInsert = {
+  streamerUid: number
+  eventTsMs: number
+  payload: number[]
 }
 
-const createTauriSqlBackend = async (): Promise<ResettableSqliteLiveSessionOutboxBackend> => {
-  const database = await Database.load(DATABASE_PATH)
-  await database.execute('PRAGMA journal_mode = WAL')
-  await database.execute('PRAGMA synchronous = NORMAL')
+type RustLiveSessionOutboxItem = {
+  id: number
+  streamerUid: number
+  eventTsMs: number
+  payload: number[]
+  retryCount: number
+  nextRetryAtMs: number
+}
+
+const toRustInsert = (item: LiveSessionOutboxInsert): RustLiveSessionOutboxInsert => ({
+  streamerUid: Math.floor(item.streamerUid),
+  eventTsMs: Math.floor(item.eventTsMs),
+  payload: Array.from(item.payload),
+})
+
+const fromRustItem = (item: RustLiveSessionOutboxItem): LiveSessionOutboxItem => ({
+  id: Math.floor(item.id),
+  streamerUid: Math.floor(item.streamerUid),
+  eventTsMs: Math.floor(item.eventTsMs),
+  payload: Uint8Array.from(item.payload),
+  retryCount: Math.floor(item.retryCount),
+  nextRetryAtMs: Math.floor(item.nextRetryAtMs),
+})
+
+const createLiveSessionOutboxAdapter = (): LiveSessionOutboxStore => {
+  if (!isTauri()) {
+    throw new Error('当前环境不支持本地归档 outbox')
+  }
 
   return {
-    exec: async (sql: string): Promise<void> => {
-      await database.execute(sql)
-    },
-
-    run: async (
-      sql: string,
-      params?: SqliteLiveSessionOutboxValue[],
-    ): Promise<number> => {
-      const result = await database.execute(sql, params)
-      return result.rowsAffected
-    },
-
-    query: async (
-      sql: string,
-      params?: SqliteLiveSessionOutboxValue[],
-    ): Promise<unknown[][]> => {
-      const rows = await database.select<SqlQueryRow[]>(sql, params)
-      return rows.map((row) => {
-        if ('a_count' in row) {
-          return [row.a_count]
-        }
-
-        return [
-          row.a_id,
-          row.b_streamer_uid,
-          row.c_event_ts_ms,
-          row.d_payload,
-          row.e_retry_count,
-          row.f_next_retry_at_ms,
-        ]
+    append: async (items: LiveSessionOutboxInsert[]): Promise<number> => {
+      if (items.length === 0) {
+        return 0
+      }
+      return await invoke<number>('live_session_outbox_append', {
+        items: items.map(toRustInsert),
       })
     },
 
-    reset: async (): Promise<void> => {
-      await deleteDatabaseFile(database)
+    listDue: async ({ nowMs, limit }: { nowMs: number; limit?: number }): Promise<LiveSessionOutboxItem[]> => {
+      const items = await invoke<RustLiveSessionOutboxItem[]>('live_session_outbox_list_due', {
+        nowMs: Math.floor(nowMs),
+        limit: Math.floor(limit ?? 200),
+      })
+      return items.map(fromRustItem)
     },
-  }
-}
 
-const createLiveSessionOutboxAdapter = (): LiveSessionOutboxStore | undefined => {
-  if (!isTauri()) {
-    return undefined
-  }
+    ack: async (ids: number[]): Promise<number> => {
+      if (ids.length === 0) {
+        return 0
+      }
+      return await invoke<number>('live_session_outbox_ack', {
+        ids: ids.map(id => Math.floor(id)),
+      })
+    },
 
-  return createSqliteLiveSessionOutbox(
-    createResettableSqliteLiveSessionOutboxBackend(createTauriSqlBackend),
-  )
+    reschedule: async (updates: LiveSessionOutboxRescheduleUpdate[]): Promise<number> => {
+      if (updates.length === 0) {
+        return 0
+      }
+      return await invoke<number>('live_session_outbox_reschedule', {
+        updates: updates.map(update => ({
+          id: Math.floor(update.id),
+          retryCount: Math.floor(update.retryCount),
+          nextRetryAtMs: Math.floor(update.nextRetryAtMs),
+        })),
+      })
+    },
+
+    countPending: async (): Promise<number> =>
+      await invoke<number>('live_session_outbox_count_pending'),
+  }
 }
 
 export const liveSessionOutbox = {
-  getAdapter(): LiveSessionOutboxStore | undefined {
-    return createLiveSessionOutboxAdapter()
+  async createAdapter(): Promise<LiveSessionOutboxStore> {
+    const adapter = createLiveSessionOutboxAdapter()
+    await adapter.countPending()
+    return adapter
   },
 }

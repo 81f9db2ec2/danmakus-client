@@ -71,7 +71,6 @@ export class ConfigManager {
       allowedParentAreas: [],
       excludedServerRoomUserIds: [],
       logLevel: 'info',
-      messageQueueMaxSize: 20000,
       messageRetryBaseDelay: 1000,
       messageRetryMaxDelay: 30000,
       messageRetryMaxAttempts: 6,

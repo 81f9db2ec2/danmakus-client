@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { createInMemoryLiveSessionOutbox } from "./InMemoryLiveSessionOutbox.js";
 import { DanmakuClient } from "./DanmakuClient.js";
 
 const TEST_RECORDING_UID = 84;
 const TEST_STATUS_UID = 126;
+const textEncoder = new TextEncoder();
 
 describe("DanmakuClient room connect queue", () => {
   it("starts the first queued room connect immediately", () => {
@@ -407,19 +409,14 @@ describe("DanmakuClient room pull flow", () => {
     client.setupRuntimeEvents();
     client.messageQueue.messageUploadInterval = 10;
 
-    client.messageQueue.enqueueMessage({
-      roomId: 101,
-      cmd: "DANMU_MSG",
-      raw: '{"cmd":"DANMU_MSG"}',
-      timestamp: Date.now(),
-    });
+    client.messageQueue.enqueuePacket(101, textEncoder.encode('{"cmd":"DANMU_MSG"}'), Date.now());
 
     runtimeConnected = false;
     client.runtimeConnection.onDisconnected?.(new Error("runtime down"));
     runtimeConnected = true;
     client.runtimeConnection.onReconnected?.();
 
-    await Bun.sleep(40);
+    await Bun.sleep(300);
     expect(sentLocalIds).toEqual([1]);
     expect(phases.includes("refresh:start")).toBe(true);
     expect(phases.includes("refresh:end")).toBe(false);
@@ -428,12 +425,13 @@ describe("DanmakuClient room pull flow", () => {
     resolveRefresh();
   });
 
-  it("uploads queued messages with the built-in outbox when no liveSessionOutbox is configured", async () => {
+  it("uploads queued messages with an explicit in-memory outbox", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",
       maxConnections: 5,
       requestServerRooms: false,
       streamers: [],
+      liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 
     const uploadedBatches: Array<Array<{ id: number; streamerUid: number; eventTsMs: number }>> = [];
@@ -463,14 +461,9 @@ describe("DanmakuClient room pull flow", () => {
     };
     client.messageQueue.messageUploadInterval = 10;
 
-    client.messageQueue.enqueueMessage({
-      roomId: 101,
-      cmd: "DANMU_MSG",
-      raw: '{"cmd":"DANMU_MSG"}',
-      timestamp: Date.now(),
-    });
+    client.messageQueue.enqueuePacket(101, textEncoder.encode('{"cmd":"DANMU_MSG"}'), Date.now());
 
-    await Bun.sleep(40);
+    await Bun.sleep(1100);
 
     expect(uploadedBatches).toHaveLength(1);
     expect(uploadedBatches[0]).toHaveLength(1);
@@ -483,6 +476,7 @@ describe("DanmakuClient room pull flow", () => {
       maxConnections: 5,
       requestServerRooms: true,
       streamers: [],
+      liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 
     const uploadedBatches: Array<Array<{ id: number; streamerUid: number; eventTsMs: number }>> = [];
@@ -506,14 +500,9 @@ describe("DanmakuClient room pull flow", () => {
     };
     client.messageQueue.messageUploadInterval = 10;
 
-    client.messageQueue.enqueueMessage({
-      roomId: 202,
-      cmd: "DANMU_MSG",
-      raw: '{"cmd":"DANMU_MSG"}',
-      timestamp: Date.now(),
-    });
+    client.messageQueue.enqueuePacket(202, textEncoder.encode('{"cmd":"DANMU_MSG"}'), Date.now());
 
-    await Bun.sleep(40);
+    await Bun.sleep(1100);
 
     expect(uploadedBatches).toHaveLength(1);
     expect(uploadedBatches[0]).toHaveLength(1);
@@ -657,7 +646,7 @@ describe("DanmakuClient room pull flow", () => {
     expect(client.connections.has(1002)).toBe(false);
   });
 
-  it("drops identical incoming messages within the dedup window", async () => {
+  it("counts parsed incoming messages without archiving them", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",
       maxConnections: 5,
@@ -671,7 +660,6 @@ describe("DanmakuClient room pull flow", () => {
     const message = {
       roomId: 7788,
       cmd: "DANMU_MSG",
-      raw: '{"cmd":"DANMU_MSG","info":[1,2,3]}',
       timestamp: Date.now(),
       data: { cmd: "DANMU_MSG" },
     };
@@ -679,8 +667,51 @@ describe("DanmakuClient room pull flow", () => {
     await client.handleMessage(message);
     await client.handleMessage({ ...message, timestamp: message.timestamp + 1 });
 
-    expect(client.messageCount).toBe(1);
-    expect(client.messageQueue.getPendingCount()).toBe(1);
+    expect(client.messageCount).toBe(2);
+    expect(client.messageQueue.getPendingCount()).toBe(0);
+  });
+
+  it("archives raw packets emitted while live websocket listeners are attached", async () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      requestServerRooms: true,
+      streamers: [],
+    });
+
+    const archivedPackets: Array<{ roomId: number; payload: Uint8Array }> = [];
+    client.isRunning = true;
+    client.statusManager = {
+      getRoomsToConnect: () => [{ roomId: 4455, priority: "server" }],
+      getStreamerStatus: () => ({ roomId: 4455, isLive: true, uId: TEST_STATUS_UID }),
+      refreshNow: () => undefined,
+      updateHoldingRooms: () => undefined,
+    };
+    client.resolveLiveWsConnectionOptions = async () => ({
+      roomId: 4455,
+      address: "wss://example.com/sub",
+      key: "key-4455",
+      uid: 1,
+      protover: 3,
+    });
+    client.liveWsConnectionFactory = async () => ({
+      addEventListener: (type: string, listener: (event?: any) => void) => {
+        if (type === "message") {
+          listener({ data: new Uint8Array([1, 2, 3]) });
+        }
+      },
+      close: () => undefined,
+    });
+    client.messageQueue.enqueuePacket = (roomId: number, payload: Uint8Array) => {
+      archivedPackets.push({ roomId, payload });
+    };
+    client.syncRuntimeState = async () => undefined;
+
+    await client.connectToRoom(4455, "server");
+
+    expect(archivedPackets).toHaveLength(1);
+    expect(archivedPackets[0]?.roomId).toBe(4455);
+    expect([...archivedPackets[0]!.payload]).toEqual([1, 2, 3]);
   });
 
   it("falls back to备用 WebSocket 地址 when the primary address fails", async () => {

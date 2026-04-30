@@ -1,5 +1,4 @@
 import type { LiveWsConnection, LiveWsRoomConfig } from '../types/index.js';
-import { createWireRawLiveWsConnection } from '../core/WireRawLiveWsConnection.js';
 
 const DEFAULT_BILIBILI_LIVE_TCP_PORT = 2243;
 
@@ -23,12 +22,12 @@ export async function createCliLiveWsConnection(
   }
 
   const { LiveTCP } = await import('@laplace.live/ws/server');
-  return createWireRawLiveWsConnection(new LiveTCP(roomId, {
+  return new LiveTCP(roomId, {
     host: resolveTcpHost(options.address),
     port: options.tcpPort ?? DEFAULT_BILIBILI_LIVE_TCP_PORT,
     key: options.key,
     uid: options.uid,
     buvid: options.buvid,
     protover: options.protover ?? 3,
-  }));
+  }) as LiveWsConnection;
 }

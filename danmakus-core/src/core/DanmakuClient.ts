@@ -11,8 +11,6 @@ import { DanmakuMessageQueue } from './DanmakuMessageQueue.js';
 import { DanmakuRuntimeSync } from './DanmakuRuntimeSync.js';
 import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator.js';
 import { DanmakuControlState } from './DanmakuControlState.js';
-import { createInMemoryLiveSessionOutbox } from './InMemoryLiveSessionOutbox.js';
-import { createWireRawLiveWsConnection } from './WireRawLiveWsConnection.js';
 import {
   DanmakuMessage,
   DanmakuClientEvents,
@@ -112,7 +110,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private recordings: RecordingInfoDto[] = [];
   private recordingRoomIds: number[] = [];
   private messageQueue: DanmakuMessageQueue;
-  private readonly fallbackLiveSessionOutbox = createInMemoryLiveSessionOutbox();
   private isStopping = false;
   private messageCount = 0;
   private activeError: ClientErrorRecord | null = null;
@@ -152,7 +149,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       isRunning: () => this.isRunning,
       isStopping: () => this.isStopping,
       getRuntimeConnection: () => this.runtimeConnection,
-      getLiveSessionOutbox: () => this.configManager.getConfig().liveSessionOutbox ?? this.fallbackLiveSessionOutbox,
+      getLiveSessionOutbox: () => this.configManager.getConfig().liveSessionOutbox,
       resolveRecordingStreamerUid: (roomId) => this.resolveRoomStreamerUid(roomId),
       logger: this.logger.child('Queue'),
       recordError: (error, context) => this.recordError(error, context),
@@ -366,10 +363,10 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     try {
       this.runtimeGeneration += 1;
       this.isStopping = false;
-      this.messageQueue.clearRecentMessageDedup();
       this.logger.info('正在启动弹幕客户端...');
 
       await this.prepareAccountConfig();
+      this.ensureLiveSessionOutboxConfigured();
       this.logger.info('正在校验 Cookie 状态...');
       await this.ensureCookieReadyForStartup();
       await this.messageQueue.refreshArchiveStats();
@@ -585,9 +582,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         return;
       }
 
-      // 设置事件监听
-      this.setupLiveWSEvents(liveWS, roomId);
-
       const connectionInfo: ConnectionInfo = {
         connection: liveWS,
         roomId,
@@ -597,6 +591,9 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       };
 
       this.connections.set(roomId, connectionInfo);
+      // 设置事件监听
+      this.setupLiveWSEvents(liveWS, roomId);
+
       this.emit('connected', roomId);
       void this.syncRuntimeState();
 
@@ -701,7 +698,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       try {
         const liveWS = this.liveWsConnectionFactory
           ? await this.liveWsConnectionFactory(roomId, attemptConfig)
-          : createWireRawLiveWsConnection(new LiveWS(roomId, attemptConfig));
+          : new LiveWS(roomId, attemptConfig) as LiveWsConnection;
 
         try {
           if (!this.liveWsConnectionFactory && addresses.length > 1) {
@@ -890,18 +887,22 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.emit('error', error, roomId);
     });
 
-    // 监听所有消息，统一处理
-    liveWS.addEventListener('msg', ({ data, raw }: any) => {
+    liveWS.addEventListener('message', (event: any) => {
       if (!isCurrentConnection()) {
         return;
       }
-      if (typeof raw !== 'string' || raw.length === 0) {
-        const error = new Error(`房间 ${roomId} 收到缺少 wire raw 的消息`);
-        this.recordError(error, { category: 'livews', code: 'MESSAGE_RAW_MISSING', roomId, recoverable: true });
-        this.emit('error', error, roomId);
+      void this.handleRawMessagePacket(event, roomId).catch(error => {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        this.recordError(normalizedError, { category: 'livews', code: 'MESSAGE_PACKET_HANDLE_FAILED', roomId, recoverable: true });
+        this.emit('error', normalizedError, roomId);
+      });
+    });
+
+    const handleParsedMessage = ({ data }: any) => {
+      if (!isCurrentConnection()) {
         return;
       }
-      const message = this.parseMessage(data, roomId, raw);
+      const message = this.parseMessage(data, roomId);
       this.logger.debug(`房间 ${roomId} 收到消息 cmd=${message.cmd}`);
       this.handleMessage(message).catch(error => {
         this.logger.error(`处理房间 ${roomId} 消息时发生错误:`, error);
@@ -909,22 +910,51 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         this.recordError(normalizedError, { category: 'livews', code: 'MESSAGE_HANDLE_FAILED', roomId, recoverable: true });
         this.emit('error', normalizedError, roomId);
       });
-    });
+    };
+    liveWS.addEventListener('msg', handleParsedMessage);
+    liveWS.addEventListener('MESSAGE', handleParsedMessage);
   }
 
   /**
    * 解析消息为统一格式
    */
-  private parseMessage(data: any, roomId: number, raw: string, cmd?: string): DanmakuMessage {
+  private parseMessage(
+    data: any,
+    roomId: number,
+    cmd?: string,
+  ): DanmakuMessage {
     const actualCmd = cmd || data?.cmd || data?.msg?.cmd || 'UNKNOWN';
 
     return {
       roomId,
       cmd: actualCmd,
       data: data,
-      raw,
       timestamp: Date.now()
     };
+  }
+
+  private async handleRawMessagePacket(event: any, roomId: number): Promise<void> {
+    const payload = await this.extractLiveWsMessageBytes(event);
+    if (payload.length > 0) {
+      this.messageQueue.enqueuePacket(roomId, payload);
+    }
+  }
+
+  private async extractLiveWsMessageBytes(event: any): Promise<Uint8Array> {
+    const data = event?.data ?? event;
+    if (data instanceof Uint8Array) {
+      return data;
+    }
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    if (ArrayBuffer.isView(data)) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    if (data instanceof Blob) {
+      return new Uint8Array(await data.arrayBuffer());
+    }
+    throw new Error(`房间 WebSocket 收到无法归档的消息类型: ${Object.prototype.toString.call(data)}`);
   }
 
   /**
@@ -935,10 +965,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       return;
     }
 
-    if (this.messageQueue.isDuplicateIncomingMessage(message)) {
-      return;
-    }
-
     this.messageCount += 1;
     // 发射 'msg' 事件（所有消息）
     this.emit('msg', message);
@@ -946,7 +972,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     // 发射特定cmd的事件
     this.emit(message.cmd, message);
 
-    this.messageQueue.enqueueMessage(message);
   }
 
   /**
@@ -1379,6 +1404,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     await this.controlState.handleAccountConfigTagChange(result.configTag);
     await this.controlState.handleClientsTagChange(result.clientsTag);
     await this.controlState.handleRecordingTagChange(result.recordingTag);
+    this.messageQueue.scheduleMessageDispatch(0);
     if (this.consumeAssignmentTag(result.assignmentTag)) {
       await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'assignment-tag-changed', {
         force: true,
@@ -1494,7 +1520,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       || previous.requestServerRooms !== next.requestServerRooms
       || !this.areNumberListsEqual(previous.excludedServerRoomUserIds, next.excludedServerRoomUserIds)
       || normalizeLogLevel(previous.logLevel, 'info') !== normalizeLogLevel(next.logLevel, 'info')
-      || (previous.messageQueueMaxSize ?? 20000) !== (next.messageQueueMaxSize ?? 20000)
       || (previous.messageRetryBaseDelay ?? 1000) !== (next.messageRetryBaseDelay ?? 1000)
       || (previous.messageRetryMaxDelay ?? 30000) !== (next.messageRetryMaxDelay ?? 30000)
       || (previous.messageRetryMaxAttempts ?? 6) !== (next.messageRetryMaxAttempts ?? 6)
@@ -1588,6 +1613,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
   private rebuildLiveWsAuthApi(config: DanmakuConfig): void {
     this.bilibiliLiveWsAuthApi = new BilibiliLiveWsAuthApi(config.fetchImpl);
+  }
+
+  private ensureLiveSessionOutboxConfigured(): void {
+    if (!this.configManager.getConfig().liveSessionOutbox) {
+      throw new Error('未配置本地归档 outbox，无法启动弹幕录制');
+    }
   }
 
   private readLocalCookie(): string {

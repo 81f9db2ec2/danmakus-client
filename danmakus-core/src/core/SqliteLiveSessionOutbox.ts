@@ -9,7 +9,10 @@ const LIST_DUE_LIMIT_DEFAULT = 200;
 const LIST_DUE_LIMIT_MAX = 2000;
 const OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const OUTBOX_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
-const OUTBOX_PAYLOAD_PREFIX = 'b64:';
+const SCHEMA_VERSION = 4;
+const INSERT_BATCH_SIZE = 200;
+const DELETE_BATCH_SIZE = 900;
+const RESCHEDULE_BATCH_SIZE = 180;
 const SQLITE_CORRUPTION_PATTERNS = [
   'database disk image is malformed',
   'file is not a database',
@@ -23,7 +26,7 @@ const SCHEMA_SQL = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     streamer_uid INTEGER NOT NULL,
     event_ts_ms INTEGER NOT NULL,
-    payload TEXT NOT NULL,
+    payload BLOB NOT NULL,
     retry_count INTEGER NOT NULL DEFAULT 0,
     next_retry_at_ms INTEGER NOT NULL
   );
@@ -32,7 +35,7 @@ const SCHEMA_SQL = `
     ON live_session_outbox(next_retry_at_ms, id);
 `;
 
-export type SqliteLiveSessionOutboxValue = number | string | null;
+export type SqliteLiveSessionOutboxValue = number | string | Uint8Array | null;
 
 export interface SqliteLiveSessionOutboxBackend {
   exec(sql: string): Promise<void>;
@@ -48,73 +51,6 @@ const resettableBackendTag = Symbol('resettableSqliteLiveSessionOutboxBackend');
 
 type ResettableBackendFactory = () => Promise<ResettableSqliteLiveSessionOutboxBackend>;
 type BackendFactory = () => Promise<SqliteLiveSessionOutboxBackend>;
-
-type Base64Codec = {
-  encode(bytes: Uint8Array): string;
-  decode(value: string): Uint8Array;
-};
-
-let base64Codec: Base64Codec | null = null;
-
-const createNodeBase64Codec = (): Base64Codec | null => {
-  const bufferCtor = (globalThis as { Buffer?: {
-    from(value: Uint8Array | string, encoding?: string): { toString(encoding: string): string };
-  } }).Buffer;
-  if (!bufferCtor) {
-    return null;
-  }
-
-  return {
-    encode: (bytes: Uint8Array): string => bufferCtor.from(bytes).toString('base64'),
-    decode: (value: string): Uint8Array => Uint8Array.from(bufferCtor.from(value, 'base64') as unknown as Uint8Array),
-  };
-};
-
-const createBrowserBase64Codec = (): Base64Codec | null => {
-  if (typeof btoa !== 'function' || typeof atob !== 'function') {
-    return null;
-  }
-
-  return {
-    encode: (bytes: Uint8Array): string => {
-      let binary = '';
-      for (const byte of bytes) {
-        binary += String.fromCharCode(byte);
-      }
-      return btoa(binary);
-    },
-    decode: (value: string): Uint8Array => {
-      const binary = atob(value);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-      return bytes;
-    },
-  };
-};
-
-const getBase64Codec = (): Base64Codec => {
-  if (!base64Codec) {
-    base64Codec = createNodeBase64Codec() ?? createBrowserBase64Codec();
-  }
-
-  if (!base64Codec) {
-    throw new Error('当前运行时缺少 base64 编解码能力');
-  }
-
-  return base64Codec;
-};
-
-const encodePayload = (payload: Uint8Array): string =>
-  `${OUTBOX_PAYLOAD_PREFIX}${getBase64Codec().encode(payload)}`;
-
-const decodePayload = (value: string): Uint8Array => {
-  if (!value.startsWith(OUTBOX_PAYLOAD_PREFIX)) {
-    throw new Error('outbox payload 编码格式无效');
-  }
-  return getBase64Codec().decode(value.slice(OUTBOX_PAYLOAD_PREFIX.length));
-};
 
 export const isSqliteCorruptionError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error ?? '');
@@ -140,7 +76,23 @@ export const createResettableSqliteLiveSessionOutboxBackend = (
 
   return async (): Promise<SqliteLiveSessionOutboxBackend> => {
     const backend = await ensureBackend();
-    return Object.assign(backend, { [resettableBackendTag]: backend });
+    const taggedBackend = backend as ResettableSqliteLiveSessionOutboxBackend & {
+      [resettableBackendTag]?: ResettableSqliteLiveSessionOutboxBackend;
+    };
+
+    if (!taggedBackend[resettableBackendTag]) {
+      const resetBackend = taggedBackend.reset.bind(taggedBackend);
+      taggedBackend.reset = async (reason: unknown): Promise<void> => {
+        try {
+          await resetBackend(reason);
+        } finally {
+          backendPromise = null;
+        }
+      };
+      taggedBackend[resettableBackendTag] = taggedBackend;
+    }
+
+    return taggedBackend;
   };
 };
 
@@ -153,10 +105,58 @@ const toSafeInteger = (value: unknown, fieldName: string): number => {
 };
 
 const normalizeBlob = (value: unknown): Uint8Array => {
-  if (typeof value === 'string') {
-    return decodePayload(value);
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) {
+    return Uint8Array.from(value);
   }
   throw new Error(`无法识别的 outbox payload 类型: ${Object.prototype.toString.call(value)}`);
+};
+
+const chunkArray = <T>(items: T[], size: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
+
+const placeholders = (count: number): string =>
+  Array.from({ length: count }, () => '?').join(', ');
+
+const normalizeIds = (ids: number[]): number[] =>
+  Array.from(new Set(ids.map(id => Math.floor(id))));
+
+const normalizeRescheduleUpdates = (
+  updates: LiveSessionOutboxRescheduleUpdate[],
+): LiveSessionOutboxRescheduleUpdate[] => {
+  const normalized = new Map<number, LiveSessionOutboxRescheduleUpdate>();
+  for (const update of updates) {
+    const id = Math.floor(update.id);
+    normalized.set(id, {
+      id,
+      retryCount: Math.floor(update.retryCount),
+      nextRetryAtMs: Math.floor(update.nextRetryAtMs),
+    });
+  }
+  return Array.from(normalized.values());
+};
+
+const readSchemaVersion = async (backend: SqliteLiveSessionOutboxBackend): Promise<number> => {
+  const rows = await backend.query('PRAGMA user_version');
+  return Math.max(0, toSafeInteger(rows[0]?.[0] ?? 0, 'user_version'));
+};
+
+const initializeSchema = async (backend: SqliteLiveSessionOutboxBackend): Promise<void> => {
+  await backend.exec(SCHEMA_SQL);
+  await backend.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
 
 const serializeOperation = <T>(
@@ -169,25 +169,6 @@ const serializeOperation = <T>(
     () => undefined,
   );
   return nextOperation;
-};
-
-const runInTransaction = async <T>(
-  backend: SqliteLiveSessionOutboxBackend,
-  action: () => Promise<T>,
-): Promise<T> => {
-  await backend.exec('BEGIN');
-  try {
-    const result = await action();
-    await backend.exec('COMMIT');
-    return result;
-  } catch (error) {
-    try {
-      await backend.exec('ROLLBACK');
-    } catch {
-      // ignore rollback errors and surface the original failure
-    }
-    throw error;
-  }
 };
 
 const getResettableBackend = (
@@ -229,7 +210,13 @@ export const createSqliteLiveSessionOutbox = (
     if (!initializedPromise) {
       initializedPromise = (async () => {
         const backend = await ensureBackend();
-        await backend.exec(SCHEMA_SQL);
+        if (await readSchemaVersion(backend) !== SCHEMA_VERSION) {
+          return await resetDatabase(
+            backend,
+            new Error(`live session outbox schema version mismatch: expected=${SCHEMA_VERSION}`),
+          );
+        }
+        await initializeSchema(backend);
         return backend;
       })().catch((error: unknown) => {
         initializedPromise = null;
@@ -248,6 +235,22 @@ export const createSqliteLiveSessionOutbox = (
     backendPromise = null;
     currentBackend = null;
     lastPruneAtMs = 0;
+  };
+
+  const resetDatabase = async (
+    backend: SqliteLiveSessionOutboxBackend,
+    reason: unknown,
+  ): Promise<SqliteLiveSessionOutboxBackend> => {
+    const resettableBackend = getResettableBackend(backend);
+    resetBackendState();
+    if (!resettableBackend) {
+      throw reason;
+    }
+
+    await resettableBackend.reset(reason);
+    const freshBackend = await ensureBackend();
+    await initializeSchema(freshBackend);
+    return freshBackend;
   };
 
   const resetCorruptedBackend = async (
@@ -309,29 +312,32 @@ export const createSqliteLiveSessionOutbox = (
         const nowMs = Date.now();
         await pruneExpiredIfNeeded(backend, nowMs);
 
-        return await runInTransaction(backend, async () => {
-          let inserted = 0;
-          for (const item of items) {
-            inserted += await backend.run(
-              `
-                INSERT INTO live_session_outbox (
-                  streamer_uid,
-                  event_ts_ms,
-                  payload,
-                  retry_count,
-                  next_retry_at_ms
-                ) VALUES (?, ?, ?, 0, ?)
-              `,
-              [
-                Math.floor(item.streamerUid),
-                Math.floor(item.eventTsMs),
-                encodePayload(item.payload),
-                Math.floor(item.eventTsMs),
-              ],
+        let inserted = 0;
+        for (const batch of chunkArray(items, INSERT_BATCH_SIZE)) {
+          const params: SqliteLiveSessionOutboxValue[] = [];
+          for (const item of batch) {
+            params.push(
+              Math.floor(item.streamerUid),
+              Math.floor(item.eventTsMs),
+              item.payload,
+              Math.floor(item.eventTsMs),
             );
           }
-          return inserted;
-        });
+
+          inserted += await backend.run(
+            `
+              INSERT INTO live_session_outbox (
+                streamer_uid,
+                event_ts_ms,
+                payload,
+                retry_count,
+                next_retry_at_ms
+              ) VALUES ${Array.from({ length: batch.length }, () => '(?, ?, ?, 0, ?)').join(', ')}
+            `,
+            params,
+          );
+        }
+        return inserted;
       })),
 
     listDue: async ({ nowMs, limit }: { nowMs: number; limit?: number }): Promise<LiveSessionOutboxItem[]> =>
@@ -376,19 +382,18 @@ export const createSqliteLiveSessionOutbox = (
           return 0;
         }
 
+        const normalizedIds = normalizeIds(ids);
         const backend = await ensureInitialized();
         await pruneExpiredIfNeeded(backend, Date.now());
 
-        return await runInTransaction(backend, async () => {
-          let deleted = 0;
-          for (const id of ids) {
-            deleted += await backend.run(
-              'DELETE FROM live_session_outbox WHERE id = $1',
-              [Math.floor(id)],
-            );
-          }
-          return deleted;
-        });
+        let deleted = 0;
+        for (const batch of chunkArray(normalizedIds, DELETE_BATCH_SIZE)) {
+          deleted += await backend.run(
+            `DELETE FROM live_session_outbox WHERE id IN (${placeholders(batch.length)})`,
+            batch,
+          );
+        }
+        return deleted;
       })),
 
     reschedule: async (updates: LiveSessionOutboxRescheduleUpdate[]): Promise<number> =>
@@ -397,28 +402,35 @@ export const createSqliteLiveSessionOutbox = (
           return 0;
         }
 
+        const normalizedUpdates = normalizeRescheduleUpdates(updates);
         const backend = await ensureInitialized();
         await pruneExpiredIfNeeded(backend, Date.now());
 
-        return await runInTransaction(backend, async () => {
-          let updated = 0;
-          for (const update of updates) {
-            updated += await backend.run(
-              `
-                UPDATE live_session_outbox
-                SET retry_count = $2,
-                    next_retry_at_ms = $3
-                WHERE id = $1
-              `,
-              [
-                Math.floor(update.id),
-                Math.floor(update.retryCount),
-                Math.floor(update.nextRetryAtMs),
-              ],
-            );
+        let updated = 0;
+        for (const batch of chunkArray(normalizedUpdates, RESCHEDULE_BATCH_SIZE)) {
+          const retryCountCases = batch.map(() => 'WHEN ? THEN ?').join(' ');
+          const nextRetryAtCases = batch.map(() => 'WHEN ? THEN ?').join(' ');
+          const ids = batch.map(update => update.id);
+          const params: SqliteLiveSessionOutboxValue[] = [];
+          for (const update of batch) {
+            params.push(update.id, update.retryCount);
           }
-          return updated;
-        });
+          for (const update of batch) {
+            params.push(update.id, update.nextRetryAtMs);
+          }
+          params.push(...ids);
+
+          updated += await backend.run(
+            `
+              UPDATE live_session_outbox
+              SET retry_count = CASE id ${retryCountCases} ELSE retry_count END,
+                  next_retry_at_ms = CASE id ${nextRetryAtCases} ELSE next_retry_at_ms END
+              WHERE id IN (${placeholders(batch.length)})
+            `,
+            params,
+          );
+        }
+        return updated;
       })),
 
     countPending: async (): Promise<number> =>

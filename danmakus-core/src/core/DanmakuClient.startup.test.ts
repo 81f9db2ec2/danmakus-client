@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { DanmakuClient } from './DanmakuClient.js';
+import { createInMemoryLiveSessionOutbox } from './InMemoryLiveSessionOutbox.js';
 import { DEFAULT_CORE_CLIENT_VERSION } from '../version.js';
 
 const TEST_AUTH_UID = 42;
@@ -28,7 +29,8 @@ describe('DanmakuClient startup', () => {
       runtimeUrl: 'https://example.com/api/v2/core-runtime',
       maxConnections: 5,
       requestServerRooms: false,
-      streamers: []
+      streamers: [],
+      liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 
     const updatedRecordingRooms: number[][] = [];
@@ -200,7 +202,8 @@ describe('DanmakuClient startup', () => {
       runtimeUrl: 'https://example.com/api/v2/core-runtime',
       fetchImpl,
       maxConnections: 5,
-      streamers: []
+      streamers: [],
+      liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
@@ -275,7 +278,8 @@ describe('DanmakuClient startup', () => {
       runtimeUrl: 'https://example.com/api/v2/core-runtime',
       fetchImpl,
       maxConnections: 5,
-      streamers: []
+      streamers: [],
+      liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');

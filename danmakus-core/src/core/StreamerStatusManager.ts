@@ -40,6 +40,13 @@ const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
   }
 };
 
+const normalizeRoomIds = (rooms: number[]): number[] => Array.from(new Set(
+  rooms
+    .map(roomId => Number(roomId))
+    .filter(roomId => Number.isFinite(roomId) && roomId > 0)
+    .map(roomId => Math.floor(roomId))
+));
+
 export class StreamerStatusManager {
   private statusCache: Map<number, StreamerStatus> = new Map();
   private checkTimer?: ReturnType<typeof setInterval>;
@@ -213,7 +220,13 @@ export class StreamerStatusManager {
    * 更新状态缓存
    */
   private updateStatusCache(statuses: StreamerStatus[]): void {
+    const trackedRoomIds = new Set(this.getTrackedRoomIds());
+
     for (const status of statuses) {
+      if (!trackedRoomIds.has(status.roomId)) {
+        continue;
+      }
+
       const cachedStatus = this.statusCache.get(status.roomId);
       const mergedStatus: StreamerStatus = {
         ...cachedStatus,
@@ -237,6 +250,8 @@ export class StreamerStatusManager {
 
       this.statusCache.set(status.roomId, mergedStatus);
     }
+
+    this.pruneStatusCache(trackedRoomIds);
   }
 
   /**
@@ -316,24 +331,25 @@ export class StreamerStatusManager {
   }
 
   updateHoldingRooms(rooms: number[]): void {
-    const normalized = rooms
-      .map(r => Number(r))
-      .filter(r => Number.isFinite(r) && r > 0);
-    this.holdingRooms = Array.from(new Set(normalized));
+    this.holdingRooms = normalizeRoomIds(rooms);
+    this.pruneStatusCache();
   }
 
   updateRecordingRooms(rooms: number[]): void {
-    const normalized = rooms
-      .map(r => Number(r))
-      .filter(r => Number.isFinite(r) && r > 0);
-    this.recordingRooms = Array.from(new Set(normalized));
+    this.recordingRooms = normalizeRoomIds(rooms);
+    this.pruneStatusCache();
   }
 
   private getTrackedRoomIds(): number[] {
-    const all = [...this.recordingRooms, ...this.holdingRooms]
-      .map(r => Number(r))
-      .filter(r => Number.isFinite(r) && r > 0);
-    return Array.from(new Set(all));
+    return normalizeRoomIds([...this.recordingRooms, ...this.holdingRooms]);
+  }
+
+  private pruneStatusCache(trackedRoomIds: Set<number> = new Set(this.getTrackedRoomIds())): void {
+    for (const roomId of this.statusCache.keys()) {
+      if (!trackedRoomIds.has(roomId)) {
+        this.statusCache.delete(roomId);
+      }
+    }
   }
 
   // 状态更新回调

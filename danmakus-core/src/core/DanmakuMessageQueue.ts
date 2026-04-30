@@ -1,30 +1,26 @@
 import {
   DanmakuConfig,
-  DanmakuMessage,
   ErrorCategory,
   LiveSessionOutboxItem,
   LiveSessionOutboxRescheduleUpdate,
   LiveSessionOutboxStore,
 } from '../types/index.js';
-import { compressRawPacket } from './RawPacketCodec.js';
 import { ScopedLogger } from './Logger.js';
 import type { RuntimeConnection } from './RuntimeConnection.js';
 
-const MESSAGE_QUEUE_MIN_SIZE = 100;
 const MESSAGE_RETRY_MIN_DELAY = 200;
 const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
 const MESSAGE_BATCH_MIN_SIZE = 1;
 const MESSAGE_BATCH_MAX_SIZE = 500;
 const MESSAGE_UPLOAD_INTERVAL_MS = 2000;
-const OUTBOX_PERSIST_MAX_BATCH_SIZE = 100;
-const QUEUE_OVERFLOW_LOG_INTERVAL_MS = 10_000;
+const OUTBOX_PERSIST_INTERVAL_MS = 1000;
 const OUTBOX_BLOCKED_LOG_INTERVAL_MS = 10_000;
-const MESSAGE_DEDUP_WINDOW_MS = 2_000;
-const MESSAGE_DEDUP_CACHE_LIMIT = 4_000;
 
-interface QueuedMessage {
-  message: DanmakuMessage;
+interface QueuedPacket {
+  roomId: number;
   streamerUid: number | null;
+  receivedTsMs: number;
+  payload: Uint8Array;
   retryCount: number;
   nextRetryAt: number;
 }
@@ -39,7 +35,7 @@ interface QueueErrorContext {
 interface DanmakuMessageQueueContext {
   isRunning(): boolean;
   isStopping(): boolean;
-  getRuntimeConnection(): Pick<RuntimeConnection, 'getConnectionState' | 'sendArchiveBatch'> | undefined;
+  getRuntimeConnection(): Pick<RuntimeConnection, 'sendArchiveBatch'> | undefined;
   getLiveSessionOutbox(): LiveSessionOutboxStore | undefined;
   resolveRecordingStreamerUid(roomId: number): number | null;
   logger: ScopedLogger;
@@ -48,16 +44,21 @@ interface DanmakuMessageQueueContext {
   emitQueueChanged(pendingCount: number): void;
 }
 
+const normalizeStreamerUid = (value: number | null): number | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return Math.floor(value);
+};
+
 export class DanmakuMessageQueue {
   private readonly context: DanmakuMessageQueueContext;
-  private readonly recentMessageDedup = new Map<string, number>();
-  private pendingMessages: QueuedMessage[] = [];
+  private pendingPackets: QueuedPacket[] = [];
   private messageDispatchTimer?: ReturnType<typeof setTimeout>;
   private messageDispatching = false;
+  private outboxUploading = false;
   private pendingDispatchDelayMs?: number;
-  private messageQueueMaxSize = 20000;
-  private queueOverflowLastLogAt = 0;
-  private queueOverflowSuppressedCount = 0;
   private outboxBlockedLastLogAt = 0;
   private messageRetryBaseDelay = 1000;
   private messageRetryMaxDelay = 30_000;
@@ -72,7 +73,7 @@ export class DanmakuMessageQueue {
   }
 
   getPendingCount(): number {
-    return this.pendingMessages.length + this.outboxPendingCount;
+    return this.pendingPackets.length + this.outboxPendingCount;
   }
 
   getFailedCount(): number {
@@ -85,14 +86,6 @@ export class DanmakuMessageQueue {
 
   getUploadInterval(): number {
     return this.messageUploadInterval;
-  }
-
-  clearRecentMessageDedup(): void {
-    this.recentMessageDedup.clear();
-  }
-
-  getPendingMessages(): readonly DanmakuMessage[] {
-    return this.pendingMessages.map(item => item.message);
   }
 
   async refreshArchiveStats(): Promise<void> {
@@ -111,78 +104,40 @@ export class DanmakuMessageQueue {
 
   resetState(): void {
     this.clearMessageDispatch();
-    this.clearPendingMessages();
+    this.clearPendingPackets();
+    this.outboxUploading = false;
     this.outboxPendingCount = 0;
     this.outboxCountInitialized = false;
-    this.queueOverflowLastLogAt = 0;
-    this.queueOverflowSuppressedCount = 0;
-    this.clearRecentMessageDedup();
     this.emitPendingCountChanged();
   }
 
-  isDuplicateIncomingMessage(message: DanmakuMessage): boolean {
-    const dedupKey = this.buildIncomingMessageDedupKey(message);
-    if (!dedupKey) {
-      return false;
-    }
-
-    const now = Date.now();
-    this.pruneRecentMessageDedup(now);
-    const previousTimestamp = this.recentMessageDedup.get(dedupKey);
-    if (typeof previousTimestamp === 'number' && now - previousTimestamp <= MESSAGE_DEDUP_WINDOW_MS) {
-      this.context.logger.debug(`跳过重复消息: room=${message.roomId}, cmd=${message.cmd}`);
-      return true;
-    }
-
-    this.recentMessageDedup.set(dedupKey, now);
-    return false;
-  }
-
-  enqueueMessage(message: DanmakuMessage): void {
-    if (!this.context.isRunning() || this.context.isStopping()) {
+  enqueuePacket(roomId: number, payload: Uint8Array, receivedTsMs: number = Date.now()): void {
+    if (!this.context.isRunning() || this.context.isStopping() || payload.length === 0) {
       return;
     }
 
-    if (this.pendingMessages.length >= this.messageQueueMaxSize) {
-      const dropped = this.pendingMessages.shift();
-      const queueError = new Error(`消息队列已满(${this.messageQueueMaxSize})，最早消息已丢弃`);
-      this.context.recordError(queueError, {
-        category: 'queue',
-        code: 'QUEUE_OVERFLOW',
-        recoverable: true,
-        roomId: dropped?.message.roomId,
-      });
-      this.logQueueOverflow(queueError, dropped);
-      this.context.emitError(queueError, dropped?.message.roomId);
-      this.releaseQueuedMessage(dropped);
-    }
-
-    this.pendingMessages.push({
-      message: {
-        roomId: message.roomId,
-        cmd: message.cmd,
-        data: undefined,
-        raw: message.raw,
-        timestamp: message.timestamp,
-      },
-      streamerUid: this.context.resolveRecordingStreamerUid(message.roomId),
+    this.pendingPackets.push({
+      roomId,
+      streamerUid: this.context.resolveRecordingStreamerUid(roomId),
+      receivedTsMs,
+      payload: payload.slice(),
       retryCount: 0,
       nextRetryAt: Date.now(),
     });
 
     this.emitPendingCountChanged();
-    if (this.context.getLiveSessionOutbox() && this.pendingMessages.length >= this.getOutboxPersistBatchSize()) {
-      this.scheduleMessageDispatch(0);
+    if (this.context.getLiveSessionOutbox()) {
+      this.scheduleMessageDispatch(OUTBOX_PERSIST_INTERVAL_MS);
       return;
     }
     this.scheduleMessageDispatch(this.messageUploadInterval);
   }
 
-  clearPendingMessages(): void {
-    for (const queued of this.pendingMessages) {
-      this.releaseQueuedMessage(queued);
+  clearPendingPackets(): void {
+    for (const queued of this.pendingPackets) {
+      this.releaseQueuedPacket(queued);
     }
-    this.pendingMessages = [];
+    this.pendingPackets = [];
     this.emitPendingCountChanged();
   }
 
@@ -214,7 +169,9 @@ export class DanmakuMessageQueue {
 
     this.messageDispatchTimer = setTimeout(() => {
       this.messageDispatchTimer = undefined;
-      void this.flushPendingMessages();
+      void this.flushPendingMessages().catch(error => {
+        this.handleFlushError(error);
+      });
     }, delay);
   }
 
@@ -228,42 +185,35 @@ export class DanmakuMessageQueue {
   }
 
   async flushPendingMessages(): Promise<void> {
+    if (this.context.isStopping() || !this.context.isRunning()) {
+      return;
+    }
+
+    const outbox = this.context.getLiveSessionOutbox();
+    if (!outbox) {
+      return;
+    }
+
+    await this.persistBufferedPackets(outbox);
+    await this.startOutboxUpload(outbox);
+  }
+
+  private async persistBufferedPackets(outbox: LiveSessionOutboxStore): Promise<void> {
     if (this.messageDispatching || this.context.isStopping() || !this.context.isRunning()) {
       return;
     }
 
     this.messageDispatching = true;
     try {
-      const outbox = this.context.getLiveSessionOutbox();
-      if (!outbox) {
-        return;
-      }
-      await this.flushLiveSessionOutbox(outbox);
+      await this.ensureOutboxCountInitialized(outbox);
+      await this.persistDueBufferedPackets(outbox, Date.now());
     } finally {
       this.messageDispatching = false;
-      if (this.hasPendingWork() && !this.messageDispatchTimer && this.context.isRunning() && !this.context.isStopping()) {
-        const nextDelay = this.pendingDispatchDelayMs ?? this.messageUploadInterval;
-        this.pendingDispatchDelayMs = undefined;
-        this.scheduleMessageDispatch(nextDelay);
-      } else {
-        this.pendingDispatchDelayMs = undefined;
-      }
+      this.scheduleNextDispatchIfNeeded();
     }
   }
 
   applyRuntimeTunings(config: DanmakuConfig): void {
-    const queueSize = Math.floor(config.messageQueueMaxSize ?? 20000);
-    this.messageQueueMaxSize = Math.max(MESSAGE_QUEUE_MIN_SIZE, queueSize);
-    if (this.pendingMessages.length > this.messageQueueMaxSize) {
-      const overflowCount = this.pendingMessages.length - this.messageQueueMaxSize;
-      const dropped = this.pendingMessages.splice(0, overflowCount);
-      for (const item of dropped) {
-        this.releaseQueuedMessage(item);
-      }
-      this.emitPendingCountChanged();
-      this.context.logger.warn(`消息队列容量调整后丢弃 ${overflowCount} 条待发送消息`);
-    }
-
     const retryBaseDelay = Math.floor(config.messageRetryBaseDelay ?? 1000);
     this.messageRetryBaseDelay = Math.max(MESSAGE_RETRY_MIN_DELAY, retryBaseDelay);
 
@@ -277,38 +227,54 @@ export class DanmakuMessageQueue {
     this.messageBatchSize = Math.min(MESSAGE_BATCH_MAX_SIZE, Math.max(MESSAGE_BATCH_MIN_SIZE, batchSize));
   }
 
-  private async flushLiveSessionOutbox(outbox: LiveSessionOutboxStore): Promise<void> {
-    await this.ensureOutboxCountInitialized(outbox);
-    const now = Date.now();
-    await this.persistDueBufferedMessages(outbox, now);
-
-    const runtimeConnection = this.context.getRuntimeConnection();
-    if (!runtimeConnection?.getConnectionState()) {
-      this.logOutboxBlocked(`runtime 未连接: pendingBuffered=${this.pendingMessages.length}, pendingOutbox=${this.outboxPendingCount}`);
-      if (this.hasPendingWork()) {
-        this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
-      }
+  private async startOutboxUpload(outbox: LiveSessionOutboxStore): Promise<void> {
+    if (this.outboxUploading) {
       return;
     }
 
-    const dueRecords = await outbox.listDue({
-      nowMs: now,
-      limit: this.messageBatchSize,
+    await this.uploadDueOutboxRecords(outbox).catch(error => {
+      this.handleFlushError(error);
     });
-    if (dueRecords.length === 0) {
-      return;
-    }
-
-    await this.uploadOutboxBatch(outbox, runtimeConnection, dueRecords, now);
   }
 
-  private async persistDueBufferedMessages(outbox: LiveSessionOutboxStore, now: number): Promise<void> {
-    const dueItems = this.pendingMessages
-      .filter(item => item.nextRetryAt <= now)
-      .slice(0, this.getOutboxPersistBatchSize());
+  private async uploadDueOutboxRecords(outbox: LiveSessionOutboxStore): Promise<void> {
+    if (this.outboxUploading || this.context.isStopping() || !this.context.isRunning()) {
+      return;
+    }
 
+    this.outboxUploading = true;
+    try {
+      await this.ensureOutboxCountInitialized(outbox);
+      const now = Date.now();
+
+      const runtimeConnection = this.context.getRuntimeConnection();
+      if (!runtimeConnection) {
+        this.logOutboxBlocked(`runtime 未连接: pendingBuffered=${this.pendingPackets.length}, pendingOutbox=${this.outboxPendingCount}`);
+        if (this.hasPendingWork()) {
+          this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
+        }
+        return;
+      }
+
+      const dueRecords = await outbox.listDue({
+        nowMs: now,
+        limit: this.messageBatchSize,
+      });
+      if (dueRecords.length === 0) {
+        return;
+      }
+
+      await this.uploadOutboxBatch(outbox, runtimeConnection, dueRecords, now);
+    } finally {
+      this.outboxUploading = false;
+      this.scheduleNextDispatchIfNeeded();
+    }
+  }
+
+  private async persistDueBufferedPackets(outbox: LiveSessionOutboxStore, now: number): Promise<void> {
+    const dueItems = this.pendingPackets.filter(item => item.nextRetryAt <= now);
     if (dueItems.length === 0) {
-      const nextRetryAt = this.pendingMessages.reduce<number | null>(
+      const nextRetryAt = this.pendingPackets.reduce<number | null>(
         (current, item) => current === null ? item.nextRetryAt : Math.min(current, item.nextRetryAt),
         null,
       );
@@ -318,37 +284,27 @@ export class DanmakuMessageQueue {
       return;
     }
 
-    const persistableItems: QueuedMessage[] = [];
+    const persistableItems: QueuedPacket[] = [];
     const inserts = [];
+    const unresolvedItems: QueuedPacket[] = [];
     for (const item of dueItems) {
-      const resolvedStreamerUid = item.streamerUid ?? this.context.resolveRecordingStreamerUid(item.message.roomId);
-      if (typeof resolvedStreamerUid !== 'number' || !Number.isFinite(resolvedStreamerUid) || resolvedStreamerUid <= 0) {
+      const normalizedStreamerUid = normalizeStreamerUid(item.streamerUid ?? this.context.resolveRecordingStreamerUid(item.roomId));
+      if (normalizedStreamerUid === null) {
+        unresolvedItems.push(item);
         continue;
       }
 
-      const normalizedStreamerUid = Math.floor(resolvedStreamerUid);
       item.streamerUid = normalizedStreamerUid;
       persistableItems.push(item);
       inserts.push({
         streamerUid: normalizedStreamerUid,
-        eventTsMs: item.message.timestamp,
-        payload: await compressRawPacket(item.message.raw),
+        eventTsMs: item.receivedTsMs,
+        payload: item.payload,
       });
     }
 
+    this.dropUnresolvedStreamerPackets(unresolvedItems);
     if (persistableItems.length === 0) {
-      const unresolvedRoomIds = Array.from(new Set(
-        dueItems
-          .filter(item => {
-            const resolvedStreamerUid = item.streamerUid ?? this.context.resolveRecordingStreamerUid(item.message.roomId);
-            return !(typeof resolvedStreamerUid === 'number' && Number.isFinite(resolvedStreamerUid) && resolvedStreamerUid > 0);
-          })
-          .map(item => item.message.roomId)
-      ));
-      this.logOutboxBlocked(
-        `消息暂无法落本地 outbox: 未解析到 streamerUid, rooms=${unresolvedRoomIds.join(',') || 'unknown'}, pendingBuffered=${this.pendingMessages.length}`,
-      );
-      this.scheduleMessageDispatch(this.messageUploadInterval);
       return;
     }
 
@@ -359,11 +315,11 @@ export class DanmakuMessageQueue {
       }
 
       const persistedSet = new Set(persistableItems);
-      this.pendingMessages = this.pendingMessages.filter(item => {
+      this.pendingPackets = this.pendingPackets.filter(item => {
         if (!persistedSet.has(item)) {
           return true;
         }
-        this.releaseQueuedMessage(item);
+        this.releaseQueuedPacket(item);
         return false;
       });
       this.outboxPendingCount += inserted;
@@ -372,9 +328,36 @@ export class DanmakuMessageQueue {
     } catch (error) {
       const reason = this.getErrorMessage(error);
       for (const item of persistableItems) {
-        this.retryBufferedMessage(item, now, reason);
+        this.retryBufferedPacket(item, now, reason);
       }
     }
+  }
+
+  private dropUnresolvedStreamerPackets(items: QueuedPacket[]): void {
+    if (items.length === 0) {
+      return;
+    }
+
+    const droppedSet = new Set(items);
+    this.pendingPackets = this.pendingPackets.filter(item => {
+      if (!droppedSet.has(item)) {
+        return true;
+      }
+      this.releaseQueuedPacket(item);
+      return false;
+    });
+
+    const roomIds = Array.from(new Set(items.map(item => item.roomId))).join(',') || 'unknown';
+    const error = new Error(`消息缺少 streamerUid，已丢弃 ${items.length} 条无法归档消息: rooms=${roomIds}`);
+    this.context.recordError(error, {
+      category: 'queue',
+      code: 'MESSAGE_STREAMER_UID_MISSING',
+      recoverable: true,
+      roomId: items[0]?.roomId,
+    });
+    this.context.emitError(error, items[0]?.roomId);
+    this.logOutboxBlocked(`${error.message}, pendingBuffered=${this.pendingPackets.length}`);
+    this.emitPendingCountChanged();
   }
 
   private async uploadOutboxBatch(
@@ -390,42 +373,18 @@ export class DanmakuMessageQueue {
           .filter(item => item && Number.isFinite(Number(item.localId)) && Number(item.localId) > 0)
           .map(item => [Math.floor(Number(item.localId)), item] as const),
       );
-
-      const ackedIds: number[] = [];
-      const rejectedIds: number[] = [];
-      const rejectedRecords: Array<{
-        record: LiveSessionOutboxItem;
-        code: string;
-        message: string;
-      }> = [];
-      for (const record of records) {
-        const rejected = rejectedById.get(record.id);
-        if (rejected) {
-          rejectedIds.push(record.id);
-          rejectedRecords.push({
-            record,
-            code: rejected.code,
-            message: rejected.message,
-          });
-          continue;
-        }
-
-        ackedIds.push(record.id);
-      }
-
-      if (ackedIds.length > 0) {
-        const deleted = await outbox.ack(ackedIds);
-        this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
-      }
-
-      if (rejectedIds.length > 0) {
-        const deleted = await outbox.ack(rejectedIds);
-        this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
-        if (deleted !== rejectedIds.length) {
-          throw new Error(`live session outbox 删除 rejected 记录数量异常: expected=${rejectedIds.length}, actual=${deleted}`);
-        }
-      }
+      const deleted = await outbox.ack(records.map(record => record.id));
+      this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
       this.emitPendingCountChanged();
+
+      const rejectedRecords = records
+        .map(record => {
+          const rejected = rejectedById.get(record.id);
+          return rejected
+            ? { record, code: rejected.code, message: rejected.message }
+            : null;
+        })
+        .filter((item): item is { record: LiveSessionOutboxItem; code: string; message: string } => item !== null);
       if (rejectedRecords.length > 0) {
         this.emitRejectedOutboxErrors(rejectedRecords);
       }
@@ -490,12 +449,12 @@ export class DanmakuMessageQueue {
     }
   }
 
-  private retryBufferedMessage(item: QueuedMessage, now: number, reason: string): void {
+  private retryBufferedPacket(item: QueuedPacket, now: number, reason: string): void {
     item.retryCount += 1;
     if (item.retryCount >= this.messageRetryMaxAttempts) {
-      this.pendingMessages = this.pendingMessages.filter(candidate => candidate !== item);
-      this.context.emitError(new Error(`消息落 session outbox 失败且重试次数已耗尽: room=${item.message.roomId}, cmd=${item.message.cmd}, err=${reason}`), item.message.roomId);
-      this.releaseQueuedMessage(item);
+      this.pendingPackets = this.pendingPackets.filter(candidate => candidate !== item);
+      this.context.emitError(new Error(`消息落 session outbox 失败且重试次数已耗尽: room=${item.roomId}, err=${reason}`), item.roomId);
+      this.releaseQueuedPacket(item);
       this.emitPendingCountChanged();
       return;
     }
@@ -503,7 +462,7 @@ export class DanmakuMessageQueue {
     const delay = this.calculateMessageRetryDelay(item.retryCount);
     item.nextRetryAt = now + delay;
     this.context.logger.warn(
-      `消息落 session outbox 失败，${delay}ms 后重试 (room=${item.message.roomId}, cmd=${item.message.cmd}, retry=${item.retryCount}, err=${reason})`
+      `消息落 session outbox 失败，${delay}ms 后重试 (room=${item.roomId}, retry=${item.retryCount}, err=${reason})`
     );
     this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, delay));
   }
@@ -522,43 +481,27 @@ export class DanmakuMessageQueue {
     this.context.emitQueueChanged(this.getPendingCount());
   }
 
-  private getOutboxPersistBatchSize(): number {
-    return Math.min(this.messageBatchSize, OUTBOX_PERSIST_MAX_BATCH_SIZE);
+  private scheduleNextDispatchIfNeeded(): void {
+    if (this.hasPendingWork() && !this.messageDispatchTimer && this.context.isRunning() && !this.context.isStopping()) {
+      const nextDelay = this.pendingDispatchDelayMs ?? this.messageUploadInterval;
+      this.pendingDispatchDelayMs = undefined;
+      this.scheduleMessageDispatch(nextDelay);
+      return;
+    }
+
+    this.pendingDispatchDelayMs = undefined;
   }
 
   private hasPendingWork(): boolean {
-    return this.pendingMessages.length > 0
+    return this.pendingPackets.length > 0
       || this.outboxPendingCount > 0
       || (!!this.context.getLiveSessionOutbox() && !this.outboxCountInitialized);
   }
 
-  private releaseQueuedMessage(queued?: QueuedMessage): void {
-    if (!queued) {
-      return;
+  private releaseQueuedPacket(queued?: QueuedPacket): void {
+    if (queued) {
+      queued.payload = new Uint8Array(0);
     }
-
-    queued.message.raw = '';
-    queued.message.data = undefined;
-  }
-
-  private logQueueOverflow(queueError: Error, dropped?: QueuedMessage): void {
-    const now = Date.now();
-    if (now - this.queueOverflowLastLogAt < QUEUE_OVERFLOW_LOG_INTERVAL_MS) {
-      this.queueOverflowSuppressedCount += 1;
-      return;
-    }
-
-    const suppressed = this.queueOverflowSuppressedCount;
-    this.queueOverflowSuppressedCount = 0;
-    this.queueOverflowLastLogAt = now;
-    const throttleHint = suppressed > 0
-      ? `；过去 ${Math.floor(QUEUE_OVERFLOW_LOG_INTERVAL_MS / 1000)} 秒内省略 ${suppressed} 条同类日志`
-      : '';
-
-    this.context.logger.error(`${queueError.message}${throttleHint}`, {
-      roomId: dropped?.message.roomId,
-      cmd: dropped?.message.cmd,
-    });
   }
 
   private logOutboxBlocked(message: string): void {
@@ -576,39 +519,20 @@ export class DanmakuMessageQueue {
     return Math.min(exponential, this.messageRetryMaxDelay);
   }
 
-  private buildIncomingMessageDedupKey(message: DanmakuMessage): string | null {
-    if (message.roomId <= 0 || typeof message.raw !== 'string' || message.raw.length === 0) {
-      return null;
-    }
-
-    return `${message.roomId}:${message.cmd}:${message.raw}`;
-  }
-
-  private pruneRecentMessageDedup(now: number = Date.now()): void {
-    if (this.recentMessageDedup.size === 0) {
-      return;
-    }
-
-    for (const [key, timestamp] of this.recentMessageDedup) {
-      if (now - timestamp > MESSAGE_DEDUP_WINDOW_MS) {
-        this.recentMessageDedup.delete(key);
-      }
-    }
-
-    while (this.recentMessageDedup.size > MESSAGE_DEDUP_CACHE_LIMIT) {
-      const oldestKey = this.recentMessageDedup.keys().next().value;
-      if (!oldestKey) {
-        break;
-      }
-      this.recentMessageDedup.delete(oldestKey);
-    }
-  }
-
   private getErrorMessage(error: unknown): string {
     if (error instanceof Error) {
       return error.message;
     }
 
     return String(error);
+  }
+
+  private handleFlushError(error: unknown): void {
+    this.context.recordError(error, {
+      category: 'queue',
+      code: 'MESSAGE_FLUSH_FAILED',
+      recoverable: true,
+    });
+    this.context.logger.error('live session outbox 调度失败:', error);
   }
 }

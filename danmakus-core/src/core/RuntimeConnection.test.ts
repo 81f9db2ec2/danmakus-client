@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { decode } from "@msgpack/msgpack";
-import { Zstd } from "@hpcc-js/wasm-zstd";
 import { RuntimeConnection } from "./RuntimeConnection.js";
 
 const TEST_STREAMER_UID = 84;
 
 const originalFetch = globalThis.fetch;
+const originalCompressionStream = globalThis.CompressionStream;
 
 const normalizeBodyBytes = async (body: BodyInit | null | undefined): Promise<Uint8Array> => {
   if (!body) {
@@ -28,6 +28,7 @@ const normalizeBodyBytes = async (body: BodyInit | null | undefined): Promise<Ui
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  globalThis.CompressionStream = originalCompressionStream;
 });
 
 describe("RuntimeConnection room pull", () => {
@@ -180,14 +181,16 @@ describe("RuntimeConnection room pull", () => {
 
   it("posts archive batches with streamerUid and eventTsMs only", async () => {
     const requests: Array<{ url: string; body: unknown; headers: Headers }> = [];
-    const zstd = await Zstd.load();
+    globalThis.CompressionStream = undefined as typeof CompressionStream | undefined;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const bodyBytes = await normalizeBodyBytes(init?.body);
+      const envelope = decode(bodyBytes) as { compression: string; payload: Uint8Array };
       requests.push({
         url: String(input),
-        body: decode(zstd.decompress(bodyBytes)),
+        body: decode(envelope.payload),
         headers: new Headers(init?.headers),
       });
+      expect(envelope.compression).toBe("identity");
 
       return new Response(JSON.stringify({
         code: 200,
@@ -213,9 +216,10 @@ describe("RuntimeConnection room pull", () => {
     }]);
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v4");
+    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v5");
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/x-msgpack");
-    expect(requests[0]?.headers.get("Content-Encoding")).toBe("zstd");
+    expect(requests[0]?.headers.has("Content-Encoding")).toBe(false);
+    expect(requests[0]?.headers.get("X-Archive-Compression")).toBe("identity");
     expect(requests[0]?.body).toEqual({
       items: [{
         localId: 7,

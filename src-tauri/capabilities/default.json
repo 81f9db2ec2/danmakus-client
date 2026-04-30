@@ -14,13 +14,10 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "opener:default",
-    "websocket:default",
     "updater:default",
     "autostart:default",
     "process:default",
     "notification:default",
-    "sql:default",
-    "sql:allow-execute",
     "http:allow-fetch-cancel-body",
     {
       "identifier": "http:default",

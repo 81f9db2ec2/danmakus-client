@@ -5,7 +5,7 @@ import {
   LiveSessionOutboxItem,
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
-import { encodeZstdMessagePack } from './DanmakuUploadCodec.js';
+import { encodeArchiveUploadEnvelope } from './DanmakuUploadCodec.js';
 import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
 import { normalizeBinaryPayload } from './RawPacketCodec.js';
 
@@ -40,6 +40,7 @@ type RequestRoomResponse = {
 };
 
 const RUNTIME_REQUEST_TIMEOUT_MS = 30_000;
+const ARCHIVE_COMPRESSION_HEADER = 'X-Archive-Compression';
 
 const toArchiveItem = (record: LiveSessionOutboxItem): ClientDanmakuArchiveItem => ({
   localId: record.id,
@@ -89,15 +90,7 @@ export class RuntimeConnection {
         return true;
       }
 
-      const isReconnect = this.hasConnectedOnce;
-      this.isConnected = true;
-      this.hasConnectedOnce = true;
-      this.logger.info(`${isReconnect ? '已重新连接' : '已连接'}核心运行态接口: ${this.runtimeBaseUrl}`);
-      if (isReconnect) {
-        this.onReconnected?.();
-      } else {
-        this.onConnected?.();
-      }
+      this.markConnected();
       return true;
     } catch (error) {
       this.isConnected = false;
@@ -122,12 +115,8 @@ export class RuntimeConnection {
       };
     }
 
-    if (!this.isConnected) {
-      throw new Error('核心运行态接口未连接，无法上传归档弹幕');
-    }
-
-    return await this.requestRuntimeZstd<ArchiveUploadResponse>(
-      '/upload-danmakus-v4',
+    return await this.requestRuntimeArchive<ArchiveUploadResponse>(
+      '/upload-danmakus-v5',
       buildArchiveUploadRequest(records),
     );
   }
@@ -208,14 +197,16 @@ export class RuntimeConnection {
         timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
       });
 
-      return await this.unwrapRuntimeResponse<T>(response);
+      const result = await this.unwrapRuntimeResponse<T>(response);
+      this.markConnected();
+      return result;
     } catch (error) {
       this.markDisconnected(error, path);
       throw error;
     }
   }
 
-  private async requestRuntimeZstd<T>(path: string, payload: unknown): Promise<T> {
+  private async requestRuntimeArchive<T>(path: string, payload: unknown): Promise<T> {
     if (!this.token) {
       throw new Error('缺少账号 Token');
     }
@@ -234,22 +225,40 @@ export class RuntimeConnection {
       }
     }
     headers.set('Content-Type', 'application/x-msgpack');
-    headers.set('Content-Encoding', 'zstd');
 
     try {
-      const compressedBody = await encodeZstdMessagePack(payload);
+      const encoded = await encodeArchiveUploadEnvelope(payload);
+      headers.set(ARCHIVE_COMPRESSION_HEADER, encoded.compression);
       const response = await fetchBackendApiWithFallback(fetch, `${this.runtimeBaseUrl}${path}`, {
         method: 'POST',
         headers,
-        body: compressedBody as unknown as BodyInit
+        body: encoded.body as unknown as BodyInit
       }, {
         timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS,
       });
 
-      return await this.unwrapRuntimeResponse<T>(response);
+      const result = await this.unwrapRuntimeResponse<T>(response);
+      this.markConnected();
+      return result;
     } catch (error) {
       this.markDisconnected(error, path);
       throw error;
+    }
+  }
+
+  private markConnected(): void {
+    if (this.isConnected) {
+      return;
+    }
+
+    const isReconnect = this.hasConnectedOnce;
+    this.isConnected = true;
+    this.hasConnectedOnce = true;
+    this.logger.info(`${isReconnect ? '已重新连接' : '已连接'}核心运行态接口: ${this.runtimeBaseUrl}`);
+    if (isReconnect) {
+      this.onReconnected?.();
+    } else {
+      this.onConnected?.();
     }
   }
 
