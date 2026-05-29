@@ -59,7 +59,6 @@ describe("DanmakuMessageQueue", () => {
     await queue.refreshArchiveStats();
 
     expect(queue.getPendingCount()).toBe(3);
-    expect(queue.getFailedCount()).toBe(0);
   });
 
   it("flushes buffered messages into the live session outbox after the 1 second persist window", async () => {

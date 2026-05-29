@@ -241,15 +241,6 @@ export class DanmakuRuntimeSync {
       });
   }
 
-  handleRuntimeSessionInvalid(reason: string): void {
-    if (!this.context.isRunning() || this.context.isStopping()) {
-      return;
-    }
-
-    this.context.logger.warn(`检测到 Runtime 会话失效，准备重新注册客户端: ${reason}`);
-    this.triggerRuntimeClientRegistration('reconnected');
-  }
-
   async reRegisterRuntimeClient(): Promise<void> {
     const runtimeConnection = this.context.getRuntimeConnection();
     if (!runtimeConnection?.getConnectionState()) {

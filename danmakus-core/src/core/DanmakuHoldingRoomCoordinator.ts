@@ -39,15 +39,15 @@ interface DanmakuHoldingRoomContext {
   syncRuntimeState(): void;
   refreshStatusNow(): void;
   updateHoldingRooms(roomIds: number[]): void;
-  getHoldingRoomIds?(): number[];
-  setHoldingRoomIds?(roomIds: number[]): void;
-  getLastRoomAssigned?(): number | undefined;
-  setLastRoomAssigned?(value: number | undefined): void;
-  getHoldingRoomShortfall?(): RuntimeRoomPullShortfallDto | null;
-  setHoldingRoomShortfall?(value: RuntimeRoomPullShortfallDto | null): void;
   getRoomConnectStartInterval(): number;
   notifyStatusChanged(): void;
   logger: ScopedLogger;
+}
+
+interface DanmakuHoldingRoomInitialState {
+  holdingRoomIds?: number[];
+  lastRoomAssigned?: number;
+  holdingRoomShortfall?: RuntimeRoomPullShortfallDto | null;
 }
 
 const STALE_HOLDING_ROOM_RELEASE_MS = 5 * 60 * 1000;
@@ -66,11 +66,15 @@ export class DanmakuHoldingRoomCoordinator {
   private holdingRoomShortfall: RuntimeRoomPullShortfallDto | null = null;
   private readonly holdingRoomDisconnectedAt = new Map<number, number>();
 
-  constructor(context: DanmakuHoldingRoomContext) {
+  constructor(context: DanmakuHoldingRoomContext, initialState?: DanmakuHoldingRoomInitialState) {
     this.context = context;
-    this.holdingRoomIds = context.getHoldingRoomIds ? [...context.getHoldingRoomIds()] : [];
-    this.lastRoomAssigned = context.getLastRoomAssigned?.();
-    this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(context.getHoldingRoomShortfall?.());
+    if (initialState?.holdingRoomIds) {
+      this.holdingRoomIds = Array.from(new Set(
+        initialState.holdingRoomIds.filter(roomId => Number.isFinite(roomId) && roomId > 0)
+      ));
+    }
+    this.lastRoomAssigned = initialState?.lastRoomAssigned;
+    this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(initialState?.holdingRoomShortfall);
     this.refreshHoldingRoomDisconnectState(Date.now());
   }
 
@@ -526,7 +530,6 @@ export class DanmakuHoldingRoomCoordinator {
       }
     }
     this.prunePendingAssignedRooms(roomIdSet);
-    this.context.setHoldingRoomIds?.([...roomIds]);
   }
 
   private hasPendingRoomConnections(): boolean {
@@ -544,13 +547,10 @@ export class DanmakuHoldingRoomCoordinator {
 
   private setLastRoomAssigned(value: number | undefined): void {
     this.lastRoomAssigned = value;
-    this.context.setLastRoomAssigned?.(value);
   }
 
   private setHoldingRoomShortfall(value: RuntimeRoomPullShortfallDto | null): void {
-    const nextValue = this.cloneHoldingRoomShortfall(value);
-    this.holdingRoomShortfall = nextValue;
-    this.context.setHoldingRoomShortfall?.(nextValue);
+    this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(value);
   }
 
   private areHoldingRoomShortfallsEqual(

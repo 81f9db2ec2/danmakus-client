@@ -39,12 +39,8 @@ function createCoordinatorContext(options?: {
     ])
   );
   let holdingRooms = [...(options?.holdingRooms ?? [])];
-  let holdingRoomShortfall = options?.holdingRoomShortfall ? { ...options.holdingRoomShortfall } : null;
-  let recordingRooms = [...(options?.recordingRooms ?? [])];
-  let queuedRoomConnects: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }> = [];
-  const queuedRoomIds = new Set<number>();
-  let roomConnectQueueTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastRoomConnectStartAt = 0;
+  const holdingRoomShortfall = options?.holdingRoomShortfall ? { ...options.holdingRoomShortfall } : null;
+  const recordingRooms = [...(options?.recordingRooms ?? [])];
 
   const statusManager: any = new StreamerStatusManager(30, "https://example.com/api/v2/core-runtime");
   statusManager.updateHoldingRooms(holdingRooms);
@@ -96,34 +92,7 @@ function createCoordinatorContext(options?: {
       holdingRooms = [...roomIds];
       statusManager.updateHoldingRooms(roomIds);
     },
-    getHoldingRoomIds: () => [...holdingRooms],
-    setHoldingRoomIds: (roomIds: number[]) => {
-      holdingRooms = [...roomIds];
-    },
-    getHoldingRoomRequestRefreshing: () => false,
-    setHoldingRoomRequestRefreshing: () => undefined,
-    getNextHoldingRoomRequestAt: () => 0,
-    setNextHoldingRoomRequestAt: () => undefined,
-    getQueuedRoomConnects: () => queuedRoomConnects,
-    setQueuedRoomConnects: (value: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }>) => {
-      queuedRoomConnects = value;
-    },
-    getQueuedRoomIds: () => queuedRoomIds,
-    getRoomConnectQueueTimer: () => roomConnectQueueTimer,
-    setRoomConnectQueueTimer: (value: ReturnType<typeof setTimeout> | undefined) => {
-      roomConnectQueueTimer = value;
-    },
-    getLastRoomConnectStartAt: () => lastRoomConnectStartAt,
-    setLastRoomConnectStartAt: (value: number) => {
-      lastRoomConnectStartAt = value;
-    },
     getRoomConnectStartInterval: () => 10_000,
-    getLastRoomAssigned: () => undefined,
-    setLastRoomAssigned: () => undefined,
-    getHoldingRoomShortfall: () => (holdingRoomShortfall ? { ...holdingRoomShortfall } : null),
-    setHoldingRoomShortfall: (value: RuntimeRoomPullShortfallDto | null) => {
-      holdingRoomShortfall = value ? { ...value } : null;
-    },
     notifyStatusChanged: () => {
       statusChangedCallCount += 1;
     },
@@ -137,7 +106,10 @@ function createCoordinatorContext(options?: {
   };
 
   return {
-    coordinator: new DanmakuHoldingRoomCoordinator(context as never),
+    coordinator: new DanmakuHoldingRoomCoordinator(context as never, {
+      holdingRoomIds: [...holdingRooms],
+      holdingRoomShortfall,
+    }),
     disconnectedRooms,
     queuedConnects,
     connectionMap,
@@ -145,7 +117,6 @@ function createCoordinatorContext(options?: {
     getStatusChangedCallCount: () => statusChangedCallCount,
     getUpdateConnectionsCallCount: () => updateConnectionsCallCount,
     getRefreshStatusNowCallCount: () => refreshStatusNowCallCount,
-    getHoldingRoomShortfall: () => (holdingRoomShortfall ? { ...holdingRoomShortfall } : null),
   };
 }
 
@@ -194,7 +165,6 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
 
   it("still requests server assignments when supplemental assignments are disabled", async () => {
     let requestPayload: Record<string, unknown> | null = null;
-    let holdingRoomShortfall: RuntimeRoomPullShortfallDto | null = null;
     const statusManager: any = new StreamerStatusManager(30, "https://example.com/api/v2/core-runtime");
     statusManager.updateHoldingRooms([]);
     statusManager.updateRecordingRooms([201]);
@@ -237,28 +207,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
         holdingRooms = [...rooms];
         statusManager.updateHoldingRooms(rooms);
       },
-      getHoldingRoomIds: () => [...holdingRooms],
-      setHoldingRoomIds: (rooms: number[]) => {
-        holdingRooms = [...rooms];
-      },
-      getHoldingRoomRequestRefreshing: () => false,
-      setHoldingRoomRequestRefreshing: () => undefined,
-      getNextHoldingRoomRequestAt: () => 0,
-      setNextHoldingRoomRequestAt: () => undefined,
-      getQueuedRoomConnects: () => [],
-      setQueuedRoomConnects: () => undefined,
-      getQueuedRoomIds: () => new Set<number>(),
-      getRoomConnectQueueTimer: () => undefined,
-      setRoomConnectQueueTimer: () => undefined,
-      getLastRoomConnectStartAt: () => 0,
-      setLastRoomConnectStartAt: () => undefined,
       getRoomConnectStartInterval: () => 10_000,
-      getLastRoomAssigned: () => undefined,
-      setLastRoomAssigned: () => undefined,
-      getHoldingRoomShortfall: () => (holdingRoomShortfall ? { ...holdingRoomShortfall } : null),
-      setHoldingRoomShortfall: (value: RuntimeRoomPullShortfallDto | null) => {
-        holdingRoomShortfall = value ? { ...value } : null;
-      },
       notifyStatusChanged: () => undefined,
       logger: {
         info: () => undefined,
@@ -311,7 +260,6 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
   it("syncs status when only shortfall changes", () => {
     const {
       coordinator,
-      getHoldingRoomShortfall,
       getRefreshStatusNowCallCount,
       getStatusChangedCallCount,
       getSyncCallCount,
@@ -337,7 +285,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       },
     });
 
-    expect(getHoldingRoomShortfall()).toEqual({
+    expect(coordinator.getHoldingRoomShortfall()).toEqual({
       reason: "candidate_pool_exhausted",
       missingCount: 1,
       candidateCount: 4,
@@ -354,7 +302,6 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
   it("clears stale shortfall after capacity is filled", async () => {
     const {
       coordinator,
-      getHoldingRoomShortfall,
       getStatusChangedCallCount,
       getSyncCallCount,
     } = createCoordinatorContext({
@@ -368,7 +315,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "capacity-refresh");
 
     expect(success).toBe(false);
-    expect(getHoldingRoomShortfall()).toBeNull();
+    expect(coordinator.getHoldingRoomShortfall()).toBeNull();
     expect(getStatusChangedCallCount()).toBe(1);
     expect(getSyncCallCount()).toBe(1);
   });

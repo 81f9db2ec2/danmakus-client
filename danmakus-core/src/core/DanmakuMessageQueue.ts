@@ -76,14 +76,6 @@ export class DanmakuMessageQueue {
     return this.pendingPackets.length + this.outboxPendingCount;
   }
 
-  getFailedCount(): number {
-    return 0;
-  }
-
-  getMessageBatchSize(): number {
-    return this.messageBatchSize;
-  }
-
   getUploadInterval(): number {
     return this.messageUploadInterval;
   }

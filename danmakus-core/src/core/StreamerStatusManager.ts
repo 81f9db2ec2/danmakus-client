@@ -255,26 +255,6 @@ export class StreamerStatusManager {
   }
 
   /**
-   * 获取正在直播的主播
-   */
-  getLiveStreamers(): StreamerStatus[] {
-    const liveStreamers: StreamerStatus[] = [];
-
-    for (const [_roomId, status] of this.statusCache) {
-      if (status.isLive) {
-        liveStreamers.push(status);
-      }
-    }
-
-    // 按开播时间排序（早开播的优先）
-    return liveStreamers.sort((a, b) => {
-      const timeA = a.liveStartTime || 0;
-      const timeB = b.liveStartTime || 0;
-      return timeA - timeB;
-    });
-  }
-
-  /**
    * 获取指定房间的状态
    */
   getStreamerStatus(roomId: number): StreamerStatus | undefined {

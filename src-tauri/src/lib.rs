@@ -2,12 +2,6 @@ use tauri::Manager;
 
 mod live_session_outbox;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
@@ -38,7 +32,6 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .invoke_handler(tauri::generate_handler![
-            greet,
             open_devtools,
             live_session_outbox::live_session_outbox_append,
             live_session_outbox::live_session_outbox_list_due,

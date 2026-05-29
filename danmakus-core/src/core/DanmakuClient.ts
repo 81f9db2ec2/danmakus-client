@@ -330,10 +330,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.updateConnections();
       void this.syncRuntimeState();
     };
-
-    this.runtimeConnection.onSessionInvalid = (reason: string) => {
-      this.handleRuntimeSessionInvalid(reason);
-    };
   }
 
   /**
@@ -1655,7 +1651,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.runtimeConnection.onConnected = undefined;
       this.runtimeConnection.onDisconnected = undefined;
       this.runtimeConnection.onReconnected = undefined;
-      this.runtimeConnection.onSessionInvalid = undefined;
       await this.runtimeConnection.disconnect();
     }
 
@@ -1691,10 +1686,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
   private triggerRuntimeClientRegistration(reason: 'connected' | 'reconnected'): void {
     this.runtimeSync.triggerRuntimeClientRegistration(reason);
-  }
-
-  private handleRuntimeSessionInvalid(reason: string): void {
-    this.runtimeSync.handleRuntimeSessionInvalid(reason);
   }
 
   private handleRuntimeLockConflict(reason: string): void {

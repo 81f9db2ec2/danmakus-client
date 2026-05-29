@@ -85,7 +85,6 @@ export class CookieManager {
             this.cookies = this.extractBilibiliCookies(cookieData);
             if (!this.cookies.trim()) {
               this.lastError = 'CookieCloud 未返回可用的 Bilibili Cookie';
-              this.notifyChanged();
               return false;
             }
             this.lastUpdate = Date.now();
@@ -93,7 +92,6 @@ export class CookieManager {
             this.lastError = null;
 
             console.log('Cookie信息已更新');
-            this.notifyChanged();
             return true;
           }
 
@@ -104,14 +102,11 @@ export class CookieManager {
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
         console.error('获取Cookie失败:', this.lastError);
-        this.notifyChanged();
-        return false;
       } finally {
         this.updateTask = undefined;
         this.notifyChanged();
       }
 
-      this.notifyChanged();
       return false;
     })();
 
@@ -160,13 +155,6 @@ export class CookieManager {
     return this.cookies.length > 0 && (now - this.lastUpdate) < maxAge;
   }
 
-  /**
-   * 获取最后更新时间
-   */
-  getLastUpdateTime(): number {
-    return this.lastUpdate;
-  }
-
   getLastAttemptTime(): number {
     return this.lastAttempt;
   }
@@ -181,40 +169,6 @@ export class CookieManager {
 
   isSyncing(): boolean {
     return this.updateTask !== undefined;
-  }
-
-  /**
-   * 手动设置Cookie（用于测试或直接设置）
-   */
-  setCookies(cookies: string): void {
-    this.cookies = cookies;
-    this.lastUpdate = Date.now();
-    this.lastSuccess = this.lastUpdate;
-    this.lastError = null;
-    this.notifyChanged();
-  }
-
-  /**
-   * 清空Cookie
-   */
-  clearCookies(): void {
-    this.cookies = '';
-    this.lastUpdate = 0;
-    this.notifyChanged();
-  }
-
-  /**
-   * 获取关键Cookie值（如SESSDATA）
-   */
-  getKeyValue(key: string): string | null {
-    const cookies = this.cookies.split('; ');
-    for (const cookie of cookies) {
-      const [name, value] = cookie.split('=');
-      if (name === key) {
-        return value;
-      }
-    }
-    return null;
   }
 
   private notifyChanged(): void {

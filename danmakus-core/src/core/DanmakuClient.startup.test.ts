@@ -54,7 +54,6 @@ describe('DanmakuClient startup', () => {
       onConnected: undefined,
       onReconnected: undefined,
       onDisconnected: undefined,
-      onSessionInvalid: undefined,
     };
     let getUserInfoCallCount = 0;
     let getRecordingListCallCount = 0;

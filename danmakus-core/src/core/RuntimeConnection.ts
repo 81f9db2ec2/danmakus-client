@@ -108,6 +108,9 @@ export class RuntimeConnection {
     this.logger.info('核心运行态接口连接已断开');
   }
 
+  // 归档上传不检查 isConnected：上传请求成功本身就是恢复连接标记的信号，
+  // 失败时由 markDisconnected 标记断线并交给上层重试。requestRooms 则相反，
+  // 断线时直接跳过以免无谓地占用房间分配配额。
   async sendArchiveBatch(records: LiveSessionOutboxItem[]): Promise<ArchiveUploadResponse> {
     if (records.length === 0) {
       return {
@@ -165,10 +168,6 @@ export class RuntimeConnection {
 
   getConnectionState(): boolean {
     return this.isConnected;
-  }
-
-  getConnectionId(): string | null {
-    return this.clientId ?? null;
   }
 
   private async requestRuntime<T>(path: string, init?: RequestInit): Promise<T> {
@@ -317,14 +316,12 @@ export class RuntimeConnection {
       token = token || parsed.searchParams.get('token') || undefined;
       clientId = clientId || parsed.searchParams.get('clientId') || undefined;
 
-      if (parsed.pathname.endsWith('/api/v2/core-runtime')) {
-        parsed.pathname = parsed.pathname.replace(/\/api\/v2\/core-runtime$/, '/api/v2/core-runtime');
-      } else if (parsed.pathname.endsWith('/api/core-runtime')) {
-        parsed.pathname = parsed.pathname.replace(/\/api\/core-runtime$/, '/api/core-runtime');
-      } else if (parsed.pathname.includes('/api/v2/')) {
-        parsed.pathname = '/api/v2/core-runtime';
-      } else {
-        parsed.pathname = '/api/core-runtime';
+      const alreadyNormalized = parsed.pathname.endsWith('/api/v2/core-runtime')
+        || parsed.pathname.endsWith('/api/core-runtime');
+      if (!alreadyNormalized) {
+        parsed.pathname = parsed.pathname.includes('/api/v2/')
+          ? '/api/v2/core-runtime'
+          : '/api/core-runtime';
       }
 
       parsed.search = '';
@@ -337,11 +334,9 @@ export class RuntimeConnection {
       };
     } catch {
       const normalized = url.trim();
-      let runtimeBaseUrl = normalized;
-      if (/\/api\/v2\/core-runtime\b/.test(normalized)) {
-        runtimeBaseUrl = normalized.replace(/\/api\/v2\/core-runtime\b/, '/api/v2/core-runtime');
-      } else if (/\/api\/core-runtime\b/.test(normalized)) {
-        runtimeBaseUrl = normalized.replace(/\/api\/core-runtime\b/, '/api/core-runtime');
+      let runtimeBaseUrl: string;
+      if (/\/api\/v2\/core-runtime\b/.test(normalized) || /\/api\/core-runtime\b/.test(normalized)) {
+        runtimeBaseUrl = normalized;
       } else if (/\/api\/v2\//.test(normalized)) {
         runtimeBaseUrl = normalized.replace(/\/api\/v2\/.*/, '/api/v2/core-runtime');
       } else {
@@ -380,9 +375,7 @@ export class RuntimeConnection {
     return Number.isFinite(normalized) && normalized > 0 ? Math.floor(normalized) : null;
   }
 
-  onServerDisconnect?: (reason?: string) => void;
   onConnected?: () => void;
   onDisconnected?: (error?: Error) => void;
   onReconnected?: () => void;
-  onSessionInvalid?: (reason: string) => void;
 }
