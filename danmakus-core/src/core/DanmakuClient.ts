@@ -821,6 +821,14 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   }
 
   /**
+   * 返回当前生效的 Bilibili Cookie（优先 CookieCloud，否则本地扫码），用于客户端侧需要鉴权的请求（如拉取关注列表）。
+   * 与核心连接弹幕所用的 Cookie 来源一致。
+   */
+  getActiveBiliCookie(): string {
+    return this.authManager.getPreferredCookie()?.value ?? '';
+  }
+
+  /**
    * 设置LiveWS事件监听
    */
   private setupLiveWSEvents(liveWS: LiveWsConnection, roomId: number): void {

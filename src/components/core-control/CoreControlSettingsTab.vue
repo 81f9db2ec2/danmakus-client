@@ -1,7 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, ref, toRefs } from 'vue';
-import type { AuthStateSnapshot } from 'danmakus-core';
-import { Loader2, RefreshCw, Save, Plus, Trash2, X, Info } from 'lucide-vue-next';
+import { Loader2, RefreshCw, Save, Plus, Trash2, X, Info, UserRoundPlus } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -16,12 +15,11 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto } from '../../types/api';
+import FollowImportModal from './FollowImportModal.vue';
 
 const props = defineProps<{
   coreConfig: CoreControlConfigDto;
   localConfig: LocalAppConfigDto;
-  authState: AuthStateSnapshot;
-  coreRunning: boolean;
   availableAreas: Record<string, string[]>;
   recordings: RecordingInfoDto[];
   refreshingRecordings: boolean;
@@ -29,11 +27,14 @@ const props = defineProps<{
   removingRecordingUid: number | null;
   updatingRecordingUid: number | null;
   savingConfig: boolean;
+  importingFollows: boolean;
+  importFollowsProgress: { done: number; total: number };
 }>();
 const { coreConfig, availableAreas, recordings, refreshingRecordings, addingRecording, removingRecordingUid, updatingRecordingUid, savingConfig } = toRefs(props);
 
 const newRecordingUid = ref<string | number>('');
 const areaSearchQuery = ref('');
+const showFollowImportModal = ref(false);
 
 const parentAreaOptions = computed(() =>
   Object.keys(availableAreas.value ?? {}).sort((a, b) => a.localeCompare(b))
@@ -105,22 +106,6 @@ const submitAddRecording = () => {
   newRecordingUid.value = '';
 };
 
-const assignLocalText = (field: 'cookieCloudKey' | 'cookieCloudPassword', raw: string | number) => {
-  props.localConfig[field] = String(raw).trim();
-};
-
-const assignCookieCloudHost = (raw: string | number) => {
-  props.localConfig.cookieCloudHost = String(raw).trim().replace(/\/+$/, '');
-};
-
-const assignCookieRefreshInterval = (raw: string | number) => {
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    return;
-  }
-  props.localConfig.cookieRefreshInterval = Math.max(60, Math.floor(value));
-};
-
 const assignCapacityOverride = (raw: string | number) => {
   const text = String(raw).trim();
   if (!text) {
@@ -153,43 +138,18 @@ const updateRecordingLiveNotification = (uid: number, enabled: boolean) => {
   props.localConfig.recordingLiveNotificationUids = Array.from(next).sort((left, right) => left - right);
 };
 
-const activeAuthSourceText = computed(() => {
-  if (props.authState.activeSource === 'cookieCloud') {
-    return props.coreRunning ? '当前由 CookieCloud 提供鉴权' : '核心启动后将由 CookieCloud 提供鉴权';
-  }
-  if (props.authState.activeSource === 'local') {
-    return props.coreRunning ? '当前由本地扫码登录提供鉴权' : '核心启动后将由本地扫码登录提供鉴权';
-  }
-  if (!props.coreRunning && props.authState.cookieCloud.configured) {
-    return '核心未启动，CookieCloud 将在后台同步';
-  }
-  if (!props.coreRunning) {
-    return '核心未启动，鉴权状态尚未建立';
-  }
-  return '当前无可用鉴权 Cookie';
-});
-
-const cookieCloudStatusText = computed(() => {
-  const state = props.authState.cookieCloud;
-  if (!state.configured) return '未配置';
-  if (state.phase === 'syncing') return '同步中';
-  if (state.valid) return '可用';
-  if (state.lastError) return '失败';
-  if (!props.coreRunning) return '等待后台同步';
-  if (state.hasCookie) return '待校验';
-  return '未同步';
-});
-
-const formatSyncTime = (value: number | null) => value ? new Date(value).toLocaleString() : '—';
-
 const emit = defineEmits<{
   (e: 'save-config'): void;
   (e: 'refresh-recordings'): void;
   (e: 'add-recording', uid: number): void;
   (e: 'remove-recording', uid: number): void;
   (e: 'update-recording-public', uid: number, isPublic: boolean): void;
-  (e: 'sync-cookie-cloud'): void;
+  (e: 'import-follows', uids: number[]): void;
 }>();
+
+const handleImportFollows = (uids: number[]) => {
+  emit('import-follows', uids);
+};
 </script>
 
 <template>
@@ -287,74 +247,6 @@ const emit = defineEmits<{
               placeholder="留空表示跟随全局设置"
               @update:model-value="assignCapacityOverride"
             />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card class="bg-card/60">
-        <CardHeader class="pb-3">
-          <CardTitle class="text-sm">CookieCloud</CardTitle>
-          <CardDescription>仅保存在当前客户端本地，不会上传到服务器</CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-3">
-          <div class="rounded-lg border bg-background/40 p-3 text-xs text-muted-foreground space-y-1.5">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="font-medium text-foreground">{{ activeAuthSourceText }}</p>
-                <p>CookieCloud 状态：{{ cookieCloudStatusText }}</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                :disabled="!props.authState.cookieCloud.configured || props.authState.cookieCloud.phase === 'syncing'"
-                @click="emit('sync-cookie-cloud')"
-              >
-                <Loader2 v-if="props.authState.cookieCloud.phase === 'syncing'" class="h-4 w-4 animate-spin" />
-                <RefreshCw v-else class="h-4 w-4" />
-                立即同步
-              </Button>
-            </div>
-            <p>最近成功：{{ formatSyncTime(props.authState.cookieCloud.lastSuccessAt) }}</p>
-            <p v-if="props.authState.cookieCloud.lastError" class="text-destructive">
-              最近错误：{{ props.authState.cookieCloud.lastError }}
-            </p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
-            <Input
-              :model-value="props.localConfig.cookieCloudHost"
-              placeholder="https://cookie.danmakus.com"
-              @update:model-value="assignCookieCloudHost"
-            />
-          </div>
-          <div class="grid gap-3 sm:grid-cols-3">
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-muted-foreground">Key</label>
-              <Input
-                :model-value="props.localConfig.cookieCloudKey"
-                placeholder="Key"
-                @update:model-value="assignLocalText('cookieCloudKey', $event)"
-              />
-            </div>
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-muted-foreground">密码</label>
-              <Input
-                :model-value="props.localConfig.cookieCloudPassword"
-                type="password"
-                placeholder="密码"
-                @update:model-value="assignLocalText('cookieCloudPassword', $event)"
-              />
-            </div>
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
-              <Input
-                :model-value="props.localConfig.cookieRefreshInterval"
-                type="number"
-                min="60"
-                placeholder="3600"
-                @update:model-value="assignCookieRefreshInterval"
-              />
-            </div>
           </div>
         </CardContent>
       </Card>
@@ -478,10 +370,16 @@ const emit = defineEmits<{
               </div>
               <CardDescription>需要进行弹幕录制的主播列表</CardDescription>
             </div>
-            <Button variant="outline" size="sm" :disabled="refreshingRecordings" @click="emit('refresh-recordings')">
-              <RefreshCw :class="['h-3.5 w-3.5', refreshingRecordings && 'animate-spin']" />
-              刷新
-            </Button>
+            <div class="flex items-center gap-2">
+              <Button variant="outline" size="sm" @click="showFollowImportModal = true">
+                <UserRoundPlus class="h-3.5 w-3.5" />
+                导入关注
+              </Button>
+              <Button variant="outline" size="sm" :disabled="refreshingRecordings" @click="emit('refresh-recordings')">
+                <RefreshCw :class="['h-3.5 w-3.5', refreshingRecordings && 'animate-spin']" />
+                刷新
+              </Button>
+            </div>
           </div>
         </CardHeader>
 
@@ -559,5 +457,13 @@ const emit = defineEmits<{
         </CardContent>
       </Card>
     </TooltipProvider>
+
+    <FollowImportModal
+      v-model:open="showFollowImportModal"
+      :recordings="recordings"
+      :importing="importingFollows"
+      :progress="importFollowsProgress"
+      @import="handleImportFollows"
+    />
   </div>
 </template>

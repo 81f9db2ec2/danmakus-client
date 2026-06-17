@@ -50,7 +50,9 @@ interface DanmakuHoldingRoomInitialState {
   holdingRoomShortfall?: RuntimeRoomPullShortfallDto | null;
 }
 
-const STALE_HOLDING_ROOM_RELEASE_MS = 5 * 60 * 1000;
+// 本地持有但长时间连不上的房间释放窗口：与后端 sticky lease（8min）对齐，
+// 避免后端重启/网络长波动期间本地过早释放仍应保留的房间。
+const STALE_HOLDING_ROOM_RELEASE_MS = 8 * 60 * 1000;
 
 export class DanmakuHoldingRoomCoordinator {
   private readonly context: DanmakuHoldingRoomContext;

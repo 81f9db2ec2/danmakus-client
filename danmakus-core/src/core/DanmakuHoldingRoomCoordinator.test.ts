@@ -359,7 +359,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       coordinator.applyConnectionsUpdate();
       expect(coordinator.getHoldingRoomIds()).toEqual([301]);
 
-      now += 5 * 60 * 1000 + 1;
+      now += 8 * 60 * 1000 + 1;
       coordinator.applyConnectionsUpdate();
 
       expect(coordinator.getHoldingRoomIds()).toEqual([]);
@@ -389,7 +389,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       });
 
       coordinator.applyConnectionsUpdate();
-      now += 5 * 60 * 1000 + 1;
+      now += 8 * 60 * 1000 + 1;
       coordinator.applyConnectionsUpdate();
 
       expect(coordinator.getHoldingRoomIds()).toEqual([301]);

@@ -76,6 +76,8 @@ const refreshingRecordings = ref(false);
 const addingRecording = ref(false);
 const removingRecordingUid = ref<number | null>(null);
 const updatingRecordingUid = ref<number | null>(null);
+const importingFollows = ref(false);
+const importFollowsProgress = ref({ done: 0, total: 0 });
 const isUpdaterSupported = updaterEnabled();
 const checkingAppUpdate = ref(false);
 const installingAppUpdate = ref(false);
@@ -556,6 +558,38 @@ const handleAddRecording = async (uid: number) => {
   }
 };
 
+const handleImportFollows = async (uids: number[]) => {
+  if (!ensureToken()) return;
+  const targets = Array.from(new Set(uids.filter((uid) => Number.isFinite(uid) && uid > 0)));
+  if (targets.length === 0) return;
+
+  importingFollows.value = true;
+  importFollowsProgress.value = { done: 0, total: targets.length };
+  let success = 0;
+  const failed: number[] = [];
+  try {
+    for (const uid of targets) {
+      try {
+        await danmakuService.addRecording(uid);
+        success += 1;
+      } catch (error) {
+        console.error(error);
+        failed.push(uid);
+      } finally {
+        importFollowsProgress.value = { done: importFollowsProgress.value.done + 1, total: targets.length };
+      }
+    }
+
+    if (success > 0) {
+      toast.success(`已添加 ${success} 个录制主播${failed.length ? `，${failed.length} 个失败` : ''}`);
+    } else {
+      toast.error('添加录制主播失败');
+    }
+  } finally {
+    importingFollows.value = false;
+  }
+};
+
 const handleRemoveRecording = async (uid: number) => {
   if (!ensureToken()) return;
   if (!Number.isFinite(uid) || uid <= 0) {
@@ -844,14 +878,14 @@ onBeforeUnmount(() => {
           <Transition name="page" mode="out-in">
             <CoreControlDashboardTab v-if="currentPage === 'dashboard'" key="dashboard" :runtime-state="runtimeState" :recording-room-ids="recordingRoomIds" :recording-stats-by-room="recordingStatsByRoom" :remote-clients="remoteClients" :local-client-id="localClientId" :account-name="accountNameForDisplay" :account-id="accountIdForDisplay" :refreshing-state="refreshingState" :forcing-lock="forcingLock" :starting-core="startingCore" :stopping-core="stoppingCore" :app-update-busy="appUpdateBusy" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" @refresh-runtime-state="refreshRuntimeState" @clear-runtime-error="handleClearRuntimeError" @force-takeover="handleForceTakeover" @start-core="handleStartCore" @stop-core="handleStopCore" @install-app-update="handleInstallAppUpdate" />
 
-            <CoreControlSettingsTab v-else-if="currentPage === 'settings'" key="settings" :core-config="coreConfigDraft" :local-config="localConfig" :auth-state="runtimeState.authState" :core-running="runtimeState.isRunning" :available-areas="availableAreas" :recordings="recordings" :refreshing-recordings="refreshingRecordings" :adding-recording="addingRecording" :removing-recording-uid="removingRecordingUid" :updating-recording-uid="updatingRecordingUid" :saving-config="savingConfig" @save-config="handleSaveConfig" @refresh-recordings="refreshRecordingList" @add-recording="handleAddRecording" @remove-recording="handleRemoveRecording" @update-recording-public="handleUpdateRecordingPublic" @sync-cookie-cloud="handleSyncCookieCloud" />
+            <CoreControlSettingsTab v-else-if="currentPage === 'settings'" key="settings" :core-config="coreConfigDraft" :local-config="localConfig" :available-areas="availableAreas" :recordings="recordings" :refreshing-recordings="refreshingRecordings" :adding-recording="addingRecording" :removing-recording-uid="removingRecordingUid" :updating-recording-uid="updatingRecordingUid" :saving-config="savingConfig" :importing-follows="importingFollows" :import-follows-progress="importFollowsProgress" @save-config="handleSaveConfig" @refresh-recordings="refreshRecordingList" @add-recording="handleAddRecording" @remove-recording="handleRemoveRecording" @update-recording-public="handleUpdateRecordingPublic" @import-follows="handleImportFollows" />
 
             <CoreControlAppTab v-else-if="currentPage === 'app'" key="app" :local-config="localConfig" :is-desktop-runtime="isDesktopApp" :updater-supported="isUpdaterSupported" :app-update-busy="appUpdateBusy" :checking-app-update="checkingAppUpdate" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" :database-info="databaseInfo" :loading-database-info="loadingDatabaseInfo" :rebuilding-database="rebuildingDatabase" @check-app-update="handleCheckAppUpdate" @install-app-update="handleInstallAppUpdate" @refresh-database-info="refreshDatabaseInfo(false)" @rebuild-database="handleRebuildDatabase" />
 
             <div v-else-if="currentPage === 'bilibili'" key="bilibili">
               <h2 class="mb-4 text-xl font-semibold tracking-tight">Bilibili 连接管理</h2>
-              <p class="mb-5 text-sm text-muted-foreground">登录 Bilibili 账号后可同步 Cookie，用于连接直播间弹幕服务</p>
-              <BilibiliLogin />
+              <p class="mb-5 text-sm text-muted-foreground">登录 Bilibili 账号或配置 CookieCloud，用于连接直播间弹幕服务</p>
+              <BilibiliLogin :local-config="localConfig" :auth-state="runtimeState.authState" :core-running="runtimeState.isRunning" @sync-cookie-cloud="handleSyncCookieCloud" />
             </div>
 
             <CoreControlAccountTab v-else-if="currentPage === 'account'" key="account" :user-info="userInfo" :recordings="recordings" @logout="handleLogout" />

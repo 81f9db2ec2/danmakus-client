@@ -1,5 +1,6 @@
 import {
   BiliAuthProfile,
+  BiliFollowingUser,
   BilibiliQrLoginPollResult,
   BilibiliQrLoginSessionInfo,
 } from '../types/index.js';
@@ -105,6 +106,61 @@ export class BilibiliAuthApi {
       vipStatus: Number.isFinite(vipValue) ? Math.floor(vipValue) : 0,
       vipLabel: typeof data?.vip_label?.text === 'string' ? data.vip_label.text : '',
     };
+  }
+
+  async getFollowings(uid: number, cookie: string): Promise<BiliFollowingUser[]> {
+    const normalizedCookie = cookie.trim();
+    if (!normalizedCookie) {
+      throw new Error('获取关注列表失败: 未登录');
+    }
+    if (!Number.isFinite(uid) || uid <= 0) {
+      throw new Error('获取关注列表失败: 无效的 UID');
+    }
+
+    const pageSize = 50;
+    const maxPages = 20;
+    const followings: BiliFollowingUser[] = [];
+
+    for (let page = 1; page <= maxPages; page += 1) {
+      const url = `https://api.bilibili.com/x/relation/followings?vmid=${uid}&ps=${pageSize}&pn=${page}&order=desc&order_type=attention`;
+      const response = await this.request(url, { method: 'GET' }, normalizedCookie);
+      if (!response.ok) {
+        throw new Error(`获取关注列表失败: HTTP ${response.status}`);
+      }
+
+      const payload = await response.json() as {
+        code?: unknown;
+        message?: unknown;
+        data?: { list?: Array<{ mid?: unknown; uname?: unknown; face?: unknown }>; total?: unknown };
+      };
+
+      const code = Number(payload.code);
+      if (code !== 0) {
+        if (code === 22115) {
+          throw new Error('获取关注列表失败: 该账号的关注列表已设为隐私');
+        }
+        throw new Error(`获取关注列表失败: ${String(payload.message ?? code)}`);
+      }
+
+      const list = Array.isArray(payload.data?.list) ? payload.data.list : [];
+      for (const item of list) {
+        const followingUid = Number(item.mid);
+        if (!Number.isFinite(followingUid) || followingUid <= 0) {
+          continue;
+        }
+        followings.push({
+          uid: Math.floor(followingUid),
+          uname: typeof item.uname === 'string' ? item.uname : `UID ${Math.floor(followingUid)}`,
+          face: typeof item.face === 'string' ? item.face : '',
+        });
+      }
+
+      if (list.length < pageSize) {
+        break;
+      }
+    }
+
+    return followings;
   }
 
   async createQrLoginSession(): Promise<BilibiliQrLoginSession> {

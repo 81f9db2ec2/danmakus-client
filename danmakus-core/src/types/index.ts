@@ -165,6 +165,12 @@ export interface BilibiliQrLoginSessionInfo {
   qrcodeKey: string;
 }
 
+export interface BiliFollowingUser {
+  uid: number;
+  uname: string;
+  face: string;
+}
+
 // 直播间信息类型
 export interface RoomInfo {
   roomId: number;

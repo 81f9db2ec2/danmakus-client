@@ -197,6 +197,11 @@ class DanmakuService {
     this.applyStatusSnapshot();
   }
 
+  /** 当前生效的 Bilibili Cookie（CookieCloud 或本地扫码），未初始化或无可用来源时返回空串 */
+  public getActiveBiliCookie(): string {
+    return this.client?.getActiveBiliCookie() ?? '';
+  }
+
   public clearRuntimeError(expectedError?: string | null): void {
     if (!this.client) {
       this.state.lastError = null;

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { BilibiliAuthApi, type BilibiliQrLoginSession } from 'danmakus-core';
+import { computed, onBeforeUnmount, ref } from 'vue';
+import { BilibiliAuthApi, type AuthStateSnapshot, type BilibiliQrLoginSession } from 'danmakus-core';
 import QRCode from 'qrcode';
 import { toast } from 'vue-sonner';
-import { CheckCircle2, Loader2, QrCode, UserRound, ExternalLink } from 'lucide-vue-next';
+import { CheckCircle2, Cloud, Loader2, QrCode, RefreshCw, UserRound, ExternalLink } from 'lucide-vue-next';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -21,69 +21,99 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import {
-  biliNavProfileState,
-  biliCookie,
-  getNavProfileAsync,
-  startNavProfileAutoRefresh,
-  stopNavProfileAutoRefresh
-} from '../services/bilibili';
+import type { LocalAppConfigDto } from '../types/api';
+import { biliCookie } from '../services/bilibili';
 import { danmakuService } from '../services/DanmakuService';
 import { fetchImpl } from '../services/fetchImpl';
 
-const navProfile = computed(() => biliNavProfileState.profile);
-const isLoggedIn = computed(() => navProfile.value !== null);
-const authState = computed(() => danmakuService.state.authState);
-const isCoreRunning = computed(() => danmakuService.state.isRunning);
-const activeCookieSourceLabel = computed(() => {
-  if (authState.value.activeSource === 'cookieCloud') {
-    return 'CookieCloud';
-  }
-  if (authState.value.activeSource === 'local') {
-    return '本地扫码登录';
-  }
+const props = defineProps<{
+  localConfig: LocalAppConfigDto;
+  authState: AuthStateSnapshot;
+  coreRunning: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: 'sync-cookie-cloud'): void;
+}>();
+
+const authState = computed(() => props.authState);
+const localState = computed(() => authState.value.local);
+const cloudState = computed(() => authState.value.cookieCloud);
+const isCoreRunning = computed(() => props.coreRunning);
+
+// 当前生效账号（CookieCloud 优先，与核心连接逻辑一致）
+const activeProfile = computed(() => cloudState.value.profile ?? localState.value.profile ?? null);
+const localProfile = computed(() => localState.value.profile);
+const isLocalLoggedIn = computed(() => localState.value.valid && localProfile.value !== null);
+
+const activeSourceLabel = computed(() => {
+  if (authState.value.activeSource === 'cookieCloud') return 'CookieCloud';
+  if (authState.value.activeSource === 'local') return '本地扫码登录';
   return '无可用来源';
 });
-const activeCookieSourceDescription = computed(() => {
-  if (authState.value.activeSource === 'cookieCloud') {
-    return isCoreRunning.value
-      ? '当前核心连接使用 CookieCloud 提供的 Cookie'
-      : '核心启动后将优先使用 CookieCloud 提供的 Cookie';
-  }
-  if (authState.value.activeSource === 'local') {
-    return isCoreRunning.value
-      ? '当前核心连接使用本地扫码登录得到的 Cookie。'
-      : '核心启动后将使用本地扫码登录得到的 Cookie。';
-  }
-  if (authState.value.cookieCloud.configured) {
-    return isCoreRunning.value
-      ? '已配置 CookieCloud，但当前还没有可用 Cookie；你也可以使用本页扫码登录作为备用来源。'
-      : '已配置 CookieCloud，客户端会在后台自动同步；也可以使用本页扫码登录作为备用来源。';
-  }
-  return isCoreRunning.value
-    ? '当前核心没有可用 Cookie 来源；可以在本页扫码登录，或先配置 CookieCloud。'
-    : '核心未启动，当前还没有可用 Cookie 来源；可以先配置 CookieCloud，或在本页扫码登录。';
-});
-const activeCookieSourceBadgeClass = computed(() => {
-  if (authState.value.activeSource === 'cookieCloud') {
-    return 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300';
-  }
-  if (authState.value.activeSource === 'local') {
-    return 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
-  }
+
+const activeSourceBadgeClass = computed(() => {
+  if (authState.value.activeSource === 'cookieCloud') return 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+  if (authState.value.activeSource === 'local') return 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
   return 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300';
 });
-const localLoginBadgeClass = computed(() =>
-  isLoggedIn.value
-    ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-    : 'border-muted-foreground/20 bg-muted/40 text-muted-foreground'
-);
-const shouldShowPrimaryLoginPrompt = computed(() =>
-  !isLoggedIn.value && authState.value.activeSource !== 'cookieCloud'
-);
-const showLoginModal = ref(false);
 
+const overallStatusText = computed(() => {
+  if (authState.value.phase === 'syncing') return '正在同步 / 校验 Cookie…';
+  if (authState.value.hasUsableCookie) {
+    return `${activeSourceLabel.value} 提供的 Cookie 当前有效，可用于连接弹幕服务`;
+  }
+  if (cloudState.value.configured && cloudState.value.lastError) {
+    return `CookieCloud 同步失败：${cloudState.value.lastError}`;
+  }
+  if (cloudState.value.configured) return '已配置 CookieCloud，等待同步出可用 Cookie；也可扫码登录作为备用来源';
+  return '当前没有可用 Cookie，请扫码登录或配置 CookieCloud';
+});
+
+// Cookie 状态由客户端在后台持续评估，无需启动核心
+const lifecycleHint = computed(() =>
+  isCoreRunning.value
+    ? '核心运行中，连接弹幕服务时会实时使用下述生效来源的 Cookie。'
+    : '提示：Cookie 状态由客户端在后台持续校验，无需启动核心即可查看；核心启动后会直接复用当前生效的来源。'
+);
+
+const cloudStatus = computed<{ text: string; class: string }>(() => {
+  const state = cloudState.value;
+  if (!state.configured) return { text: '未配置', class: 'border-muted-foreground/20 bg-muted/40 text-muted-foreground' };
+  if (state.phase === 'syncing') return { text: '同步中', class: 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300' };
+  if (state.valid) return { text: '有效', class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+  if (state.lastError) return { text: '失败', class: 'border-destructive/40 bg-destructive/10 text-destructive' };
+  if (state.hasCookie) return { text: '待校验', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
+  return { text: '等待同步', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
+});
+
+const localStatus = computed<{ text: string; class: string }>(() => {
+  const state = localState.value;
+  if (state.valid) return { text: '有效', class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+  if (state.lastError && state.hasCookie) return { text: '已失效', class: 'border-destructive/40 bg-destructive/10 text-destructive' };
+  if (state.hasCookie) return { text: '待校验', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
+  return { text: '未登录', class: 'border-muted-foreground/20 bg-muted/40 text-muted-foreground' };
+});
+
+const formatSyncTime = (value: number | null) => (value ? new Date(value).toLocaleString() : '—');
+
+const assignCookieCloudText = (field: 'cookieCloudKey' | 'cookieCloudPassword', raw: string | number) => {
+  props.localConfig[field] = String(raw).trim();
+};
+
+const assignCookieCloudHost = (raw: string | number) => {
+  props.localConfig.cookieCloudHost = String(raw).trim().replace(/\/+$/, '');
+};
+
+const assignCookieRefreshInterval = (raw: string | number) => {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return;
+  props.localConfig.cookieRefreshInterval = Math.max(60, Math.floor(value));
+};
+
+const showLoginModal = ref(false);
 const isQRCodeLogining = ref(false);
 const loginUrl = ref('');
 const loginKey = ref('');
@@ -94,19 +124,13 @@ const timer = ref<number>();
 const qrLoginApi = new BilibiliAuthApi(fetchImpl);
 let qrLoginSession: BilibiliQrLoginSession | null = null;
 
-const checkStatus = async (force = false) => {
-  try {
-    await getNavProfileAsync({ force });
-  } catch (error) {
+const refreshAuth = (force = true) =>
+  danmakuService.refreshAuthState({ force }).catch((error) => {
     console.error(error);
-  }
-};
+  });
 
 const buildQrCodeDataUrl = async (url: string) => {
-  loginQrDataUrl.value = await QRCode.toDataURL(url, {
-    width: 220,
-    margin: 1
-  });
+  loginQrDataUrl.value = await QRCode.toDataURL(url, { width: 220, margin: 1 });
 };
 
 const finishLogin = () => {
@@ -142,9 +166,7 @@ const startLogin = async () => {
 
     timer.value = window.setInterval(async () => {
       try {
-        if (!qrLoginSession) {
-          return;
-        }
+        if (!qrLoginSession) return;
         const login = await qrLoginSession.poll();
         loginStatus.value = login.status;
 
@@ -152,10 +174,7 @@ const startLogin = async () => {
           biliCookie.setBiliCookie(login.cookie, login.refreshToken);
           toast.success('登录成功');
           finishLogin();
-          await checkStatus(true);
-          await danmakuService.refreshAuthState({ force: true }).catch(error => {
-            console.error(error);
-          });
+          await refreshAuth();
           showLoginModal.value = false;
         } else if (login.status === 'expired') {
           loginStatus.value = 'expired';
@@ -174,12 +193,10 @@ const startLogin = async () => {
   }
 };
 
-const handleLogout = () => {
+const handleLocalLogout = () => {
   biliCookie.clear();
-  void danmakuService.refreshAuthState({ force: true }).catch(error => {
-    console.error(error);
-  });
-  toast.success('已登出 Bilibili');
+  void refreshAuth();
+  toast.success('已登出本地 Bilibili 账号');
 };
 
 const handleDialogOpenChange = (open: boolean) => {
@@ -187,101 +204,137 @@ const handleDialogOpenChange = (open: boolean) => {
   if (!open) finishLogin();
 };
 
-onMounted(() => {
-  startNavProfileAutoRefresh();
-  void checkStatus();
-});
-
 onBeforeUnmount(() => {
   finishLogin();
-  stopNavProfileAutoRefresh();
 });
 </script>
 
 <template>
-  <div class="w-full">
+  <div class="w-full space-y-4">
+    <!-- 统一鉴权状态 -->
     <Card class="bg-background/60">
       <CardHeader class="pb-3">
-        <CardTitle class="text-base">Bilibili 账号状态</CardTitle>
-        <CardDescription>用于连接弹幕服务的 Cookie 凭据</CardDescription>
+        <CardTitle class="text-base">账号与 Cookie 状态</CardTitle>
+        <CardDescription>核心连接弹幕服务所使用的鉴权来源，CookieCloud 与本地扫码登录共用同一套状态</CardDescription>
       </CardHeader>
 
       <CardContent class="space-y-4">
         <div class="rounded-lg border bg-background/50 px-3 py-3 shadow-sm">
           <div class="flex flex-wrap items-center gap-2 text-xs">
-            <Badge variant="outline" :class="activeCookieSourceBadgeClass">
-              核心当前来源：{{ activeCookieSourceLabel }}
+            <Badge variant="outline" :class="activeSourceBadgeClass">
+              生效来源：{{ activeSourceLabel }}
             </Badge>
-            <Badge variant="outline" :class="localLoginBadgeClass">
-              本地扫码状态：{{ isLoggedIn ? '已登录' : '未登录' }}
+            <Badge v-if="authState.phase === 'syncing'" variant="outline" class="border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300">
+              <Loader2 class="mr-1 h-3 w-3 animate-spin" />同步中
             </Badge>
           </div>
-          <p class="mt-2 text-xs leading-5 text-muted-foreground">
-            {{ activeCookieSourceDescription }}
-          </p>
+          <p class="mt-2 text-xs leading-5 text-muted-foreground">{{ overallStatusText }}</p>
+          <p class="mt-1 text-[11px] leading-5 text-muted-foreground/80">{{ lifecycleHint }}</p>
         </div>
 
-        <div v-if="isLoggedIn" class="space-y-4">
-          <div class="flex items-center justify-between gap-3">
-            <a
-              :href="`https://space.bilibili.com/${navProfile?.uid}`"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="flex min-w-0 items-center gap-3 transition-opacity hover:opacity-80"
-            >
-              <Avatar class="h-10 w-10 border border-border">
-                <AvatarImage
-                  :src="navProfile?.face || 'https://static.hdslb.com/images/member/noface.gif'"
-                  referrerpolicy="no-referrer"
-                />
-                <AvatarFallback>
-                  <UserRound class="h-4 w-4 text-muted-foreground" />
-                </AvatarFallback>
-              </Avatar>
-
-              <div class="min-w-0">
-                <p class="flex items-center gap-1 truncate text-sm font-semibold">
-                  {{ navProfile?.uname || '已登录用户' }}
-                  <ExternalLink class="h-3 w-3 shrink-0" />
-                </p>
-                <p class="text-xs text-muted-foreground">UID: {{ navProfile?.uid }}</p>
-              </div>
-            </a>
-
-            <Button variant="outline" size="sm" @click="handleLogout">登出</Button>
-          </div>
-
-          <Separator />
-
-          <div class="flex flex-wrap gap-2 text-xs">
-            <Badge variant="outline">Lv.{{ navProfile?.level ?? 0 }}</Badge>
-            <Badge variant="outline">硬币: {{ navProfile?.money ?? 0 }}</Badge>
-            <Badge v-if="(navProfile?.vipStatus ?? 0) > 0" variant="secondary">{{ navProfile?.vipLabel || '大会员' }}</Badge>
-            <Badge class="border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" variant="outline">
-              Cookie 有效
-            </Badge>
+        <!-- 当前生效账号资料 -->
+        <div v-if="activeProfile" class="flex items-center justify-between gap-3">
+          <a
+            :href="`https://space.bilibili.com/${activeProfile.uid}`"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex min-w-0 items-center gap-3 transition-opacity hover:opacity-80"
+          >
+            <Avatar class="h-10 w-10 border border-border">
+              <AvatarImage :src="activeProfile.face || 'https://static.hdslb.com/images/member/noface.gif'" referrerpolicy="no-referrer" />
+              <AvatarFallback><UserRound class="h-4 w-4 text-muted-foreground" /></AvatarFallback>
+            </Avatar>
+            <div class="min-w-0">
+              <p class="flex items-center gap-1 truncate text-sm font-semibold">
+                {{ activeProfile.uname || '已登录用户' }}
+                <ExternalLink class="h-3 w-3 shrink-0" />
+              </p>
+              <p class="text-xs text-muted-foreground">UID: {{ activeProfile.uid }}</p>
+            </div>
+          </a>
+          <div class="flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-xs">
+            <Badge variant="outline">Lv.{{ activeProfile.level ?? 0 }}</Badge>
+            <Badge v-if="(activeProfile.vipStatus ?? 0) > 0" variant="secondary">{{ activeProfile.vipLabel || '大会员' }}</Badge>
           </div>
         </div>
 
-        <div v-else-if="shouldShowPrimaryLoginPrompt" class="space-y-3">
-          <p class="text-sm text-muted-foreground">
-            当前未检测到本地登录，可扫码登录为当前客户端提供本地 Cookie。
-          </p>
-          <Button class="w-full" @click="startLogin">
-            <QrCode class="h-4 w-4" />
-            扫码登录
+        <Separator v-if="activeProfile" />
+
+        <!-- 两个来源的子状态 -->
+        <div class="grid gap-2 sm:grid-cols-2">
+          <div class="rounded-lg border bg-background/40 px-3 py-2.5">
+            <div class="flex items-center justify-between gap-2">
+              <span class="flex items-center gap-1.5 text-xs font-medium">
+                <Cloud class="h-3.5 w-3.5 text-muted-foreground" />CookieCloud
+              </span>
+              <Badge variant="outline" :class="cloudStatus.class" class="text-[10px]">{{ cloudStatus.text }}</Badge>
+            </div>
+            <p class="mt-1.5 truncate text-[11px] text-muted-foreground">
+              <template v-if="cloudState.profile">{{ cloudState.profile.uname }} · UID {{ cloudState.profile.uid }}</template>
+              <template v-else-if="cloudState.lastError">{{ cloudState.lastError }}</template>
+              <template v-else-if="!cloudState.configured">在下方填写 Key / 密码后启用</template>
+              <template v-else>最近成功：{{ formatSyncTime(cloudState.lastSuccessAt) }}</template>
+            </p>
+          </div>
+
+          <div class="rounded-lg border bg-background/40 px-3 py-2.5">
+            <div class="flex items-center justify-between gap-2">
+              <span class="flex items-center gap-1.5 text-xs font-medium">
+                <QrCode class="h-3.5 w-3.5 text-muted-foreground" />本地扫码
+              </span>
+              <Badge variant="outline" :class="localStatus.class" class="text-[10px]">{{ localStatus.text }}</Badge>
+            </div>
+            <div class="mt-1.5 flex items-center justify-between gap-2">
+              <p class="min-w-0 truncate text-[11px] text-muted-foreground">
+                <template v-if="localProfile">{{ localProfile.uname }} · UID {{ localProfile.uid }}</template>
+                <template v-else>为当前客户端补充一份本地 Cookie</template>
+              </p>
+              <Button v-if="isLocalLoggedIn" variant="ghost" size="sm" class="h-6 shrink-0 px-2 text-[11px]" @click="handleLocalLogout">登出</Button>
+              <Button v-else variant="outline" size="sm" class="h-6 shrink-0 px-2 text-[11px]" @click="startLogin">扫码登录</Button>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- CookieCloud 配置 -->
+    <Card class="bg-background/60">
+      <CardHeader class="pb-3">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle class="text-base">CookieCloud 配置</CardTitle>
+            <CardDescription>仅保存在当前客户端本地，不会上传服务器；保存后客户端会自动同步并校验</CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="!cloudState.configured || cloudState.phase === 'syncing'"
+            @click="emit('sync-cookie-cloud')"
+          >
+            <Loader2 v-if="cloudState.phase === 'syncing'" class="h-4 w-4 animate-spin" />
+            <RefreshCw v-else class="h-4 w-4" />
+            立即同步
           </Button>
         </div>
-
-        <div v-else class="space-y-3 rounded-lg border bg-background/40 px-3 py-3">
-          <p class="text-sm text-muted-foreground">
-            当前核心已通过 CookieCloud 持有可用 Cookie。本地扫码登录不是必需项，如需给当前客户端补充一份本地 Cookie，可手动执行扫码登录。
-          </p>
-          <div class="flex justify-end">
-            <Button variant="outline" size="sm" @click="startLogin">
-              <QrCode class="h-4 w-4" />
-              备用扫码登录
-            </Button>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <p v-if="cloudState.lastError" class="text-xs text-destructive">最近错误：{{ cloudState.lastError }}</p>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
+          <Input :model-value="props.localConfig.cookieCloudHost" placeholder="https://cookie.danmakus.com" @update:model-value="assignCookieCloudHost" />
+        </div>
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">Key</label>
+            <Input :model-value="props.localConfig.cookieCloudKey" placeholder="Key" @update:model-value="assignCookieCloudText('cookieCloudKey', $event)" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">密码</label>
+            <Input :model-value="props.localConfig.cookieCloudPassword" type="password" placeholder="密码" @update:model-value="assignCookieCloudText('cookieCloudPassword', $event)" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
+            <Input :model-value="props.localConfig.cookieRefreshInterval" type="number" min="60" placeholder="3600" @update:model-value="assignCookieRefreshInterval" />
           </div>
         </div>
       </CardContent>
@@ -318,3 +371,5 @@ onBeforeUnmount(() => {
     </Dialog>
   </div>
 </template>
+
+
