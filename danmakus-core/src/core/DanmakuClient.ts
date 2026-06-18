@@ -4,6 +4,7 @@ import { AuthManager } from './AuthManager.js';
 import { BilibiliLiveWsAuthApi } from './BilibiliLiveWsAuthApi.js';
 import { ConfigManager } from './ConfigManager.js';
 import { RuntimeConnection } from './RuntimeConnection.js';
+import { RuntimeEndpoints } from './RuntimeEndpoints.js';
 import { StreamerStatusManager } from './StreamerStatusManager.js';
 import { AccountApiClient } from './AccountApiClient.js';
 import { readCookieValue } from './BilibiliCookie.js';
@@ -94,6 +95,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private runtimeConnection?: RuntimeConnection;
   private statusManager?: StreamerStatusManager;
   private accountClient?: AccountApiClient;
+  // 上传/同步/心跳/主播状态共用的唯一地址源，跟随服务端下发的 runtimeUrl。
+  private readonly runtimeEndpoints: RuntimeEndpoints;
   private clientId: string;
   private connections: Map<number, ConnectionInfo> = new Map();
   private holdingRoomCoordinator: DanmakuHoldingRoomCoordinator;
@@ -249,10 +252,13 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.configManager.validate();
     this.applyRuntimeTunings(this.configManager.getConfig());
 
+    this.runtimeEndpoints = new RuntimeEndpoints(this.configManager.getConfig().runtimeUrl);
+
     if (config.accountToken) {
       this.accountClient = new AccountApiClient(
         config.accountToken,
-        config.fetchImpl
+        config.fetchImpl,
+        this.runtimeEndpoints
       );
     }
 
@@ -275,6 +281,9 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.rebuildAuthManager(finalConfig);
     this.rebuildLiveWsAuthApi(finalConfig);
 
+    // 更新唯一地址源；上传/同步/心跳/状态四处都懒读它，无需逐个 setX。
+    this.runtimeEndpoints.setRuntimeUrl(finalConfig.runtimeUrl);
+
     if (this.runtimeConnection) {
       void this.runtimeConnection.disconnect().catch(() => undefined);
     }
@@ -284,7 +293,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       finalConfig.autoReconnect,
       finalConfig.reconnectInterval,
       this.buildRuntimeHeaders(finalConfig),
-      this.logger.child('Runtime')
+      this.logger.child('Runtime'),
+      this.runtimeEndpoints
     );
     this.setupRuntimeEvents();
 
@@ -296,7 +306,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       finalConfig.statusCheckInterval,
       finalConfig.runtimeUrl,
       finalConfig.fetchImpl,
-      this.logger.child('StatusManager')
+      this.logger.child('StatusManager'),
+      this.runtimeEndpoints
     );
     this.statusManager.updateHoldingRooms(this.holdingRoomCoordinator.getHoldingRoomIds());
     this.statusManager.updateRecordingRooms(this.recordingRoomIds);
@@ -1662,12 +1673,16 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       await this.runtimeConnection.disconnect();
     }
 
+    // 唯一地址源切换，上传/同步/心跳/状态四处下次请求即生效。
+    this.runtimeEndpoints.setRuntimeUrl(config.runtimeUrl);
+
     this.runtimeConnection = new RuntimeConnection(
       config.runtimeUrl,
       config.autoReconnect,
       config.reconnectInterval,
       this.buildRuntimeHeaders(config),
-      this.logger.child('Runtime')
+      this.logger.child('Runtime'),
+      this.runtimeEndpoints
     );
     this.setupRuntimeEvents();
 

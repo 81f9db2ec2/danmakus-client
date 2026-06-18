@@ -7,6 +7,8 @@ import {
 import { ScopedLogger } from './Logger.js';
 import { encodeArchiveUploadEnvelope } from './DanmakuUploadCodec.js';
 import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
+import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
+import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 import { normalizeBinaryPayload } from './RawPacketCodec.js';
 
 type RuntimeEnvelope<T> = {
@@ -58,7 +60,8 @@ const buildArchiveUploadRequest = (
 export class RuntimeConnection {
   private isConnected = false;
   private hasConnectedOnce = false;
-  private readonly runtimeBaseUrl: string;
+  private readonly resolvedBaseUrl: string;
+  private readonly endpoints?: RuntimeEndpoints;
   private readonly token?: string;
   private readonly clientId?: string;
   private readonly passthroughHeaders?: Record<string, string>;
@@ -68,13 +71,20 @@ export class RuntimeConnection {
     _autoReconnect: boolean = true,
     _reconnectInterval: number = 5000,
     runtimeHeaders?: Record<string, string>,
-    private logger: ScopedLogger = new ScopedLogger('RuntimeConnection')
+    private logger: ScopedLogger = new ScopedLogger('RuntimeConnection'),
+    endpoints?: RuntimeEndpoints
   ) {
     const runtimeContext = this.resolveRuntimeContext(url, runtimeHeaders);
-    this.runtimeBaseUrl = runtimeContext.runtimeBaseUrl;
+    this.resolvedBaseUrl = runtimeContext.runtimeBaseUrl;
+    this.endpoints = endpoints;
     this.token = runtimeContext.token;
     this.clientId = runtimeContext.clientId;
     this.passthroughHeaders = runtimeContext.passthroughHeaders;
+  }
+
+  // 上传/房间分配地址懒读：注入共享源时始终取其当前值，否则用构造时解析的地址。
+  private get runtimeBaseUrl(): string {
+    return this.endpoints?.getCoreRuntimeBaseUrl() ?? this.resolvedBaseUrl;
   }
 
   async connect(_scheduleOnFailure: boolean = true): Promise<boolean> {
@@ -315,41 +325,16 @@ export class RuntimeConnection {
       const parsed = new URL(url);
       token = token || parsed.searchParams.get('token') || undefined;
       clientId = clientId || parsed.searchParams.get('clientId') || undefined;
-
-      const alreadyNormalized = parsed.pathname.endsWith('/api/v2/core-runtime')
-        || parsed.pathname.endsWith('/api/core-runtime');
-      if (!alreadyNormalized) {
-        parsed.pathname = parsed.pathname.includes('/api/v2/')
-          ? '/api/v2/core-runtime'
-          : '/api/core-runtime';
-      }
-
-      parsed.search = '';
-      parsed.hash = '';
-      return {
-        runtimeBaseUrl: parsed.toString().replace(/\/+$/, ''),
-        token,
-        clientId,
-        passthroughHeaders: Object.keys(passthroughHeaders).length > 0 ? passthroughHeaders : undefined
-      };
     } catch {
-      const normalized = url.trim();
-      let runtimeBaseUrl: string;
-      if (/\/api\/v2\/core-runtime\b/.test(normalized) || /\/api\/core-runtime\b/.test(normalized)) {
-        runtimeBaseUrl = normalized;
-      } else if (/\/api\/v2\//.test(normalized)) {
-        runtimeBaseUrl = normalized.replace(/\/api\/v2\/.*/, '/api/v2/core-runtime');
-      } else {
-        runtimeBaseUrl = `${normalized.replace(/\/+$/, '')}/api/core-runtime`;
-      }
-
-      return {
-        runtimeBaseUrl: runtimeBaseUrl.replace(/\/+$/, ''),
-        token,
-        clientId,
-        passthroughHeaders: Object.keys(passthroughHeaders).length > 0 ? passthroughHeaders : undefined
-      };
+      // 非完整 URL 时无法解析 query 参数，token/clientId 仅来自 headers。
     }
+
+    return {
+      runtimeBaseUrl: resolveCoreRuntimeBaseUrl(url),
+      token,
+      clientId,
+      passthroughHeaders: Object.keys(passthroughHeaders).length > 0 ? passthroughHeaders : undefined
+    };
   }
 
   private normalizeRoomIds(value: number[] | undefined): number[] {

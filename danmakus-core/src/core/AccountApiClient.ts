@@ -9,6 +9,8 @@ import {
   UserInfo,
 } from '../types/index.js';
 import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
+import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
+import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 
 type HeartbeatRuntimeStateResult = {
   configTag: string | null;
@@ -29,16 +31,42 @@ const DEFAULT_BACKEND_REQUEST_TIMEOUT_MS = 15000;
 export class AccountApiClient {
   private fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   private accountBaseUrl: string;
-  private coreRuntimeBaseUrl: string;
+  private fallbackRuntimeBaseUrl: string;
+  private endpoints?: RuntimeEndpoints;
   private coreConfigTag: string | null = null;
 
   constructor(
     private token: string,
-    fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+    endpoints?: RuntimeEndpoints
   ) {
     this.fetchImpl = fetchImpl ?? fetch;
     this.accountBaseUrl = this.normalizeBaseUrl(DEFAULT_ACCOUNT_API_BASE);
-    this.coreRuntimeBaseUrl = this.resolveCoreRuntimeBaseUrl(this.accountBaseUrl);
+    this.fallbackRuntimeBaseUrl = resolveCoreRuntimeBaseUrl(this.accountBaseUrl);
+    this.endpoints = endpoints;
+  }
+
+  /**
+   * 设置运行态接口（sync/heartbeat/clients/state）基础地址，使其跟随服务端下发的 runtimeUrl。
+   * 与弹幕上传、主播状态共用同一解析逻辑，避免多处地址不一致。account 中心接口不受影响。
+   * 注入了共享 RuntimeEndpoints 时优先走共享源；否则回退到本地字段（独立使用场景）。
+   */
+  setCoreRuntimeBaseUrl(runtimeUrl: string | null | undefined): void {
+    if (this.endpoints) {
+      this.endpoints.setRuntimeUrl(runtimeUrl);
+      return;
+    }
+    const resolved = resolveCoreRuntimeBaseUrl(runtimeUrl ?? '');
+    this.fallbackRuntimeBaseUrl = resolved || resolveCoreRuntimeBaseUrl(this.accountBaseUrl);
+  }
+
+  // 运行态地址懒读：始终取共享源的当前值，杜绝持有过期快照。
+  private get coreRuntimeBaseUrl(): string {
+    return this.endpoints?.getCoreRuntimeBaseUrl() ?? this.fallbackRuntimeBaseUrl;
+  }
+
+  getCoreRuntimeBaseUrl(): string {
+    return this.coreRuntimeBaseUrl;
   }
 
   async getCoreConfig(): Promise<CoreControlConfigDto> {
@@ -258,31 +286,5 @@ export class AccountApiClient {
 
   private normalizeBaseUrl(url: string): string {
     return url.replace(/\/+$/, '');
-  }
-
-  private resolveCoreRuntimeBaseUrl(accountBaseUrl: string): string {
-    const normalized = this.normalizeBaseUrl(accountBaseUrl);
-    try {
-      const parsed = new URL(normalized);
-      const path = parsed.pathname.replace(/\/+$/, '');
-      if (/\/account$/i.test(path)) {
-        parsed.pathname = path.replace(/\/account$/i, '/core-runtime');
-      } else if (/\/api\/v2(\/|$)/i.test(path)) {
-        parsed.pathname = '/api/v2/core-runtime';
-      } else {
-        parsed.pathname = `${path}/core-runtime`;
-      }
-      parsed.search = '';
-      parsed.hash = '';
-      return this.normalizeBaseUrl(parsed.toString());
-    } catch {
-      if (/\/account$/i.test(normalized)) {
-        return normalized.replace(/\/account$/i, '/core-runtime');
-      }
-      if (/\/api\/v2(\/|$)/i.test(normalized)) {
-        return normalized.replace(/\/api\/v2(?:\/.*)?$/i, '/api/v2/core-runtime');
-      }
-      return `${normalized}/core-runtime`;
-    }
   }
 }

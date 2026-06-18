@@ -1,43 +1,17 @@
 import { StreamerStatus } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
+import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
+import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 import { wrapBilibiliFetch } from './BilibiliUserAgent.js';
 
+// streamer-status 与 core-runtime 同源同路径前缀，统一从共享解析的 base 派生，避免 host/版本路径漏改。
 const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
-  try {
-    const parsed = new URL(runtimeUrl);
-
-    if (parsed.pathname.endsWith('/api/v2/core-runtime')) {
-      parsed.pathname = parsed.pathname.replace(/\/api\/v2\/core-runtime$/, '/api/v2/streamer-status');
-      parsed.search = '';
-      return parsed.toString();
-    }
-
-    if (parsed.pathname.endsWith('/api/core-runtime')) {
-      parsed.pathname = parsed.pathname.replace(/\/api\/core-runtime$/, '/api/streamer-status');
-      parsed.search = '';
-      return parsed.toString();
-    }
-
-    if (parsed.pathname.includes('/api/v2/')) {
-      parsed.pathname = '/api/v2/streamer-status';
-      parsed.search = '';
-      return parsed.toString();
-    }
-
-    parsed.pathname = '/api/streamer-status';
-    parsed.search = '';
-    return parsed.toString();
-  } catch {
-    const normalized = runtimeUrl.trim();
-    if (/\/api\/v2\/core-runtime\b/.test(normalized)) {
-      return normalized.replace(/\/api\/v2\/core-runtime\b/, '/api/v2/streamer-status');
-    }
-    if (/\/api\/core-runtime\b/.test(normalized)) {
-      return normalized.replace(/\/api\/core-runtime\b/, '/api/streamer-status');
-    }
-    return normalized;
+  const base = resolveCoreRuntimeBaseUrl(runtimeUrl);
+  if (base.endsWith('/api/v2/core-runtime')) {
+    return base.replace(/\/api\/v2\/core-runtime$/, '/api/v2/streamer-status');
   }
+  return base.replace(/\/api\/core-runtime$/, '/api/streamer-status');
 };
 
 const normalizeRoomIds = (rooms: number[]): number[] => Array.from(new Set(
@@ -51,7 +25,8 @@ export class StreamerStatusManager {
   private statusCache: Map<number, StreamerStatus> = new Map();
   private checkTimer?: ReturnType<typeof setInterval>;
   private fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-  private statusApiUrl: string;
+  private resolvedStatusApiUrl: string;
+  private endpoints?: RuntimeEndpoints;
   private holdingRooms: number[] = [];
   private recordingRooms: number[] = [];
   private lastManualRefreshAt = 0;
@@ -60,10 +35,17 @@ export class StreamerStatusManager {
     private checkInterval: number = 30, // 秒
     runtimeUrl: string,
     fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
-    private logger: ScopedLogger = new ScopedLogger('StreamerStatusManager')
+    private logger: ScopedLogger = new ScopedLogger('StreamerStatusManager'),
+    endpoints?: RuntimeEndpoints
   ) {
     this.fetch = wrapBilibiliFetch(fetchImpl);
-    this.statusApiUrl = buildStreamerStatusApiUrl(runtimeUrl);
+    this.resolvedStatusApiUrl = buildStreamerStatusApiUrl(runtimeUrl);
+    this.endpoints = endpoints;
+  }
+
+  // 状态接口地址懒读：注入共享源时取其当前派生值，否则用构造时解析的地址。
+  private get statusApiUrl(): string {
+    return this.endpoints?.getStreamerStatusBaseUrl() ?? this.resolvedStatusApiUrl;
   }
 
   /**
