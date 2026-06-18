@@ -42,6 +42,14 @@ export class ConfigManager {
     return Math.min(100, Math.floor(next));
   }
 
+  private normalizeRuntimeUrl(value?: string | null): string {
+    if (typeof value !== 'string') {
+      return DEFAULT_RUNTIME_URL;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed.replace(/\/+$/, '') : DEFAULT_RUNTIME_URL;
+  }
+
   private normalizeUidList(value: number[] | null | undefined): number[] {
     if (!Array.isArray(value)) {
       return [];
@@ -56,8 +64,6 @@ export class ConfigManager {
   }
 
   constructor(options: Partial<DanmakuConfig> = {}) {
-    const { runtimeUrl: _ignoredRuntimeUrl, ...safeOptions } = options;
-
     this.config = {
       maxConnections: 15,
       cookieCloudHost: DEFAULT_COOKIE_CLOUD_HOST,
@@ -80,8 +86,8 @@ export class ConfigManager {
       lockAcquireRetryDelay: 1200,
       lockAcquireForceTakeover: false,
       errorHistoryLimit: 50,
-      ...safeOptions,
-      runtimeUrl: DEFAULT_RUNTIME_URL,
+      ...options,
+      runtimeUrl: this.normalizeRuntimeUrl(options.runtimeUrl),
       // 录制主播来源统一由 account.Recording（服务端分配）管理
       streamers: []
     };
@@ -137,7 +143,7 @@ export class ConfigManager {
     this.config = {
       ...this.config,
       maxConnections: remote.maxConnections,
-      runtimeUrl: DEFAULT_RUNTIME_URL,
+      runtimeUrl: this.normalizeRuntimeUrl(remote.runtimeUrl),
       autoReconnect: remote.autoReconnect,
       reconnectInterval: remote.reconnectInterval,
       statusCheckInterval: remote.statusCheckInterval,
@@ -180,12 +186,12 @@ export class ConfigManager {
    * 更新配置
    */
   updateConfig(updates: Partial<DanmakuConfig>): void {
-    const { runtimeUrl: _ignoredRuntimeUrl, ...safeUpdates } = updates;
-
     this.config = {
       ...this.config,
-      ...safeUpdates,
-      runtimeUrl: DEFAULT_RUNTIME_URL,
+      ...updates,
+      runtimeUrl: updates.runtimeUrl !== undefined
+        ? this.normalizeRuntimeUrl(updates.runtimeUrl)
+        : this.config.runtimeUrl,
       // 外部更新时也不允许写入本地主播列表
       streamers: []
     };

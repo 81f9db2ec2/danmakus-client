@@ -94,4 +94,36 @@ describe('ConfigManager CookieCloud overrides', () => {
 
     expect(manager.getConfig().excludedServerRoomUserIds).toEqual([100, 200, 300]);
   });
+
+  test('applies server-dispatched runtimeUrl and falls back when empty', () => {
+    const manager = new ConfigManager();
+
+    manager.applyAccountConfig({
+      maxConnections: 5,
+      runtimeUrl: 'https://upload-2.danmakus.com/api/v2/core-runtime/',
+      autoReconnect: true,
+      reconnectInterval: 5000,
+      statusCheckInterval: 30,
+      streamers: [],
+      requestServerRooms: true,
+      allowedAreas: [],
+      allowedParentAreas: []
+    } as any);
+
+    expect(manager.getConfig().runtimeUrl).toBe('https://upload-2.danmakus.com/api/v2/core-runtime');
+
+    manager.applyAccountConfig({
+      maxConnections: 5,
+      runtimeUrl: '',
+      autoReconnect: true,
+      reconnectInterval: 5000,
+      statusCheckInterval: 30,
+      streamers: [],
+      requestServerRooms: true,
+      allowedAreas: [],
+      allowedParentAreas: []
+    } as any);
+
+    expect(manager.getConfig().runtimeUrl).toBe('https://backend.danmakus.com/api/v2/core-runtime');
+  });
 });
