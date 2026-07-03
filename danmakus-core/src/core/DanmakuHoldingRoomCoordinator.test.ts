@@ -5,6 +5,8 @@ import { StreamerStatusManager } from "./StreamerStatusManager.js";
 
 function createCoordinatorContext(options?: {
   requestServerRooms?: boolean;
+  maxConnections?: number;
+  capacityOverride?: number;
   holdingRooms?: number[];
   holdingRoomShortfall?: RuntimeRoomPullShortfallDto | null;
   recordingRooms?: number[];
@@ -52,7 +54,8 @@ function createCoordinatorContext(options?: {
 
   const config: DanmakuConfig = {
     runtimeUrl: "https://example.com/api/v2/core-runtime",
-    maxConnections: 5,
+    maxConnections: options?.maxConnections ?? 5,
+    capacityOverride: options?.capacityOverride,
     requestServerRooms: options?.requestServerRooms ?? true,
     streamers: [],
   } as DanmakuConfig;
@@ -318,6 +321,37 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     expect(coordinator.getHoldingRoomShortfall()).toBeNull();
     expect(getStatusChangedCallCount()).toBe(1);
     expect(getSyncCallCount()).toBe(1);
+  });
+
+  it("uses local capacityOverride as the effective assignment capacity", async () => {
+    let requestPayload: Record<string, unknown> | undefined;
+    const { coordinator } = createCoordinatorContext({
+      maxConnections: 20,
+      capacityOverride: 40,
+      holdingRooms: Array.from({ length: 20 }, (_, index) => 1000 + index),
+      requestRooms: async (payload) => {
+        requestPayload = payload;
+        return {
+          holdingRooms: Array.from({ length: 40 }, (_, index) => 1000 + index),
+          newlyAssignedRooms: Array.from({ length: 20 }, (_, index) => 2000 + index),
+          droppedRooms: [],
+          effectiveCapacity: 40,
+          nextRequestAfter: 0,
+        };
+      },
+    });
+
+    const success = await coordinator.refreshHoldingRoomsIfNeeded(20, "capacity-override", { force: true });
+
+    expect(success).toBe(true);
+    expect(requestPayload).toEqual({
+      reason: "capacity-override",
+      holdingRooms: Array.from({ length: 20 }, (_, index) => 1000 + index),
+      connectedRooms: [],
+      desiredCount: 20,
+      capacityOverride: 40,
+    });
+    expect(coordinator.getHoldingRoomIds()).toEqual(Array.from({ length: 40 }, (_, index) => 1000 + index));
   });
 
   it("does not sync runtime state on a no-op connections update", () => {

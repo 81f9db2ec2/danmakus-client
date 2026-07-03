@@ -141,9 +141,10 @@ export class DanmakuHoldingRoomCoordinator {
     this.pruneOfflineHoldingRooms(statusManager);
     this.refreshHoldingRoomDisconnectState(now);
     this.releaseStaleDisconnectedHoldingRooms(now);
-    this.trimHoldingRoomsToCapacity(config.maxConnections);
+    const capacity = this.resolveConnectionCapacity(config);
+    this.trimHoldingRoomsToCapacity(capacity);
 
-    const roomsToConnect = this.resolveRoomsToConnect(statusManager, config);
+    const roomsToConnect = this.resolveRoomsToConnect(statusManager, capacity);
     const currentConnections = Array.from(this.context.getConnections().keys());
     const targetRooms = roomsToConnect.map(room => room.roomId);
 
@@ -174,7 +175,7 @@ export class DanmakuHoldingRoomCoordinator {
     }
 
     if (runtimeConnected) {
-      void this.refreshHoldingRoomsIfNeeded(config.maxConnections);
+      void this.refreshHoldingRoomsIfNeeded(capacity);
     }
 
     if (!this.areRoomIdsEqual(previousHoldingRooms, this.holdingRoomIds)) {
@@ -343,20 +344,20 @@ export class DanmakuHoldingRoomCoordinator {
     }
 
     const config = this.context.getConfig();
-    const roomsToConnect = this.resolveRoomsToConnect(statusManager, config);
+    const roomsToConnect = this.resolveRoomsToConnect(statusManager, this.resolveConnectionCapacity(config));
     return roomsToConnect.some(item => item.roomId === roomId);
   }
 
   private resolveRoomsToConnect(
     statusManager: StreamerStatusManager,
-    config: DanmakuConfig
+    maxConnections: number
   ): { roomId: number; priority: 'high' | 'server' }[] {
     const recordingRooms = this.context.getRecordingRoomIds().filter(roomId => this.holdingRoomIds.includes(roomId));
 
     return statusManager.getRoomsToConnect(
       recordingRooms,
       this.holdingRoomIds,
-      config.maxConnections
+      maxConnections
     );
   }
 
@@ -419,11 +420,8 @@ export class DanmakuHoldingRoomCoordinator {
     }
 
     const config = this.context.getConfig();
-    const overrideValue = Number(config.capacityOverride);
-    const capacityOverride = Number.isFinite(overrideValue) && overrideValue > 0
-      ? Math.min(100, Math.floor(overrideValue))
-      : undefined;
-    const capacity = Math.max(0, Math.min(Math.floor(maxConnections), capacityOverride ?? Math.floor(maxConnections), 100));
+    const capacityOverride = this.resolveCapacityOverride(config);
+    const capacity = this.resolveConnectionCapacity(config, maxConnections);
     const desiredCount = Math.max(0, capacity - this.holdingRoomIds.length);
     if (desiredCount <= 0 && !options?.force) {
       if (this.holdingRoomShortfall !== null) {
@@ -507,7 +505,21 @@ export class DanmakuHoldingRoomCoordinator {
   }
 
   private isServerAssignmentRequestEnabled(config: DanmakuConfig = this.context.getConfig()): boolean {
-    return Math.max(0, Math.floor(config.maxConnections)) > 0;
+    return this.resolveConnectionCapacity(config) > 0;
+  }
+
+  private resolveConnectionCapacity(
+    config: DanmakuConfig = this.context.getConfig(),
+    maxConnections: number = config.maxConnections
+  ): number {
+    return Math.max(0, Math.min(this.resolveCapacityOverride(config) ?? Math.floor(maxConnections), 100));
+  }
+
+  private resolveCapacityOverride(config: DanmakuConfig): number | undefined {
+    const overrideValue = Number(config.capacityOverride);
+    return Number.isFinite(overrideValue) && overrideValue > 0
+      ? Math.min(100, Math.floor(overrideValue))
+      : undefined;
   }
 
   private cloneHoldingRoomShortfall(shortfall: RuntimeRoomPullShortfallDto | null | undefined): RuntimeRoomPullShortfallDto | null {
