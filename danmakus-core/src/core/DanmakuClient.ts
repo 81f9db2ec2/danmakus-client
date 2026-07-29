@@ -38,6 +38,7 @@ const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
 const ACTIVE_RUNTIME_ERROR_RETENTION_MS = 5 * 60 * 1000;
 const LIVEWS_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
+const LIVEWS_HEARTBEAT_TIMEOUT_MS = 45_000;
 
 function generateClientId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -614,6 +615,9 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       this.recordError(normalizedError, { category: 'livews', code: 'LIVEWS_CONNECT_FAILED', roomId, recoverable: true });
       this.emit('error', normalizedError, roomId);
+      if (generation === this.runtimeGeneration && this.isRunning && !this.isStopping) {
+        this.updateConnections();
+      }
     }
   }
 
@@ -844,11 +848,43 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
    */
   private setupLiveWSEvents(liveWS: LiveWsConnection, roomId: number): void {
     const isCurrentConnection = (): boolean => this.connections.get(roomId)?.connection === liveWS;
+    let heartbeatTimeout: ReturnType<typeof setTimeout>;
+    const clearHeartbeatTimeout = () => clearTimeout(heartbeatTimeout);
+    const refreshHeartbeatTimeout = () => {
+      clearHeartbeatTimeout();
+      heartbeatTimeout = setTimeout(() => {
+        if (!isCurrentConnection()) {
+          return;
+        }
+        this.logger.warn(`房间 ${roomId} WebSocket 心跳超时，重新建立连接`);
+        liveWS.close();
+      }, LIVEWS_HEARTBEAT_TIMEOUT_MS);
+    };
+
+    refreshHeartbeatTimeout();
+    this.setupLiveWSLifecycleEvents(
+      liveWS,
+      roomId,
+      isCurrentConnection,
+      refreshHeartbeatTimeout,
+      clearHeartbeatTimeout,
+    );
+    this.setupLiveWSMessageEvents(liveWS, roomId, isCurrentConnection);
+  }
+
+  private setupLiveWSLifecycleEvents(
+    liveWS: LiveWsConnection,
+    roomId: number,
+    isCurrentConnection: () => boolean,
+    refreshHeartbeatTimeout: () => void,
+    clearHeartbeatTimeout: () => void,
+  ): void {
 
     liveWS.addEventListener('open', () => {
       if (!isCurrentConnection()) {
         return;
       }
+      refreshHeartbeatTimeout();
       this.logger.info(`房间 ${roomId} WebSocket连接已建立`);
     });
 
@@ -856,6 +892,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       if (!isCurrentConnection()) {
         return;
       }
+      refreshHeartbeatTimeout();
       this.logger.debug(`房间 ${roomId} 已进入直播间`);
     });
 
@@ -863,6 +900,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       if (!isCurrentConnection()) {
         return;
       }
+      refreshHeartbeatTimeout();
       this.logger.debug(`房间 ${roomId} heartbeat`, data);
     });
 
@@ -870,26 +908,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       if (!isCurrentConnection()) {
         return;
       }
-      const connectionInfo = this.connections.get(roomId);
-      const code = typeof event?.code === 'number' ? event.code : -1;
-      const reason = typeof event?.reason === 'string' ? event.reason : '';
-      this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
-      this.connections.delete(roomId);
-      this.emit('disconnected', roomId);
-      this.statusManager?.refreshNow();
-
-      if (connectionInfo?.priority === 'server') {
-        const lifetimeMs = Date.now() - connectionInfo.connectedAt;
-        if (lifetimeMs < 10_000) {
-          this.holdingRoomCoordinator.removeHoldingRoom(roomId);
-        }
-      }
-
-      void this.syncRuntimeState();
-
-      if (!this.isStopping && this.isRunning) {
-        this.updateConnections();
-      }
+      clearHeartbeatTimeout();
+      this.handleLiveWSClose(roomId, event);
     });
 
     liveWS.addEventListener('error', (event: any) => {
@@ -901,6 +921,32 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.recordError(error, { category: 'livews', code: 'LIVEWS_RUNTIME_ERROR', roomId, recoverable: true });
       this.emit('error', error, roomId);
     });
+  }
+
+  private handleLiveWSClose(roomId: number, event: any): void {
+    const connectionInfo = this.connections.get(roomId);
+    const code = typeof event?.code === 'number' ? event.code : -1;
+    const reason = typeof event?.reason === 'string' ? event.reason : '';
+    this.logger.warn(`房间 ${roomId} WebSocket连接已关闭 (code=${code}, reason=${reason || 'none'})`);
+    this.connections.delete(roomId);
+    this.emit('disconnected', roomId);
+    this.statusManager?.refreshNow();
+
+    if (connectionInfo?.priority === 'server' && Date.now() - connectionInfo.connectedAt < 10_000) {
+      this.holdingRoomCoordinator.removeHoldingRoom(roomId);
+    }
+
+    void this.syncRuntimeState();
+    if (!this.isStopping && this.isRunning) {
+      this.updateConnections();
+    }
+  }
+
+  private setupLiveWSMessageEvents(
+    liveWS: LiveWsConnection,
+    roomId: number,
+    isCurrentConnection: () => boolean,
+  ): void {
 
     liveWS.addEventListener('message', (event: any) => {
       if (!isCurrentConnection()) {
