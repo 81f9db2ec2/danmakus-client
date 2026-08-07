@@ -92,7 +92,6 @@ export interface DanmakuConfig {
   messageRetryMaxDelay?: number;
   messageRetryMaxAttempts?: number;
   batchUploadSize?: number;
-  heartbeatInterval?: number;
   lockAcquireRetryCount?: number;
   lockAcquireRetryDelay?: number;
   lockAcquireForceTakeover?: boolean;
@@ -312,6 +311,16 @@ export interface CoreRuntimeStateDto {
   holdingRoomShortfall?: RuntimeRoomPullShortfallDto | null;
   lastError?: string | null;
   lastHeartbeat: string | number | null;
+}
+
+export interface CoreHeartbeatStateDto {
+  clientId: string;
+  clientVersion?: string | null;
+  isRunning: boolean;
+  runtimeConnected: boolean;
+  cookieValid: boolean;
+  messageCount: number;
+  lastError?: string | null;
 }
 
 export interface CoreControlStateSnapshot {

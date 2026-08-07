@@ -17,6 +17,7 @@ import type { LocalAppConfigDto } from '../../types/api';
 const props = defineProps<{
   localConfig: LocalAppConfigDto;
   isDesktopRuntime: boolean;
+  isMacosDesktopRuntime: boolean;
   updaterSupported: boolean;
   appUpdateBusy: boolean;
   checkingAppUpdate: boolean;
@@ -197,6 +198,14 @@ const confirmRebuildDatabase = () => {
             <p class="text-[11px] text-muted-foreground">开启后点关闭不会退出应用</p>
           </div>
           <Switch v-model:model-value="props.localConfig.minimizeToTray" :disabled="!isDesktopRuntime" />
+        </div>
+
+        <div v-if="isMacosDesktopRuntime" class="sm:col-span-2 flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5" title="主窗口隐藏后同时隐藏 Dock 图标">
+          <div>
+            <p class="text-xs font-medium">关闭窗口后隐藏 Dock 图标</p>
+            <p class="text-[11px] text-muted-foreground">从菜单栏恢复主窗口后会重新显示 Dock 图标</p>
+          </div>
+          <Switch v-model:model-value="props.localConfig.hideDockIconWhenWindowHidden" :disabled="!localConfig.minimizeToTray" />
         </div>
 
         <div class="sm:col-span-2 flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3 py-2.5" title="应用启动完成后自动启动核心录制">

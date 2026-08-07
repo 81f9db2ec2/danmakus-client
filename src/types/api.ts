@@ -17,6 +17,7 @@ export interface LocalAppConfigDto {
   autoStart: boolean;
   startMinimized: boolean;
   minimizeToTray: boolean;
+  hideDockIconWhenWindowHidden: boolean;
   autoStartRecording: boolean;
   recordingLiveNotificationUids: number[];
   cookieCloudKey: string;

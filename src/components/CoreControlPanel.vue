@@ -5,7 +5,7 @@ import { getDanmakuAreas } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
 import { RUNTIME_URL } from '../services/env';
 import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http';
-import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
+import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, isMacosDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
 import { liveSessionOutbox, type LiveSessionOutboxDatabaseInfo } from '../services/liveSessionOutbox';
 import { APP_UPDATE_CHECK_INTERVAL_MS, checkForUpdate, installLatestUpdate, updaterEnabled, type AvailableUpdate } from '../services/updater';
 import type { CoreControlConfigDto, LocalAppConfigDto } from '../types/api';
@@ -20,6 +20,7 @@ import CoreControlSettingsTab from './core-control/CoreControlSettingsTab.vue';
 const token = ref(getAuthToken());
 const currentPage = ref('dashboard');
 const isDesktopApp = isDesktopRuntime();
+const isMacosDesktopApp = isMacosDesktopRuntime();
 const runtimeFixedUrl = RUNTIME_URL;
 const createCoreConfigDraft = (): CoreControlConfigDto => ({
   maxConnections: 5,
@@ -824,17 +825,23 @@ watch(
 onMounted(async () => {
   if (isDesktopApp) {
     try {
-      await setupTrayInTs();
+      await setupTrayInTs(() => localConfig.hideDockIconWhenWindowHidden);
     } catch (error) {
       console.error(error);
       toast.error(error instanceof Error ? error.message : '初始化托盘失败');
     }
     startAutoAppUpdatePoll();
-    closeToTrayUnlisten = await registerCloseToTrayHandler(() => localConfig.minimizeToTray);
+    closeToTrayUnlisten = await registerCloseToTrayHandler(
+      () => localConfig.minimizeToTray,
+      () => localConfig.hideDockIconWhenWindowHidden
+    );
     await syncDesktopLocalConfig();
     if (localConfig.startMinimized) {
       try {
-        await hideMainWindow({ notify: false });
+        await hideMainWindow({
+          notify: false,
+          hideDockIcon: localConfig.hideDockIconWhenWindowHidden
+        });
       } catch (error) {
         console.error(error);
       }
@@ -880,7 +887,7 @@ onBeforeUnmount(() => {
 
             <CoreControlSettingsTab v-else-if="currentPage === 'settings'" key="settings" :core-config="coreConfigDraft" :local-config="localConfig" :available-areas="availableAreas" :recordings="recordings" :refreshing-recordings="refreshingRecordings" :adding-recording="addingRecording" :removing-recording-uid="removingRecordingUid" :updating-recording-uid="updatingRecordingUid" :saving-config="savingConfig" :importing-follows="importingFollows" :import-follows-progress="importFollowsProgress" @save-config="handleSaveConfig" @refresh-recordings="refreshRecordingList" @add-recording="handleAddRecording" @remove-recording="handleRemoveRecording" @update-recording-public="handleUpdateRecordingPublic" @import-follows="handleImportFollows" />
 
-            <CoreControlAppTab v-else-if="currentPage === 'app'" key="app" :local-config="localConfig" :is-desktop-runtime="isDesktopApp" :updater-supported="isUpdaterSupported" :app-update-busy="appUpdateBusy" :checking-app-update="checkingAppUpdate" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" :database-info="databaseInfo" :loading-database-info="loadingDatabaseInfo" :rebuilding-database="rebuildingDatabase" @check-app-update="handleCheckAppUpdate" @install-app-update="handleInstallAppUpdate" @refresh-database-info="refreshDatabaseInfo(false)" @rebuild-database="handleRebuildDatabase" />
+            <CoreControlAppTab v-else-if="currentPage === 'app'" key="app" :local-config="localConfig" :is-desktop-runtime="isDesktopApp" :is-macos-desktop-runtime="isMacosDesktopApp" :updater-supported="isUpdaterSupported" :app-update-busy="appUpdateBusy" :checking-app-update="checkingAppUpdate" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" :database-info="databaseInfo" :loading-database-info="loadingDatabaseInfo" :rebuilding-database="rebuildingDatabase" @check-app-update="handleCheckAppUpdate" @install-app-update="handleInstallAppUpdate" @refresh-database-info="refreshDatabaseInfo(false)" @rebuild-database="handleRebuildDatabase" />
 
             <div v-else-if="currentPage === 'bilibili'" key="bilibili">
               <h2 class="mb-4 text-xl font-semibold tracking-tight">Bilibili 连接管理</h2>

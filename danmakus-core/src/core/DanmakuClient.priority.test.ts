@@ -760,3 +760,41 @@ describe("DanmakuClient room pull flow", () => {
     expect(client.connections.has(4455)).toBe(true);
   });
 });
+
+describe("DanmakuClient sparse heartbeat", () => {
+  it("sends only fields accepted by the heartbeat endpoint", () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      streamers: [],
+    });
+
+    expect(Object.keys(client.buildRuntimeHeartbeatPayload()).sort()).toEqual([
+      "clientId",
+      "clientVersion",
+      "cookieValid",
+      "isRunning",
+      "lastError",
+      "messageCount",
+      "runtimeConnected",
+    ]);
+  });
+
+  it("schedules control heartbeats between 10 and 12 seconds", () => {
+    const client: any = new DanmakuClient({
+      runtimeUrl: "https://example.com/api/v2/core-runtime",
+      maxConnections: 5,
+      streamers: [],
+    });
+    const originalRandom = Math.random;
+
+    try {
+      Math.random = () => 0;
+      expect(client.runtimeSync.getNextControlPollDelay()).toBe(10_000);
+      Math.random = () => 0.9999;
+      expect(client.runtimeSync.getNextControlPollDelay()).toBe(12_000);
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+});

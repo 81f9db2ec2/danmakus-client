@@ -81,7 +81,6 @@ export class ConfigManager {
       messageRetryMaxDelay: 30000,
       messageRetryMaxAttempts: 6,
       batchUploadSize: 500,
-      heartbeatInterval: 5000,
       lockAcquireRetryCount: 4,
       lockAcquireRetryDelay: 1200,
       lockAcquireForceTakeover: false,

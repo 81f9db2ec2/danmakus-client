@@ -24,6 +24,7 @@ import {
   StreamerStatus,
   CoreSyncTagSnapshot,
   CoreRuntimeStateDto,
+  CoreHeartbeatStateDto,
   CoreConnectionInfoDto,
   ErrorCategory,
   ClientErrorRecord,
@@ -103,6 +104,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private holdingRoomCoordinator: DanmakuHoldingRoomCoordinator;
   private controlState: DanmakuControlState;
   private isRunning: boolean = false;
+  private lastRuntimeCookieValid?: boolean;
   private updateConnectionsTimer?: ReturnType<typeof setTimeout>;
   private accountConfigTag: string | null = null;
   private assignmentTag: string | null = null;
@@ -1399,7 +1401,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     };
   }
 
-  private buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string; } {
+  private buildRuntimeHeartbeatPayload(): CoreHeartbeatStateDto {
     const config = this.configManager.getConfig();
     const authState = this.authManager.getState();
     const lastError = this.getActiveErrorText() ?? null;
@@ -1409,10 +1411,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       isRunning: this.isRunning,
       runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
       cookieValid: authState.hasUsableCookie,
-      authState,
       messageCount: this.messageCount,
-      lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned() ?? null,
-      holdingRoomShortfall: this.holdingRoomCoordinator.getHoldingRoomShortfall(),
       lastError
     };
   }
@@ -1590,7 +1589,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       || (previous.messageRetryMaxDelay ?? 30000) !== (next.messageRetryMaxDelay ?? 30000)
       || (previous.messageRetryMaxAttempts ?? 6) !== (next.messageRetryMaxAttempts ?? 6)
       || (previous.batchUploadSize ?? 500) !== (next.batchUploadSize ?? 500)
-      || (previous.heartbeatInterval ?? 5000) !== (next.heartbeatInterval ?? 5000)
       || (previous.lockAcquireRetryCount ?? 4) !== (next.lockAcquireRetryCount ?? 4)
       || (previous.lockAcquireRetryDelay ?? 1200) !== (next.lockAcquireRetryDelay ?? 1200)
       || (previous.lockAcquireForceTakeover ?? false) !== (next.lockAcquireForceTakeover ?? false)
@@ -1672,6 +1670,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.authManager.onStateChanged((state) => {
       this.emit('authStateChanged', state);
       this.emit('cookieUpdated');
+      const cookieValidityChanged = this.lastRuntimeCookieValid !== undefined
+        && this.lastRuntimeCookieValid !== state.hasUsableCookie;
+      this.lastRuntimeCookieValid = state.hasUsableCookie;
+      if (cookieValidityChanged && this.isRunning && !this.isStopping) {
+        void this.syncRuntimeState();
+      }
     });
     this.authManager.start();
     void this.authManager.refreshState({ validateProfile: true, force: true }).catch(() => undefined);

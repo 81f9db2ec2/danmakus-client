@@ -23,7 +23,10 @@ const normalizeRoomIds = (rooms: number[]): number[] => Array.from(new Set(
 
 export class StreamerStatusManager {
   private statusCache: Map<number, StreamerStatus> = new Map();
-  private checkTimer?: ReturnType<typeof setInterval>;
+  private checkTimer?: ReturnType<typeof setTimeout>;
+  private isRunning = false;
+  private checkInProgress = false;
+  private refreshRequested = false;
   private fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   private resolvedStatusApiUrl: string;
   private endpoints?: RuntimeEndpoints;
@@ -52,18 +55,21 @@ export class StreamerStatusManager {
    * 启动状态检查
    */
   start(): void {
-    this.checkStreamersStatus();
-    this.checkTimer = setInterval(() => {
-      this.checkStreamersStatus();
-    }, this.checkInterval * 1000);
+    if (this.isRunning) {
+      return;
+    }
+
+    this.isRunning = true;
+    this.scheduleStatusCheck(0);
   }
 
   /**
    * 停止状态检查
    */
   stop(): void {
+    this.isRunning = false;
     if (this.checkTimer) {
-      clearInterval(this.checkTimer);
+      clearTimeout(this.checkTimer);
       this.checkTimer = undefined;
     }
   }
@@ -74,7 +80,52 @@ export class StreamerStatusManager {
       return;
     }
     this.lastManualRefreshAt = now;
-    void this.checkStreamersStatus();
+    this.refreshRequested = true;
+    if (this.checkTimer) {
+      clearTimeout(this.checkTimer);
+      this.checkTimer = undefined;
+    }
+    if (!this.checkInProgress) {
+      this.scheduleStatusCheck(0);
+    }
+  }
+
+  private async runStatusCheck(): Promise<void> {
+    if (this.checkInProgress) {
+      this.refreshRequested = true;
+      return;
+    }
+
+    this.checkInProgress = true;
+    this.refreshRequested = false;
+    try {
+      await this.checkStreamersStatus();
+    } finally {
+      this.checkInProgress = false;
+    }
+    if (!this.isRunning) {
+      return;
+    }
+
+    if (this.refreshRequested) {
+      this.scheduleStatusCheck(0);
+      return;
+    }
+
+    const hasLiveRoom = Array.from(this.statusCache.values()).some(status => status.isLive);
+    const intervalSeconds = hasLiveRoom ? this.checkInterval : Math.max(60, this.checkInterval);
+    this.scheduleStatusCheck(intervalSeconds * 1000);
+  }
+
+  private scheduleStatusCheck(delayMs: number): void {
+    if (!this.isRunning || this.checkTimer) {
+      return;
+    }
+
+    this.checkTimer = setTimeout(() => {
+      this.checkTimer = undefined;
+      void this.runStatusCheck();
+    }, delayMs);
   }
 
   /**

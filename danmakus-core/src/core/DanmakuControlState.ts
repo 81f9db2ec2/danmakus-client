@@ -9,7 +9,7 @@ import {
   UserInfo,
 } from '../types/index.js';
 
-const CONTROL_SYNC_INTERVAL_MS = 5000;
+const CONTROL_SYNC_INTERVAL_MS = 30000;
 
 interface ControlStateErrorContext {
   category?: 'config' | 'runtime-sync' | 'unknown';

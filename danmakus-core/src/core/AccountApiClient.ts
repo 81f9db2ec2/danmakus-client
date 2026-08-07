@@ -1,5 +1,6 @@
 import {
   CoreControlConfigDto,
+  CoreHeartbeatStateDto,
   CoreRuntimeStateDto,
   CoreSyncTagSnapshot,
   CoreTaggedApiResult,
@@ -24,7 +25,7 @@ const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
 const CLIENTS_TAG_HEADER = 'X-Core-Clients-Tag';
 const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
 const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
-const HEARTBEAT_FEATURES = 'clients,recording';
+const HEARTBEAT_FEATURES = 'recording';
 const DEFAULT_ACCOUNT_API_BASE = 'https://backend.danmakus.com/api/v2/account';
 const DEFAULT_BACKEND_REQUEST_TIMEOUT_MS = 15000;
 
@@ -127,11 +128,12 @@ export class AccountApiClient {
     });
   }
 
-  async getCoreHeartbeatTags(): Promise<CoreSyncTagSnapshot> {
+  async getCoreHeartbeatTags(clientId?: string): Promise<CoreSyncTagSnapshot & { assignmentTag: string | null }> {
     const headers = new Headers();
     headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
+    const suffix = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
 
-    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, '/heartbeat', {
+    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, `/heartbeat${suffix}`, {
       method: 'GET',
       headers,
     });
@@ -140,7 +142,10 @@ export class AccountApiClient {
       await this.parseResponsePayload(response);
     }
 
-    return this.readCoreSyncTags(response.headers);
+    return {
+      ...this.readCoreSyncTags(response.headers),
+      assignmentTag: this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER)),
+    };
   }
 
   async syncRuntimeState(
@@ -155,7 +160,7 @@ export class AccountApiClient {
   }
 
   async heartbeatRuntimeState(
-    payload: Partial<CoreRuntimeStateDto> & { clientId: string },
+    payload: CoreHeartbeatStateDto,
     options?: { force?: boolean }
   ): Promise<HeartbeatRuntimeStateResult> {
     const suffix = options?.force ? '?force=true' : '';

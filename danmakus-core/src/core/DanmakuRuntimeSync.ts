@@ -1,9 +1,10 @@
 import { AccountApiClient } from './AccountApiClient.js';
 import { ScopedLogger } from './Logger.js';
 import { RuntimeConnection } from './RuntimeConnection.js';
-import { CoreRuntimeStateDto, DanmakuConfig, ErrorCategory } from '../types/index.js';
+import { CoreHeartbeatStateDto, CoreRuntimeStateDto, DanmakuConfig, ErrorCategory } from '../types/index.js';
 
-const HEARTBEAT_MIN_INTERVAL = 2000;
+const CONTROL_POLL_INTERVAL_MS = 10_000;
+const CONTROL_POLL_JITTER_MS = 2_000;
 const LOCK_RETRY_MIN_COUNT = 1;
 const LOCK_RETRY_MIN_DELAY = 200;
 const RUNTIME_REREGISTER_RETRY_DELAY_MS = 2000;
@@ -29,7 +30,7 @@ interface DanmakuRuntimeSyncContext {
   recordError(error: unknown, context?: RuntimeSyncErrorContext): void;
   clearError(codes?: string[]): boolean;
   buildRuntimeStateSnapshot(): CoreRuntimeStateDto;
-  buildRuntimeHeartbeatPayload(): Partial<CoreRuntimeStateDto> & { clientId: string };
+  buildRuntimeHeartbeatPayload(): CoreHeartbeatStateDto;
   handleHeartbeatResult(result: HeartbeatRuntimeStateResult): Promise<void>;
   handleRuntimeLockConflict(reason: string): void;
   refreshHoldingRoomsIfNeeded(
@@ -42,10 +43,9 @@ interface DanmakuRuntimeSyncContext {
 
 export class DanmakuRuntimeSync {
   private readonly context: DanmakuRuntimeSyncContext;
-  private heartbeatTimer?: ReturnType<typeof setTimeout>;
+  private controlPollTimer?: ReturnType<typeof setTimeout>;
   private runtimeClientRegisterRetryTimer?: ReturnType<typeof setTimeout>;
   private lastHeartbeat = 0;
-  private heartbeatInterval = 5000;
   private lockAcquireRetryCount = 4;
   private lockAcquireRetryDelay = 1200;
   private lockAcquireForceTakeover = false;
@@ -61,9 +61,6 @@ export class DanmakuRuntimeSync {
   }
 
   applyRuntimeTunings(config: DanmakuConfig): void {
-    const heartbeat = Math.floor(config.heartbeatInterval ?? 5000);
-    this.heartbeatInterval = Math.max(HEARTBEAT_MIN_INTERVAL, heartbeat);
-
     const lockRetryCount = Math.floor(config.lockAcquireRetryCount ?? 4);
     this.lockAcquireRetryCount = Math.max(LOCK_RETRY_MIN_COUNT, lockRetryCount);
 
@@ -74,23 +71,21 @@ export class DanmakuRuntimeSync {
   }
 
   ensureHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      return;
+    if (!this.controlPollTimer) {
+      const poll = async () => {
+        this.controlPollTimer = undefined;
+        await this.pollRuntimeControlTags();
+        this.ensureHeartbeat();
+      };
+
+      this.controlPollTimer = setTimeout(poll, this.getNextControlPollDelay());
     }
-
-    const beat = async () => {
-      this.heartbeatTimer = undefined;
-      await this.heartbeatRuntimeState();
-      this.ensureHeartbeat();
-    };
-
-    this.heartbeatTimer = setTimeout(beat, this.heartbeatInterval);
   }
 
   clearHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearTimeout(this.heartbeatTimer);
-      this.heartbeatTimer = undefined;
+    if (this.controlPollTimer) {
+      clearTimeout(this.controlPollTimer);
+      this.controlPollTimer = undefined;
     }
   }
 
@@ -292,6 +287,36 @@ export class DanmakuRuntimeSync {
     return message.includes('同一 IP 已存在其他客户端连接')
       || message.includes('客户端未持有锁')
       || message.includes('423');
+  }
+
+  private async pollRuntimeControlTags(): Promise<void> {
+    const accountClient = this.context.getAccountClient();
+    if (!accountClient) {
+      return;
+    }
+
+    try {
+      const tags = await accountClient.getCoreHeartbeatTags(this.context.getClientId());
+      await this.context.handleHeartbeatResult(tags);
+      this.lastHeartbeat = Date.now();
+      this.context.clearError(['RUNTIME_CONTROL_POLL_FAILED', 'RUNTIME_HEARTBEAT_FAILED', 'RUNTIME_SYNC_FAILED', 'LOCK_CONFLICT']);
+
+      const runtimeConnection = this.context.getRuntimeConnection();
+      if (runtimeConnection && !runtimeConnection.getConnectionState()) {
+        await runtimeConnection.connect();
+      }
+    } catch (error) {
+      this.context.recordError(error, {
+        category: 'runtime-sync',
+        code: 'RUNTIME_CONTROL_POLL_FAILED',
+        recoverable: true,
+      });
+      this.context.logger.warn('同步核心控制标签失败', error);
+    }
+  }
+
+  private getNextControlPollDelay(): number {
+    return CONTROL_POLL_INTERVAL_MS + Math.floor(Math.random() * (CONTROL_POLL_JITTER_MS + 1));
   }
 
   private getErrorMessage(error: unknown): string {

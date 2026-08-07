@@ -1,4 +1,4 @@
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { LocalAppConfigDto } from '../types/api';
 
@@ -31,6 +31,7 @@ const DEFAULT_LOCAL_APP_CONFIG: LocalAppConfigDto = {
   autoStart: false,
   startMinimized: false,
   minimizeToTray: false,
+  hideDockIconWhenWindowHidden: false,
   autoStartRecording: true,
   recordingLiveNotificationUids: [],
   cookieCloudKey: '',
@@ -92,6 +93,7 @@ const normalizeConfig = (value: unknown): LocalAppConfigDto => {
     autoStart: Boolean(raw.autoStart),
     startMinimized: Boolean(raw.startMinimized),
     minimizeToTray: Boolean(raw.minimizeToTray),
+    hideDockIconWhenWindowHidden: Boolean(raw.hideDockIconWhenWindowHidden),
     autoStartRecording: raw.autoStartRecording === undefined ? true : Boolean(raw.autoStartRecording),
     recordingLiveNotificationUids: normalizeUidList(raw.recordingLiveNotificationUids),
     cookieCloudKey: normalizeCookieText(raw.cookieCloudKey),
@@ -103,6 +105,9 @@ const normalizeConfig = (value: unknown): LocalAppConfigDto => {
 };
 
 export const isDesktopRuntime = (): boolean => isTauri();
+
+export const isMacosDesktopRuntime = (): boolean =>
+  isDesktopRuntime() && navigator.userAgent.includes('Macintosh');
 
 export const loadLocalAppConfig = (): LocalAppConfigDto => {
   try {
@@ -151,10 +156,7 @@ export const showMainWindow = async (): Promise<void> => {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  const window = getCurrentWindow();
-  await window.show();
-  await window.setFocus();
+  await invoke('show_main_window');
 };
 
 export const sendSystemNotification = async (title: string, body: string): Promise<boolean> => {
@@ -298,18 +300,19 @@ export const syncTrayHealthFromRuntime = async (snapshot: TrayRuntimeSnapshot): 
   await setTrayHealthState(resolveTrayHealthState(snapshot));
 };
 
-export const hideMainWindow = async (options: { notify?: boolean } = {}): Promise<void> => {
+export const hideMainWindow = async (
+  options: { notify?: boolean; hideDockIcon?: boolean } = {}
+): Promise<void> => {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().hide();
+  await invoke('hide_main_window', { hideDockIcon: options.hideDockIcon ?? false });
   if (options.notify ?? true) {
     await notifyMinimizedToTray();
   }
 };
 
-export const toggleMainWindow = async (): Promise<void> => {
+export const toggleMainWindow = async (hideDockIconWhenHidden: boolean): Promise<void> => {
   if (!isDesktopRuntime()) {
     return;
   }
@@ -317,11 +320,10 @@ export const toggleMainWindow = async (): Promise<void> => {
   const window = getCurrentWindow();
   const visible = await window.isVisible();
   if (visible) {
-    await hideMainWindow();
+    await hideMainWindow({ hideDockIcon: hideDockIconWhenHidden });
     return;
   }
-  await window.show();
-  await window.setFocus();
+  await showMainWindow();
 };
 
 export const quitApplication = async (): Promise<void> => {
@@ -333,23 +335,26 @@ export const quitApplication = async (): Promise<void> => {
 };
 
 export const registerCloseToTrayHandler = async (
-  shouldMinimizeToTray: () => boolean
+  shouldMinimizeToTray: () => boolean,
+  shouldHideDockIcon: () => boolean
 ): Promise<UnlistenFn | null> => {
   if (!isDesktopRuntime()) {
     return null;
   }
   const { getCurrentWindow } = await import('@tauri-apps/api/window');
   const window = getCurrentWindow();
-  return window.onCloseRequested(event => {
+  return window.onCloseRequested(async event => {
     if (!shouldMinimizeToTray()) {
       return;
     }
     event.preventDefault();
-    void hideMainWindow();
+    await hideMainWindow({ hideDockIcon: shouldHideDockIcon() });
   });
 };
 
-export const setupTrayInTs = async (): Promise<void> => {
+export const setupTrayInTs = async (
+  shouldHideDockIconWhenHidden: () => boolean
+): Promise<void> => {
   if (!isDesktopRuntime()) {
     return;
   }
@@ -375,14 +380,20 @@ export const setupTrayInTs = async (): Promise<void> => {
           id: MENU_ID_SHOW,
           text: '显示主窗口',
           action: () => {
-            void showMainWindow();
+            void showMainWindow().catch(error => {
+              console.error('Failed to show main window from tray menu', error);
+            });
           }
         },
         {
           id: MENU_ID_HIDE,
           text: '隐藏到托盘',
           action: () => {
-            void hideMainWindow();
+            void hideMainWindow({
+              hideDockIcon: shouldHideDockIconWhenHidden()
+            }).catch(error => {
+              console.error('Failed to hide main window from tray menu', error);
+            });
           }
         },
         {
@@ -411,7 +422,9 @@ export const setupTrayInTs = async (): Promise<void> => {
           event.button === 'Left' &&
           event.buttonState === 'Up'
         ) {
-          void toggleMainWindow();
+          void toggleMainWindow(shouldHideDockIconWhenHidden()).catch(error => {
+            console.error('Failed to toggle main window from tray icon', error);
+          });
         }
       }
     });

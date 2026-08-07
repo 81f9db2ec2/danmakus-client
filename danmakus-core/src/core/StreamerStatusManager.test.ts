@@ -25,6 +25,53 @@ describe("StreamerStatusManager room priority", () => {
     expect(manager.getStreamerStatus(202)?.uId).toBe(TEST_STREAMER_STATUS_UID);
   });
 
+  it("queries immediately, waits 60 seconds while offline, then 30 seconds after going live", async () => {
+    const scheduled: Array<{ handler: () => void; delay: number }> = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: TimerHandler, delay?: number) => {
+      const normalizedDelay = Number(delay ?? 0);
+      if (normalizedDelay === 0 || normalizedDelay >= 30_000) {
+        scheduled.push({ handler: handler as () => void, delay: normalizedDelay });
+        return scheduled.length as ReturnType<typeof setTimeout>;
+      }
+      return originalSetTimeout(handler, normalizedDelay);
+    }) as typeof setTimeout;
+
+    let isLive = false;
+    let requestCount = 0;
+    const manager = new StreamerStatusManager(
+      30,
+      "https://example.com/api/v2/core-runtime",
+      async () => {
+        requestCount++;
+        return new Response(JSON.stringify([{ roomId: 202, isLive }]), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    );
+    manager.updateHoldingRooms([202]);
+
+    try {
+      manager.start();
+      const initialTimer = scheduled.shift();
+      expect(initialTimer?.delay).toBe(0);
+      initialTimer?.handler();
+      await Bun.sleep(0);
+      expect(requestCount).toBe(1);
+      expect(scheduled[0]?.delay).toBe(60_000);
+
+      isLive = true;
+      const offlineTimer = scheduled.shift();
+      offlineTimer?.handler();
+      await Bun.sleep(0);
+      expect(requestCount).toBe(2);
+      expect(scheduled[0]?.delay).toBe(30_000);
+    } finally {
+      manager.stop();
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
   it("marks held recording rooms as high priority", () => {
     const manager: any = new StreamerStatusManager(30, "https://example.com/api/v2/core-runtime");
     manager.updateHoldingRooms([201, 301, 302]);
