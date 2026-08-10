@@ -106,6 +106,13 @@ describe('DanmakuClient startup', () => {
           },
         };
       },
+      heartbeatRuntimeState: async () => ({
+        configTag: null,
+        assignmentTag: null,
+        clientsTag: null,
+        recordingTag: null,
+        serverTime: { unixMs: 1710000000000, monotonicMs: performance.now() },
+      }),
       releaseRuntimeState: async () => undefined,
     };
 

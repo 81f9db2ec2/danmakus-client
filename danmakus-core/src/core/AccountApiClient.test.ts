@@ -12,7 +12,8 @@ describe('AccountApiClient', () => {
         status: 204,
         headers: {
           'X-Core-Config-Tag': '"config-tag"',
-          'X-Core-Assignment-Tag': 'assignment-tag'
+          'X-Core-Assignment-Tag': 'assignment-tag',
+          'X-Core-Server-Time-Ms': '1710000000000',
         }
         });
       }
@@ -28,12 +29,14 @@ describe('AccountApiClient', () => {
       lastError: null,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       configTag: '"config-tag"',
       assignmentTag: 'assignment-tag',
       clientsTag: null,
       recordingTag: null
     });
+    expect(result.serverTime.unixMs).toBeGreaterThanOrEqual(1710000000000);
+    expect(result.serverTime.monotonicMs).toBeGreaterThanOrEqual(0);
     expect(new Headers(request?.headers).get('X-Core-Heartbeat-Features')).toBe('recording');
   });
 
@@ -86,17 +89,20 @@ describe('AccountApiClient', () => {
           'X-Core-Config-Tag': 'config-tag',
           'X-Core-Assignment-Tag': 'assignment-tag',
           'X-Core-Recording-Tag': 'recording-tag',
+          'X-Core-Server-Time-Ms': '1710000000000',
         },
         });
       },
     );
 
-    await expect(client.getCoreHeartbeatTags('client-id')).resolves.toEqual({
+    const result = await client.getCoreHeartbeatTags('client-id');
+    expect(result).toMatchObject({
       configTag: 'config-tag',
       assignmentTag: 'assignment-tag',
       clientsTag: null,
       recordingTag: 'recording-tag',
     });
+    expect(result.serverTime.unixMs).toBeGreaterThanOrEqual(1710000000000);
     expect(requestUrl).toContain('/heartbeat?clientId=client-id');
   });
 });

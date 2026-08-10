@@ -104,6 +104,7 @@ describe("DanmakuClient room pull flow", () => {
         assignmentTag: "assignment-tag-v2",
         clientsTag: null,
         recordingTag: null,
+        serverTime: { unixMs: 1710000000000, monotonicMs: performance.now() },
       }),
     };
     client.handleAccountConfigTagChange = async () => undefined;
@@ -144,6 +145,7 @@ describe("DanmakuClient room pull flow", () => {
         assignmentTag: "assignment-tag-v2",
         clientsTag: null,
         recordingTag: null,
+        serverTime: { unixMs: 1710000000000, monotonicMs: performance.now() },
       }),
     };
     client.handleAccountConfigTagChange = async () => undefined;
@@ -679,8 +681,9 @@ describe("DanmakuClient room pull flow", () => {
       streamers: [],
     });
 
-    const archivedPackets: Array<{ roomId: number; payload: Uint8Array }> = [];
+    const archivedPackets: Array<{ roomId: number; payload: Uint8Array; timestamp: number }> = [];
     client.isRunning = true;
+    client.serverTime = { unixMs: 1710000000000, monotonicMs: performance.now() };
     client.statusManager = {
       getRoomsToConnect: () => [{ roomId: 4455, priority: "server" }],
       getStreamerStatus: () => ({ roomId: 4455, isLive: true, uId: TEST_STATUS_UID }),
@@ -702,8 +705,8 @@ describe("DanmakuClient room pull flow", () => {
       },
       close: () => undefined,
     });
-    client.messageQueue.enqueuePacket = (roomId: number, payload: Uint8Array) => {
-      archivedPackets.push({ roomId, payload });
+    client.messageQueue.enqueuePacket = (roomId: number, payload: Uint8Array, timestamp: number) => {
+      archivedPackets.push({ roomId, payload, timestamp });
     };
     client.syncRuntimeState = async () => undefined;
 
@@ -712,6 +715,8 @@ describe("DanmakuClient room pull flow", () => {
     expect(archivedPackets).toHaveLength(1);
     expect(archivedPackets[0]?.roomId).toBe(4455);
     expect([...archivedPackets[0]!.payload]).toEqual([1, 2, 3]);
+    expect(archivedPackets[0]!.timestamp).toBeGreaterThanOrEqual(1710000000000);
+    expect(archivedPackets[0]!.timestamp).toBeLessThan(1710000001000);
   });
 
   it("falls back to备用 WebSocket 地址 when the primary address fails", async () => {

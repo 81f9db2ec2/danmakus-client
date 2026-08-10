@@ -125,6 +125,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private recentErrors: ClientErrorRecord[] = [];
   private suppressRuntimeAutoRegister = false;
   private runtimeGeneration = 0;
+  private serverTime?: { unixMs: number; monotonicMs: number };
 
   get holdingRoomIds(): number[] {
     return this.holdingRoomCoordinator.getHoldingRoomIds();
@@ -404,6 +405,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
       this.isRunning = true;
       this.messageCount = 0;
+      await this.runtimeSync.heartbeatRuntimeState({ strict: true });
 
       // 启动状态管理器
       this.logger.info('启动状态检查器...');
@@ -481,6 +483,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         }
       }
     }
+    this.serverTime = undefined;
     this.isStopping = false;
     this.logger.info('弹幕客户端已停止');
   }
@@ -992,14 +995,14 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       roomId,
       cmd: actualCmd,
       data: data,
-      timestamp: Date.now()
+      timestamp: this.getEventTimestamp()
     };
   }
 
   private async handleRawMessagePacket(event: any, roomId: number): Promise<void> {
     const payload = await this.extractLiveWsMessageBytes(event);
     if (payload.length > 0) {
-      this.messageQueue.enqueuePacket(roomId, payload);
+      this.messageQueue.enqueuePacket(roomId, payload, this.getEventTimestamp());
     }
   }
 
@@ -1466,6 +1469,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private async handleRuntimeHeartbeatResult(
     result: Awaited<ReturnType<AccountApiClient['heartbeatRuntimeState']>>
   ): Promise<void> {
+    this.serverTime = result.serverTime;
     await this.controlState.handleAccountConfigTagChange(result.configTag);
     await this.controlState.handleClientsTagChange(result.clientsTag);
     await this.controlState.handleRecordingTagChange(result.recordingTag);
@@ -1475,6 +1479,14 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         force: true,
       });
     }
+  }
+
+  private getEventTimestamp(): number {
+    if (!this.serverTime) {
+      throw new Error('尚未同步服务端时间');
+    }
+
+    return Math.floor(this.serverTime.unixMs + performance.now() - this.serverTime.monotonicMs);
   }
 
   private replaceUserInfo(userInfo: UserInfo | null): void {

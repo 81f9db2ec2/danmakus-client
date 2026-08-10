@@ -27,7 +27,10 @@ describe('DanmakuClient 全新启动应用服务端 runtimeUrl', () => {
       captured.push(typeof input === 'string' ? input : input.toString());
       return new Response(JSON.stringify({ code: 200, data: { rejected: [] } }), {
         status: 200,
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'X-Core-Server-Time-Ms': '1710000000000',
+        },
       });
     }) as typeof fetch;
 

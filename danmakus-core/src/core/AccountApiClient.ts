@@ -13,11 +13,17 @@ import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
 import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
 import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 
+type ServerTimeSample = {
+  unixMs: number;
+  monotonicMs: number;
+};
+
 type HeartbeatRuntimeStateResult = {
   configTag: string | null;
   assignmentTag: string | null;
   clientsTag: string | null;
   recordingTag: string | null;
+  serverTime: ServerTimeSample;
 };
 
 const CONFIG_TAG_HEADER = 'X-Core-Config-Tag';
@@ -25,6 +31,7 @@ const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
 const CLIENTS_TAG_HEADER = 'X-Core-Clients-Tag';
 const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
 const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
+const SERVER_TIME_HEADER = 'X-Core-Server-Time-Ms';
 const HEARTBEAT_FEATURES = 'recording';
 const DEFAULT_ACCOUNT_API_BASE = 'https://backend.danmakus.com/api/v2/account';
 const DEFAULT_BACKEND_REQUEST_TIMEOUT_MS = 15000;
@@ -128,15 +135,9 @@ export class AccountApiClient {
     });
   }
 
-  async getCoreHeartbeatTags(clientId?: string): Promise<CoreSyncTagSnapshot & { assignmentTag: string | null }> {
-    const headers = new Headers();
-    headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
+  async getCoreHeartbeatTags(clientId?: string): Promise<HeartbeatRuntimeStateResult> {
     const suffix = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
-
-    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, `/heartbeat${suffix}`, {
-      method: 'GET',
-      headers,
-    });
+    const { response, startedAt, receivedAt } = await this.fetchHeartbeat(`/heartbeat${suffix}`, { method: 'GET' });
 
     if (!response.ok) {
       await this.parseResponsePayload(response);
@@ -145,6 +146,7 @@ export class AccountApiClient {
     return {
       ...this.readCoreSyncTags(response.headers),
       assignmentTag: this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER)),
+      serverTime: this.readServerTime(response, startedAt, receivedAt),
     };
   }
 
@@ -182,13 +184,7 @@ export class AccountApiClient {
   }
 
   private async requestRuntimeSignal(path: string, init?: RequestInit): Promise<HeartbeatRuntimeStateResult> {
-    const headers = new Headers(init?.headers ?? {});
-    headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
-
-    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, {
-      ...init,
-      headers,
-    });
+    const { response, startedAt, receivedAt } = await this.fetchHeartbeat(path, init);
     const tags = this.readCoreSyncTags(response.headers);
     const assignmentTag = this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER));
     if (response.status === 204) {
@@ -197,6 +193,7 @@ export class AccountApiClient {
         assignmentTag,
         clientsTag: tags.clientsTag,
         recordingTag: tags.recordingTag,
+        serverTime: this.readServerTime(response, startedAt, receivedAt),
       };
     }
 
@@ -206,6 +203,31 @@ export class AccountApiClient {
       assignmentTag,
       clientsTag: tags.clientsTag,
       recordingTag: tags.recordingTag,
+      serverTime: this.readServerTime(response, startedAt, receivedAt),
+    };
+  }
+
+  private async fetchHeartbeat(path: string, init?: RequestInit): Promise<{
+    response: Response;
+    startedAt: number;
+    receivedAt: number;
+  }> {
+    const headers = new Headers(init?.headers ?? {});
+    headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
+    const startedAt = performance.now();
+    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, { ...init, headers });
+    return { response, startedAt, receivedAt: performance.now() };
+  }
+
+  private readServerTime(response: Response, startedAt: number, receivedAt: number): ServerTimeSample {
+    const serverUnixMs = Number(response.headers.get(SERVER_TIME_HEADER));
+    if (!Number.isSafeInteger(serverUnixMs) || serverUnixMs <= 0) {
+      throw new Error(`心跳响应缺少有效的 ${SERVER_TIME_HEADER}`);
+    }
+
+    return {
+      unixMs: serverUnixMs + (receivedAt - startedAt) / 2,
+      monotonicMs: receivedAt,
     };
   }
 
