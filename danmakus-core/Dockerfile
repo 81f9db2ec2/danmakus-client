@@ -24,6 +24,9 @@ RUN apk add --no-cache libstdc++ libgcc \
 
 COPY --from=build /app/dist/danmakus ./danmakus
 
+RUN mkdir -p /app/.danmakus \
+    && chown -R danmakus:danmakus /app
+
 USER danmakus
 
 ENTRYPOINT ["./danmakus"]

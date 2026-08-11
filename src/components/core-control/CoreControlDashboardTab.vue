@@ -157,32 +157,32 @@ const authSourceText = computed(() => {
   return '当前无可用鉴权';
 });
 
+const barColors = [
+  'bg-chart-1',
+  'bg-chart-2',
+  'bg-chart-3',
+  'bg-chart-4',
+  'bg-chart-5',
+  'bg-primary/60',
+  'bg-primary/40',
+  'bg-primary/30',
+  'bg-muted-foreground/30'
+] as const;
+
 const messageCmdRows = computed(() =>
   Object.entries(props.runtimeState.messageCmdCountMap)
     .map(([cmd, count]) => ({ cmd, count }))
     .sort((a, b) => b.count - a.count || a.cmd.localeCompare(b.cmd))
 );
 
-const topMessageTypes = computed(() => {
-  const rows = messageCmdRows.value;
+const messageTypeRows = computed(() => {
   const total = props.runtimeState.messageCount || 1;
-  const top = rows.slice(0, 8);
-  const rest = rows.slice(8);
-  const result = top.map((r, i) => ({
+  const colorCount = barColors.length;
+  return messageCmdRows.value.map((r, i) => ({
     ...r,
     percentage: (r.count / total) * 100,
-    colorIndex: i
+    colorIndex: i % colorCount
   }));
-  if (rest.length > 0) {
-    const otherCount = rest.reduce((s, r) => s + r.count, 0);
-    result.push({
-      cmd: `其他 (${rest.length} 种)`,
-      count: otherCount,
-      percentage: (otherCount / total) * 100,
-      colorIndex: 8
-    });
-  }
-  return result;
 });
 
 const connectionRoomCards = computed(() => {
@@ -295,8 +295,6 @@ const connectionShortfall = computed(() => {
     detailText: detailParts.join('，')
   };
 });
-
-const barColors = ['bg-chart-1', 'bg-chart-2', 'bg-chart-3', 'bg-chart-4', 'bg-chart-5', 'bg-primary/60', 'bg-primary/40', 'bg-primary/30', 'bg-muted-foreground/30'];
 
 const cookieBadgeClass = computed(() => (cookieStatusType.value === 'success' ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300'));
 
@@ -774,13 +772,13 @@ onBeforeUnmount(() => {
         >
       </CardHeader>
       <CardContent>
-        <div v-if="topMessageTypes.length > 0" class="space-y-2">
-          <div v-for="row in topMessageTypes" :key="row.cmd" class="group flex items-center gap-2" :title="`${row.cmd}: ${row.count.toLocaleString()} 条 (${row.percentage.toFixed(1)}%)`">
-            <span class="w-28 truncate text-xs text-muted-foreground" :title="row.cmd">{{ row.cmd }}</span>
+        <div v-if="messageTypeRows.length > 0" class="max-h-80 space-y-2 overflow-y-auto pr-1">
+          <div v-for="row in messageTypeRows" :key="row.cmd" class="group flex items-center gap-2" :title="`${row.cmd}: ${row.count.toLocaleString()} 条 (${row.percentage.toFixed(1)}%)`">
+            <span class="w-28 shrink-0 truncate text-xs text-muted-foreground" :title="row.cmd">{{ row.cmd }}</span>
             <div class="h-5 flex-1 overflow-hidden rounded-sm bg-muted/50">
-              <div class="bar-fill h-full rounded-sm" :class="barColors[row.colorIndex] || barColors[8]" :style="{ width: Math.max(row.percentage, 0.5) + '%' }" />
+              <div class="bar-fill h-full rounded-sm" :class="barColors[row.colorIndex]" :style="{ width: Math.max(row.percentage, 0.5) + '%' }" />
             </div>
-            <span class="w-14 text-right text-xs tabular-nums text-muted-foreground">
+            <span class="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
               {{ row.count.toLocaleString() }}
             </span>
           </div>
