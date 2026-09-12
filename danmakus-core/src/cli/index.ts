@@ -9,9 +9,10 @@ import { createCliLiveWsConnection } from './liveWsConnectionFactory.js';
 import { attachCliEventListeners } from './runtime.js';
 import type { CliOptions } from '../types/index.js';
 import { DEFAULT_CLI_CLIENT_VERSION, CORE_VERSION } from '../version.js';
+import { BACKEND_PRIMARY_ORIGIN } from '../core/BackendApiFallback.js';
 
 const program = new Command();
-const DEFAULT_RUNTIME_URL = 'https://backend.danmakus.com/api/v2/core-runtime';
+const DEFAULT_RUNTIME_URL = `${BACKEND_PRIMARY_ORIGIN}/api/v2/core-runtime`;
 const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';
 
 program

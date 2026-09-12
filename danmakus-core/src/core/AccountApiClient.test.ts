@@ -40,14 +40,14 @@ describe('AccountApiClient', () => {
     expect(new Headers(request?.headers).get('X-Core-Heartbeat-Features')).toBe('recording');
   });
 
-  test('getCoreConfig should fallback to api.danmakus.com when primary account api fails', async () => {
+  test('getCoreConfig should fallback through api.ukamnads.icu to api.danmakus.com when earlier backends fail', async () => {
     const requests: string[] = [];
     const client = new AccountApiClient(
       'token',
       async (input) => {
         const url = String(input);
         requests.push(url);
-        if (url.startsWith('https://backend.danmakus.com/')) {
+        if (!url.startsWith('https://api.danmakus.com/')) {
           return new Response('bad gateway', { status: 502 });
         }
 
@@ -71,7 +71,8 @@ describe('AccountApiClient', () => {
     const result = await client.getCoreConfig();
 
     expect(requests).toEqual([
-      'https://backend.danmakus.com/api/v2/account/core-config',
+      'https://ukamnads.icu/api/v2/account/core-config',
+      'https://api.ukamnads.icu/api/v2/account/core-config',
       'https://api.danmakus.com/api/v2/account/core-config'
     ]);
     expect(result.runtimeUrl).toBe('https://api.danmakus.com/api/v2/core-runtime');

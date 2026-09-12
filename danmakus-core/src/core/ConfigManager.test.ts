@@ -124,6 +124,6 @@ describe('ConfigManager CookieCloud overrides', () => {
       allowedParentAreas: []
     } as any);
 
-    expect(manager.getConfig().runtimeUrl).toBe('https://backend.danmakus.com/api/v2/core-runtime');
+    expect(manager.getConfig().runtimeUrl).toBe('https://ukamnads.icu/api/v2/core-runtime');
   });
 });

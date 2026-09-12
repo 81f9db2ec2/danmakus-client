@@ -37,7 +37,7 @@ describe('DanmakuClient 全新启动应用服务端 runtimeUrl', () => {
     const client: any = new DanmakuClient({
       clientId: 'client-1',
       accountToken: 'token',
-      runtimeUrl: 'https://backend.danmakus.com/api/v2/core-runtime',
+      runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
       liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 

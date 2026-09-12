@@ -36,12 +36,12 @@ describe('DanmakuClient 服务端下发 runtimeUrl', () => {
       clientId: 'client-1',
       accountToken: 'token',
       // 客户端默认地址（桌面端 env.ts 注入的就是这个）
-      runtimeUrl: 'https://backend.danmakus.com/api/v2/core-runtime',
+      runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
       liveSessionOutbox: createInMemoryLiveSessionOutbox(),
     });
 
     // 默认连接的上传目标
-    expect(client.runtimeConnection.runtimeBaseUrl).toBe('https://backend.danmakus.com/api/v2/core-runtime');
+    expect(client.runtimeConnection.runtimeBaseUrl).toBe('https://ukamnads.icu/api/v2/core-runtime');
 
     // 服务端下发不同地址（模拟全局覆盖后的 core-config）
     await client.applyAccountConfigSnapshot(

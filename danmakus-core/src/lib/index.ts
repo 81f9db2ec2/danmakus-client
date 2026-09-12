@@ -9,6 +9,12 @@ export { RuntimeConnection } from '../core/RuntimeConnection.js';
 export { StreamerStatusManager } from '../core/StreamerStatusManager.js';
 export { getStartupBilibiliUserAgent, wrapBilibiliFetch } from '../core/BilibiliUserAgent.js';
 export {
+  BACKEND_API_ORIGINS,
+  BACKEND_PRIMARY_ORIGIN,
+  buildBackendApiCandidateUrls,
+  fetchBackendApiWithFallback,
+} from '../core/BackendApiFallback.js';
+export {
   createResettableSqliteLiveSessionOutboxBackend,
   createSqliteLiveSessionOutbox,
   isSqliteCorruptionError,

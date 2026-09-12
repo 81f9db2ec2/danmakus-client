@@ -14,8 +14,8 @@ describe('resolveCoreRuntimeBaseUrl 统一解析', () => {
   });
 
   test('account 中心地址转换为 core-runtime', () => {
-    expect(resolveCoreRuntimeBaseUrl('https://backend.danmakus.com/api/v2/account'))
-      .toBe('https://backend.danmakus.com/api/v2/core-runtime');
+    expect(resolveCoreRuntimeBaseUrl('https://ukamnads.icu/api/v2/account'))
+      .toBe('https://ukamnads.icu/api/v2/core-runtime');
   });
 
   test('裸 origin 补全为 v2 路径', () => {
@@ -30,7 +30,7 @@ describe('AccountApiClient 运行态地址跟随 runtimeUrl', () => {
     globalThis.fetch = originalFetch;
   });
 
-  test('默认指向 backend，setCoreRuntimeBaseUrl 后 sync 打到新地址', async () => {
+  test('默认指向 ukamnads.icu，setCoreRuntimeBaseUrl 后 sync 打到新地址', async () => {
     const captured: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       captured.push(typeof input === 'string' ? input : input.toString());
@@ -41,8 +41,8 @@ describe('AccountApiClient 运行态地址跟随 runtimeUrl', () => {
     }) as typeof fetch;
 
     const client = new AccountApiClient('token');
-    // 默认从 account 中心派生，仍在 backend
-    expect(client.getCoreRuntimeBaseUrl()).toBe('https://backend.danmakus.com/api/v2/core-runtime');
+    // 默认从 account 中心派生
+    expect(client.getCoreRuntimeBaseUrl()).toBe('https://ukamnads.icu/api/v2/core-runtime');
 
     // 服务端下发新 runtimeUrl
     client.setCoreRuntimeBaseUrl('https://client.danmakus.com/api/v2/core-runtime');
@@ -59,6 +59,6 @@ describe('AccountApiClient 运行态地址跟随 runtimeUrl', () => {
     const client = new AccountApiClient('token');
     client.setCoreRuntimeBaseUrl('https://client.danmakus.com/api/v2/core-runtime');
     client.setCoreRuntimeBaseUrl('');
-    expect(client.getCoreRuntimeBaseUrl()).toBe('https://backend.danmakus.com/api/v2/core-runtime');
+    expect(client.getCoreRuntimeBaseUrl()).toBe('https://ukamnads.icu/api/v2/core-runtime');
   });
 });

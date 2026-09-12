@@ -59,6 +59,6 @@ describe('RuntimeConnection 上传地址', () => {
     await connection.sendArchiveBatch(dueRecords);
 
     expect(captured[0]).toStartWith('https://upload-2.danmakus.com/');
-    expect(captured[0]).not.toStartWith('https://backend.danmakus.com/');
+    expect(captured[0]).not.toStartWith('https://ukamnads.icu/');
   });
 });

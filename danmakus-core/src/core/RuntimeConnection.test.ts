@@ -103,7 +103,7 @@ describe("RuntimeConnection room pull", () => {
     });
   });
 
-  it("falls back to api.danmakus.com when primary runtime api fails", async () => {
+  it("falls back through ukamnads.icu chain when primary runtime api fails", async () => {
     const requests: Array<{ url: string; body: unknown; headers: Headers }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -113,7 +113,7 @@ describe("RuntimeConnection room pull", () => {
         headers: new Headers(init?.headers),
       });
 
-      if (url.startsWith('https://example.com/')) {
+      if (!url.startsWith('https://api.danmakus.com/')) {
         return new Response('bad gateway', { status: 502 });
       }
 
@@ -144,6 +144,8 @@ describe("RuntimeConnection room pull", () => {
 
     expect(requests.map((item) => item.url)).toEqual([
       'https://example.com/api/v2/core-runtime/request-room',
+      'https://ukamnads.icu/api/v2/core-runtime/request-room',
+      'https://api.ukamnads.icu/api/v2/core-runtime/request-room',
       'https://api.danmakus.com/api/v2/core-runtime/request-room'
     ]);
     expect(result).toEqual({

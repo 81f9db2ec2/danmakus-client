@@ -7,7 +7,7 @@ const TEST_AUTH_UID = 42;
 
 const remoteConfig = {
   maxConnections: 5,
-  runtimeUrl: 'https://backend.danmakus.com/api/v2/core-runtime',
+  runtimeUrl: 'https://ukamnads.icu/api/v2/core-runtime',
   autoReconnect: true,
   reconnectInterval: 5000,
   statusCheckInterval: 30,
@@ -156,14 +156,14 @@ describe('DanmakuClient startup', () => {
       const url = String(input);
       requests.push(`${init?.method ?? 'GET'} ${url}`);
 
-      if (url === 'https://backend.danmakus.com/api/v2/account/core-config') {
+      if (url === 'https://ukamnads.icu/api/v2/account/core-config') {
         return new Response(JSON.stringify({ code: 200, data: remoteConfig }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      if (url === 'https://backend.danmakus.com/api/v2/account/info') {
+      if (url === 'https://ukamnads.icu/api/v2/account/info') {
         return new Response(JSON.stringify({
           code: 200,
           data: {
@@ -178,21 +178,21 @@ describe('DanmakuClient startup', () => {
         });
       }
 
-      if (url === 'https://backend.danmakus.com/api/v2/account/recording') {
+      if (url === 'https://ukamnads.icu/api/v2/account/recording') {
         return new Response(JSON.stringify({ code: 200, data: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      if (url === 'https://backend.danmakus.com/api/v2/core-runtime/sync') {
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/sync') {
         return new Response(JSON.stringify({ code: 200, data: {} }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      if (url === 'https://backend.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true') {
+      if (url === 'https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true') {
         return new Response(JSON.stringify({ code: 200, data: null }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -214,21 +214,21 @@ describe('DanmakuClient startup', () => {
 
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
     expect(requests).toEqual([
-      'GET https://backend.danmakus.com/api/v2/account/core-config',
-      'GET https://backend.danmakus.com/api/v2/account/info',
-      'GET https://backend.danmakus.com/api/v2/account/recording',
-      'POST https://backend.danmakus.com/api/v2/core-runtime/sync',
-      'DELETE https://backend.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true'
+      'GET https://ukamnads.icu/api/v2/account/core-config',
+      'GET https://ukamnads.icu/api/v2/account/info',
+      'GET https://ukamnads.icu/api/v2/account/recording',
+      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true'
     ]);
   });
 
-  test('falls back to api.danmakus.com for account and runtime api calls when primary backend is unavailable', async () => {
+  test('falls back through api.ukamnads.icu to api.danmakus.com when primary backend is unavailable', async () => {
     const requests: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       requests.push(`${init?.method ?? 'GET'} ${url}`);
 
-      if (url.startsWith('https://backend.danmakus.com/api/')) {
+      if (!url.startsWith('https://api.danmakus.com/api/')) {
         return new Response('bad gateway', { status: 502 });
       }
 
@@ -290,15 +290,20 @@ describe('DanmakuClient startup', () => {
 
     await expect(client.start()).rejects.toThrow('未提供可用的 Bilibili Cookie');
     expect(requests).toEqual([
-      'GET https://backend.danmakus.com/api/v2/account/core-config',
+      'GET https://ukamnads.icu/api/v2/account/core-config',
+      'GET https://api.ukamnads.icu/api/v2/account/core-config',
       'GET https://api.danmakus.com/api/v2/account/core-config',
-      'GET https://backend.danmakus.com/api/v2/account/info',
+      'GET https://ukamnads.icu/api/v2/account/info',
+      'GET https://api.ukamnads.icu/api/v2/account/info',
       'GET https://api.danmakus.com/api/v2/account/info',
-      'GET https://backend.danmakus.com/api/v2/account/recording',
+      'GET https://ukamnads.icu/api/v2/account/recording',
+      'GET https://api.ukamnads.icu/api/v2/account/recording',
       'GET https://api.danmakus.com/api/v2/account/recording',
-      'POST https://backend.danmakus.com/api/v2/core-runtime/sync',
+      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
+      'POST https://api.ukamnads.icu/api/v2/core-runtime/sync',
       'POST https://api.danmakus.com/api/v2/core-runtime/sync',
-      'DELETE https://backend.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true',
+      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true',
+      'DELETE https://api.ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true',
       'DELETE https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true'
     ]);
   });

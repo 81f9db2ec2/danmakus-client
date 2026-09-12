@@ -1,4 +1,10 @@
-export const BACKEND_FALLBACK_ORIGIN = 'https://api.danmakus.com';
+export const BACKEND_API_ORIGINS = [
+  'https://ukamnads.icu',
+  'https://api.ukamnads.icu',
+  'https://api.danmakus.com',
+] as const;
+
+export const BACKEND_PRIMARY_ORIGIN = BACKEND_API_ORIGINS[0];
 
 type FetchBackendApiFallbackOptions = {
   timeoutMs?: number;
@@ -14,12 +20,27 @@ export const buildBackendApiCandidateUrls = (url: string): string[] => {
 
   try {
     const parsed = new URL(normalizedUrl);
-    if (!isBackendApiPath(parsed.pathname) || parsed.origin === BACKEND_FALLBACK_ORIGIN) {
+    if (!isBackendApiPath(parsed.pathname)) {
       return [parsed.toString()];
     }
 
-    const fallbackUrl = new URL(`${parsed.pathname}${parsed.search}${parsed.hash}`, BACKEND_FALLBACK_ORIGIN).toString();
-    return fallbackUrl === parsed.toString() ? [parsed.toString()] : [parsed.toString(), fallbackUrl];
+    const suffix = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const pushOrigin = (origin: string) => {
+      const next = new URL(suffix, origin).toString();
+      if (seen.has(next)) {
+        return;
+      }
+      seen.add(next);
+      candidates.push(next);
+    };
+
+    pushOrigin(parsed.origin);
+    for (const origin of BACKEND_API_ORIGINS) {
+      pushOrigin(origin);
+    }
+    return candidates;
   } catch {
     return [normalizedUrl];
   }
