@@ -4,7 +4,7 @@ import type {
   RecordingInfoDto,
   UserInfo
 } from '../types/api';
-import { API_BASE } from './env';
+import { getApiBase } from './env';
 import { fetchBackendApiWithFallback } from './backendApi';
 import { apiFetch, getAuthToken } from './http';
 
@@ -34,7 +34,7 @@ export interface CoreTaggedApiResult<T> {
   tags: CoreSyncTagSnapshot;
 }
 
-const buildApiUrl = (path: string) => new URL(path, API_BASE).toString();
+const buildApiUrl = (path: string) => new URL(path, getApiBase()).toString();
 
 const normalizeTag = (value: string | null): string | null => {
   if (typeof value !== 'string') {

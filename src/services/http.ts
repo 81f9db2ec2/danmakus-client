@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import { API_BASE } from './env';
+import { getApiBase } from './env';
 import { fetchBackendApiWithFallback } from './backendApi';
 
 const authTokenRef = ref('');
@@ -44,7 +44,7 @@ const buildUrl = (path: string) => {
   if (/^https?:/i.test(path)) {
     return path;
   }
-  return new URL(path, API_BASE).toString();
+  return new URL(path, getApiBase()).toString();
 };
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {

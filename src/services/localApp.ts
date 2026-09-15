@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { LocalAppConfigDto } from '../types/api';
+import type { LocalAppConfigDto, ThemeMode } from '../types/api';
 
 type TrayHealthState = 'healthy' | 'error' | 'disconnected';
 type TrayRuntimeSnapshot = {
@@ -28,6 +28,7 @@ let trayBaseIconHeight = 0;
 let trayCurrentHealthState: TrayHealthState | null = null;
 
 const DEFAULT_LOCAL_APP_CONFIG: LocalAppConfigDto = {
+  themeMode: 'system',
   autoStart: false,
   startMinimized: false,
   minimizeToTray: false,
@@ -84,12 +85,20 @@ const normalizeUidList = (value: unknown): number[] => {
     .sort((left, right) => left - right);
 };
 
+const normalizeThemeMode = (value: unknown): ThemeMode => {
+  if (value === 'light' || value === 'dark' || value === 'system') {
+    return value;
+  }
+  return 'system';
+};
+
 const normalizeConfig = (value: unknown): LocalAppConfigDto => {
   if (!value || typeof value !== 'object') {
     return { ...DEFAULT_LOCAL_APP_CONFIG };
   }
   const raw = value as Partial<LocalAppConfigDto>;
   return {
+    themeMode: normalizeThemeMode(raw.themeMode),
     autoStart: Boolean(raw.autoStart),
     startMinimized: Boolean(raw.startMinimized),
     minimizeToTray: Boolean(raw.minimizeToTray),
@@ -102,6 +111,14 @@ const normalizeConfig = (value: unknown): LocalAppConfigDto => {
     cookieRefreshInterval: normalizeCookieRefreshInterval(raw.cookieRefreshInterval),
     capacityOverride: normalizeCapacityOverride(raw.capacityOverride)
   };
+};
+
+export const applyThemeMode = (themeMode: ThemeMode): void => {
+  if (typeof document === 'undefined') return;
+  const isDark =
+    themeMode === 'dark' ||
+    (themeMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.classList.toggle('dark', isDark);
 };
 
 export const isDesktopRuntime = (): boolean => isTauri();

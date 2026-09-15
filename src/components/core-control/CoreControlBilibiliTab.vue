@@ -3,7 +3,15 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { BilibiliAuthApi, type AuthStateSnapshot, type BilibiliQrLoginSession } from 'danmakus-core';
 import QRCode from 'qrcode';
 import { toast } from 'vue-sonner';
-import { CheckCircle2, Cloud, Loader2, QrCode, RefreshCw, UserRound, ExternalLink } from 'lucide-vue-next';
+import {
+  Cloud,
+  ExternalLink,
+  Loader2,
+  QrCode,
+  RefreshCw,
+  Tv2,
+  UserRound
+} from 'lucide-vue-next';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,10 +31,10 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import type { LocalAppConfigDto } from '../types/api';
-import { biliCookie } from '../services/bilibili';
-import { danmakuService } from '../services/DanmakuService';
-import { fetchImpl } from '../services/fetchImpl';
+import { biliCookie } from '../../services/bilibili';
+import { danmakuService } from '../../services/DanmakuService';
+import { fetchImpl } from '../../services/fetchImpl';
+import type { LocalAppConfigDto } from '../../types/api';
 
 const props = defineProps<{
   localConfig: LocalAppConfigDto;
@@ -43,7 +51,6 @@ const localState = computed(() => authState.value.local);
 const cloudState = computed(() => authState.value.cookieCloud);
 const isCoreRunning = computed(() => props.coreRunning);
 
-// 当前生效账号（CookieCloud 优先，与核心连接逻辑一致）
 const activeProfile = computed(() => cloudState.value.profile ?? localState.value.profile ?? null);
 const localProfile = computed(() => localState.value.profile);
 const isLocalLoggedIn = computed(() => localState.value.valid && localProfile.value !== null);
@@ -55,8 +62,10 @@ const activeSourceLabel = computed(() => {
 });
 
 const activeSourceBadgeClass = computed(() => {
-  if (authState.value.activeSource === 'cookieCloud') return 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300';
-  if (authState.value.activeSource === 'local') return 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  if (authState.value.activeSource === 'cookieCloud')
+    return 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+  if (authState.value.activeSource === 'local')
+    return 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
   return 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300';
 });
 
@@ -68,11 +77,11 @@ const overallStatusText = computed(() => {
   if (cloudState.value.configured && cloudState.value.lastError) {
     return `CookieCloud 同步失败：${cloudState.value.lastError}`;
   }
-  if (cloudState.value.configured) return '已配置 CookieCloud，等待同步出可用 Cookie；也可扫码登录作为备用来源';
+  if (cloudState.value.configured)
+    return '已配置 CookieCloud，等待同步出可用 Cookie；也可扫码登录作为备用来源';
   return '当前没有可用 Cookie，请扫码登录或配置 CookieCloud';
 });
 
-// Cookie 状态由客户端在后台持续评估，无需启动核心
 const lifecycleHint = computed(() =>
   isCoreRunning.value
     ? '核心运行中，连接弹幕服务时会实时使用下述生效来源的 Cookie。'
@@ -81,19 +90,27 @@ const lifecycleHint = computed(() =>
 
 const cloudStatus = computed<{ text: string; class: string }>(() => {
   const state = cloudState.value;
-  if (!state.configured) return { text: '未配置', class: 'border-muted-foreground/20 bg-muted/40 text-muted-foreground' };
-  if (state.phase === 'syncing') return { text: '同步中', class: 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300' };
-  if (state.valid) return { text: '有效', class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
-  if (state.lastError) return { text: '失败', class: 'border-destructive/40 bg-destructive/10 text-destructive' };
-  if (state.hasCookie) return { text: '待校验', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
+  if (!state.configured)
+    return { text: '未配置', class: 'border-muted-foreground/20 bg-muted/40 text-muted-foreground' };
+  if (state.phase === 'syncing')
+    return { text: '同步中', class: 'border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300' };
+  if (state.valid)
+    return { text: '有效', class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+  if (state.lastError)
+    return { text: '失败', class: 'border-destructive/40 bg-destructive/10 text-destructive' };
+  if (state.hasCookie)
+    return { text: '待校验', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
   return { text: '等待同步', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
 });
 
 const localStatus = computed<{ text: string; class: string }>(() => {
   const state = localState.value;
-  if (state.valid) return { text: '有效', class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
-  if (state.lastError && state.hasCookie) return { text: '已失效', class: 'border-destructive/40 bg-destructive/10 text-destructive' };
-  if (state.hasCookie) return { text: '待校验', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
+  if (state.valid)
+    return { text: '有效', class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+  if (state.lastError && state.hasCookie)
+    return { text: '已失效', class: 'border-destructive/40 bg-destructive/10 text-destructive' };
+  if (state.hasCookie)
+    return { text: '待校验', class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300' };
   return { text: '未登录', class: 'border-muted-foreground/20 bg-muted/40 text-muted-foreground' };
 });
 
@@ -210,21 +227,35 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="w-full space-y-4">
+  <div class="w-full space-y-5">
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Bilibili 凭据与 Cookie</h2>
+        <p class="mt-0.5 text-sm text-muted-foreground">管理连接 B 站直播间 WebSocket 所需的账号身份凭据</p>
+      </div>
+    </div>
+
     <!-- 统一鉴权状态 -->
-    <Card class="bg-background/60">
+    <Card class="bg-card/60">
       <CardHeader class="pb-3">
-        <CardTitle class="text-base">账号与 Cookie 状态</CardTitle>
+        <div class="flex items-center gap-2">
+          <Tv2 class="h-4 w-4 text-primary" />
+          <CardTitle class="text-sm">账号与 Cookie 状态</CardTitle>
+        </div>
         <CardDescription>核心连接弹幕服务所使用的鉴权来源，CookieCloud 与本地扫码登录共用同一套状态</CardDescription>
       </CardHeader>
 
       <CardContent class="space-y-4">
-        <div class="rounded-lg border bg-background/50 px-3 py-3 shadow-sm">
+        <div class="rounded-lg border bg-background/50 px-3.5 py-3 shadow-xs">
           <div class="flex flex-wrap items-center gap-2 text-xs">
             <Badge variant="outline" :class="activeSourceBadgeClass">
               生效来源：{{ activeSourceLabel }}
             </Badge>
-            <Badge v-if="authState.phase === 'syncing'" variant="outline" class="border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300">
+            <Badge
+              v-if="authState.phase === 'syncing'"
+              variant="outline"
+              class="border-sky-300 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+            >
               <Loader2 class="mr-1 h-3 w-3 animate-spin" />同步中
             </Badge>
           </div>
@@ -238,31 +269,36 @@ onBeforeUnmount(() => {
             :href="`https://space.bilibili.com/${activeProfile.uid}`"
             target="_blank"
             rel="noopener noreferrer"
-            class="flex min-w-0 items-center gap-3 transition-opacity hover:opacity-80"
+            class="flex min-w-0 items-center gap-3 transition-opacity hover:opacity-85"
           >
             <Avatar class="h-10 w-10 border border-border">
-              <AvatarImage :src="activeProfile.face || 'https://static.hdslb.com/images/member/noface.gif'" referrerpolicy="no-referrer" />
+              <AvatarImage
+                :src="activeProfile.face || 'https://static.hdslb.com/images/member/noface.gif'"
+                referrerpolicy="no-referrer"
+              />
               <AvatarFallback><UserRound class="h-4 w-4 text-muted-foreground" /></AvatarFallback>
             </Avatar>
             <div class="min-w-0">
               <p class="flex items-center gap-1 truncate text-sm font-semibold">
                 {{ activeProfile.uname || '已登录用户' }}
-                <ExternalLink class="h-3 w-3 shrink-0" />
+                <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground" />
               </p>
               <p class="text-xs text-muted-foreground">UID: {{ activeProfile.uid }}</p>
             </div>
           </a>
           <div class="flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-xs">
             <Badge variant="outline">Lv.{{ activeProfile.level ?? 0 }}</Badge>
-            <Badge v-if="(activeProfile.vipStatus ?? 0) > 0" variant="secondary">{{ activeProfile.vipLabel || '大会员' }}</Badge>
+            <Badge v-if="(activeProfile.vipStatus ?? 0) > 0" variant="secondary">
+              {{ activeProfile.vipLabel || '大会员' }}
+            </Badge>
           </div>
         </div>
 
         <Separator v-if="activeProfile" />
 
         <!-- 两个来源的子状态 -->
-        <div class="grid gap-2 sm:grid-cols-2">
-          <div class="rounded-lg border bg-background/40 px-3 py-2.5">
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="rounded-lg border bg-background/40 px-3.5 py-2.5">
             <div class="flex items-center justify-between gap-2">
               <span class="flex items-center gap-1.5 text-xs font-medium">
                 <Cloud class="h-3.5 w-3.5 text-muted-foreground" />CookieCloud
@@ -277,10 +313,10 @@ onBeforeUnmount(() => {
             </p>
           </div>
 
-          <div class="rounded-lg border bg-background/40 px-3 py-2.5">
+          <div class="rounded-lg border bg-background/40 px-3.5 py-2.5">
             <div class="flex items-center justify-between gap-2">
               <span class="flex items-center gap-1.5 text-xs font-medium">
-                <QrCode class="h-3.5 w-3.5 text-muted-foreground" />本地扫码
+                <QrCode class="h-3.5 w-3.5 text-muted-foreground" />本地扫码登录
               </span>
               <Badge variant="outline" :class="localStatus.class" class="text-[10px]">{{ localStatus.text }}</Badge>
             </div>
@@ -289,8 +325,24 @@ onBeforeUnmount(() => {
                 <template v-if="localProfile">{{ localProfile.uname }} · UID {{ localProfile.uid }}</template>
                 <template v-else>为当前客户端补充一份本地 Cookie</template>
               </p>
-              <Button v-if="isLocalLoggedIn" variant="ghost" size="sm" class="h-6 shrink-0 px-2 text-[11px]" @click="handleLocalLogout">登出</Button>
-              <Button v-else variant="outline" size="sm" class="h-6 shrink-0 px-2 text-[11px]" @click="startLogin">扫码登录</Button>
+              <Button
+                v-if="isLocalLoggedIn"
+                variant="ghost"
+                size="sm"
+                class="h-6 shrink-0 px-2 text-[11px]"
+                @click="handleLocalLogout"
+              >
+                登出
+              </Button>
+              <Button
+                v-else
+                variant="outline"
+                size="sm"
+                class="h-6 shrink-0 px-2 text-[11px]"
+                @click="startLogin"
+              >
+                扫码登录
+              </Button>
             </div>
           </div>
         </div>
@@ -298,12 +350,15 @@ onBeforeUnmount(() => {
     </Card>
 
     <!-- CookieCloud 配置 -->
-    <Card class="bg-background/60">
+    <Card class="bg-card/60">
       <CardHeader class="pb-3">
         <div class="flex items-center justify-between gap-3">
-          <div>
-            <CardTitle class="text-base">CookieCloud 配置</CardTitle>
-            <CardDescription>仅保存在当前客户端本地，不会上传服务器；保存后客户端会自动同步并校验</CardDescription>
+          <div class="flex items-center gap-2">
+            <Cloud class="h-4 w-4 text-primary" />
+            <div>
+              <CardTitle class="text-sm">CookieCloud 配置</CardTitle>
+              <CardDescription>仅保存在当前客户端本地，不会上传服务器；保存后客户端会自动同步并校验</CardDescription>
+            </div>
           </div>
           <Button
             variant="outline"
@@ -311,65 +366,91 @@ onBeforeUnmount(() => {
             :disabled="!cloudState.configured || cloudState.phase === 'syncing'"
             @click="emit('sync-cookie-cloud')"
           >
-            <Loader2 v-if="cloudState.phase === 'syncing'" class="h-4 w-4 animate-spin" />
-            <RefreshCw v-else class="h-4 w-4" />
+            <Loader2 v-if="cloudState.phase === 'syncing'" class="h-3.5 w-3.5 animate-spin" />
+            <RefreshCw v-else class="h-3.5 w-3.5" />
             立即同步
           </Button>
         </div>
       </CardHeader>
       <CardContent class="space-y-3">
-        <p v-if="cloudState.lastError" class="text-xs text-destructive">最近错误：{{ cloudState.lastError }}</p>
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-muted-foreground">Host（可选，默认 cookie.danmakus.com）</label>
-          <Input :model-value="props.localConfig.cookieCloudHost" placeholder="https://cookie.danmakus.com" @update:model-value="assignCookieCloudHost" />
-        </div>
-        <div class="grid gap-3 sm:grid-cols-3">
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">Key</label>
-            <Input :model-value="props.localConfig.cookieCloudKey" placeholder="Key" @update:model-value="assignCookieCloudText('cookieCloudKey', $event)" />
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-muted-foreground">CookieCloud 用户 KEY (UUID)</label>
+            <Input
+              :model-value="props.localConfig.cookieCloudKey"
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              @update:model-value="assignCookieCloudText('cookieCloudKey', $event)"
+            />
           </div>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">密码</label>
-            <Input :model-value="props.localConfig.cookieCloudPassword" type="password" placeholder="密码" @update:model-value="assignCookieCloudText('cookieCloudPassword', $event)" />
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-muted-foreground">端到端加密密码</label>
+            <Input
+              :model-value="props.localConfig.cookieCloudPassword"
+              type="password"
+              placeholder="••••••••"
+              @update:model-value="assignCookieCloudText('cookieCloudPassword', $event)"
+            />
           </div>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground">刷新间隔 (秒)</label>
-            <Input :model-value="props.localConfig.cookieRefreshInterval" type="number" min="60" placeholder="3600" @update:model-value="assignCookieRefreshInterval" />
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-muted-foreground">自建服务器地址 (留空使用官方源)</label>
+            <Input
+              :model-value="props.localConfig.cookieCloudHost"
+              placeholder="https://cookiecloud.example.com"
+              @update:model-value="assignCookieCloudHost"
+            />
+          </div>
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-muted-foreground">自动同步轮询间隔 (秒)</label>
+            <Input
+              :model-value="props.localConfig.cookieRefreshInterval"
+              type="number"
+              min="60"
+              placeholder="3600"
+              @update:model-value="assignCookieRefreshInterval"
+            />
           </div>
         </div>
       </CardContent>
     </Card>
 
+    <!-- 扫码登录弹窗 -->
     <Dialog :open="showLoginModal" @update:open="handleDialogOpenChange">
-      <DialogContent :show-close-button="false" class="sm:max-w-md">
+      <DialogContent class="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Bilibili 扫码登录</DialogTitle>
-          <DialogDescription>请使用哔哩哔哩手机客户端扫码完成授权。</DialogDescription>
+          <DialogTitle>扫码登录 Bilibili</DialogTitle>
+          <DialogDescription>使用手机 Bilibili App 扫描二维码登录</DialogDescription>
         </DialogHeader>
 
-        <div class="flex min-h-[280px] flex-col items-center justify-center gap-4 py-2">
-          <template v-if="loginStatus === 'expired'">
-            <p class="text-sm text-destructive">二维码已过期，请重新获取。</p>
-            <Button variant="outline" @click="startLogin">刷新二维码</Button>
-          </template>
+        <div class="flex flex-col items-center justify-center space-y-4 py-4">
+          <div class="relative flex h-[220px] w-[220px] items-center justify-center overflow-hidden rounded-lg border bg-white">
+            <img
+              v-if="loginQrDataUrl && loginStatus !== 'expired'"
+              :src="loginQrDataUrl"
+              alt="登录二维码"
+              class="h-full w-full object-contain p-2"
+            />
+            <div
+              v-else-if="loginStatus === 'expired'"
+              class="flex flex-col items-center justify-center gap-2 bg-background/90 p-4 text-center"
+            >
+              <p class="text-xs text-muted-foreground">二维码已过期</p>
+              <Button size="sm" variant="outline" @click="startLogin">重新获取</Button>
+            </div>
+            <Loader2 v-else class="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
 
-          <template v-else-if="loginQrDataUrl">
-            <img :src="loginQrDataUrl" alt="Bilibili Login QRCode" class="h-[220px] w-[220px] rounded-md border bg-white p-2" />
-            <p v-if="loginStatus === 'scanned'" class="flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400">
-              <CheckCircle2 class="h-4 w-4" />
-              扫码成功，请在手机上确认
-            </p>
-            <p v-else-if="loginStatus === 'waiting'" class="text-sm text-muted-foreground">
-              请使用哔哩哔哩客户端扫码
-            </p>
-            <Loader2 v-else class="h-4 w-4 animate-spin text-muted-foreground" />
-          </template>
-
-          <Loader2 v-else class="h-5 w-5 animate-spin text-muted-foreground" />
+          <p class="text-xs text-muted-foreground">
+            <template v-if="loginStatus === 'waiting'">等待扫码…</template>
+            <template v-else-if="loginStatus === 'scanned'">已扫码，请在手机上确认</template>
+            <template v-else-if="loginStatus === 'confirmed'">登录成功，正在建立会话…</template>
+            <template v-else-if="loginStatus === 'expired'">二维码已过期，请刷新</template>
+            <template v-else>正在生成二维码…</template>
+          </p>
         </div>
       </DialogContent>
     </Dialog>
   </div>
 </template>
-
-

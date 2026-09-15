@@ -13,7 +13,10 @@ export type {
   CoreRuntimeStateDto
 } from 'danmakus-core';
 
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 export interface LocalAppConfigDto {
+  themeMode: ThemeMode;
   autoStart: boolean;
   startMinimized: boolean;
   minimizeToTray: boolean;

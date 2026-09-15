@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ExternalLink, Loader2, ShieldCheck } from 'lucide-vue-next';
+import { ExternalLink, Globe, Loader2, ShieldCheck } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -10,6 +10,7 @@ import {
   CardTitle
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { allApiNodes, currentActiveOrigin } from '../../services/apiNodes';
 
 const props = defineProps<{
   token: string;
@@ -19,7 +20,20 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:token', value: string): void;
   (e: 'apply-token'): void;
+  (e: 'open-api-selector'): void;
 }>();
+
+const currentNodeInfo = computed(() =>
+  allApiNodes.value.find((n) => n.origin === currentActiveOrigin.value)
+);
+
+const activeHost = computed(() => {
+  try {
+    return new URL(currentActiveOrigin.value).host;
+  } catch {
+    return 'ukamnads.icu';
+  }
+});
 
 const tokenValue = computed({
   get: () => props.token,
@@ -28,14 +42,31 @@ const tokenValue = computed({
 </script>
 
 <template>
-  <div class="grid min-h-[480px] place-items-center">
-    <Card class="w-full max-w-md border-2 bg-gradient-to-br from-card/90 to-card/70 shadow-lg backdrop-blur">
-      <CardHeader class="text-center">
+  <div class="flex h-full min-h-screen w-full items-center justify-center p-4">
+    <Card class="relative w-full max-w-md border-2 bg-gradient-to-br from-card/90 to-card/70 shadow-lg backdrop-blur">
+      <!-- Top right node selector pill -->
+      <div class="absolute right-3 top-3">
+        <Button
+          variant="outline"
+          size="sm"
+          class="h-7 gap-1.5 px-2 text-[11px] font-mono text-muted-foreground hover:text-foreground"
+          title="点击切换或测速后端 API 节点"
+          @click="emit('open-api-selector')"
+        >
+          <Globe class="h-3 w-3 text-primary" />
+          <span class="truncate max-w-[120px]">{{ activeHost }}</span>
+          <span v-if="currentNodeInfo?.latencyMs" class="text-emerald-600 dark:text-emerald-400">
+            {{ currentNodeInfo.latencyMs }}ms
+          </span>
+        </Button>
+      </div>
+
+      <CardHeader class="pt-8 text-center">
         <div class="mx-auto mb-2 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
           <ShieldCheck class="h-7 w-7 text-primary" />
         </div>
-        <CardTitle class="text-2xl">登录Danmakus Client</CardTitle>
-        <CardDescription>记录想要录制的直播间</CardDescription>
+        <CardTitle class="text-2xl font-bold tracking-tight">登录 Danmakus Client</CardTitle>
+        <CardDescription>连接弹幕收集核心与账号同步中心</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
         <div class="space-y-2">

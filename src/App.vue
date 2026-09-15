@@ -1,20 +1,20 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted } from 'vue';
 import IndexPage from './pages/Index.vue';
 import 'vue-sonner/style.css';
 import { Toaster } from '@/components/ui/sonner';
+import { applyThemeMode, loadLocalAppConfig } from './services/localApp';
 
 const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
-const prefersDark = ref(colorSchemeQuery.matches);
 
-const applyTheme = (isDark: boolean) => {
-  document.documentElement.classList.toggle('dark', isDark);
+const syncCurrentTheme = () => {
+  const config = loadLocalAppConfig();
+  applyThemeMode(config.themeMode);
 };
 
-const handleColorSchemeChange = (event: MediaQueryListEvent) => {
-  prefersDark.value = event.matches;
-  applyTheme(event.matches);
+const handleColorSchemeChange = () => {
+  syncCurrentTheme();
 };
 
 const handleKeydown = (event: KeyboardEvent) => {
@@ -27,7 +27,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 };
 
 onMounted(() => {
-  applyTheme(prefersDark.value);
+  syncCurrentTheme();
   colorSchemeQuery.addEventListener('change', handleColorSchemeChange);
   window.addEventListener('keydown', handleKeydown);
 });

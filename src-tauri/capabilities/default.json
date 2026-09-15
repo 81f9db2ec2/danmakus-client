@@ -18,6 +18,7 @@
     "autostart:default",
     "process:default",
     "notification:default",
+    "window-state:default",
     "http:allow-fetch-cancel-body",
     {
       "identifier": "http:default",

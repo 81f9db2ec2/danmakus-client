@@ -8,17 +8,21 @@ import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http'
 import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, isMacosDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
 import { liveSessionOutbox, type LiveSessionOutboxDatabaseInfo } from '../services/liveSessionOutbox';
 import { APP_UPDATE_CHECK_INTERVAL_MS, checkForUpdate, installLatestUpdate, updaterEnabled, type AvailableUpdate } from '../services/updater';
+import { activeFallbackAlert, dismissFallbackAlert } from '../services/apiNodes';
 import type { CoreControlConfigDto, LocalAppConfigDto } from '../types/api';
+import ApiNodeSelectorModal from './ApiNodeSelectorModal.vue';
 import AppSidebar from './AppSidebar.vue';
-import BilibiliLogin from './BilibiliLogin.vue';
 import CoreControlAccountTab from './core-control/CoreControlAccountTab.vue';
 import CoreControlAppTab from './core-control/CoreControlAppTab.vue';
+import CoreControlBilibiliTab from './core-control/CoreControlBilibiliTab.vue';
 import CoreControlDashboardTab from './core-control/CoreControlDashboardTab.vue';
 import CoreControlLoginCard from './core-control/CoreControlLoginCard.vue';
+import CoreControlRecordingsTab from './core-control/CoreControlRecordingsTab.vue';
 import CoreControlSettingsTab from './core-control/CoreControlSettingsTab.vue';
 
 const token = ref(getAuthToken());
 const currentPage = ref('dashboard');
+const showApiNodeModal = ref(false);
 const isDesktopApp = isDesktopRuntime();
 const isMacosDesktopApp = isMacosDesktopRuntime();
 const runtimeFixedUrl = RUNTIME_URL;
@@ -874,31 +878,129 @@ onBeforeUnmount(() => {
 <template>
   <div class="h-screen w-full">
     <!-- Login screen -->
-    <CoreControlLoginCard v-if="!isLoggedIn" :token="token" :loading-profile="loadingProfile" @update:token="token = $event" @apply-token="loadProfile" />
+    <CoreControlLoginCard
+      v-if="!isLoggedIn"
+      :token="token"
+      :loading-profile="loadingProfile"
+      @update:token="token = $event"
+      @apply-token="loadProfile"
+      @open-api-selector="showApiNodeModal = true"
+    />
 
     <!-- Main app layout -->
     <div v-else class="flex h-screen">
-      <AppSidebar :current-page="currentPage" :user-info="userInfo" :is-running="runtimeState.isRunning" :runtime-connected="runtimeState.runtimeConnected" :message-count="runtimeState.messageCount" :connected-rooms-count="runtimeState.connectedRooms.length" @navigate="currentPage = $event" @logout="handleLogout" />
+      <AppSidebar
+        :current-page="currentPage"
+        :user-info="userInfo"
+        :is-running="runtimeState.isRunning"
+        :runtime-connected="runtimeState.runtimeConnected"
+        :message-count="runtimeState.messageCount"
+        :connected-rooms-count="runtimeState.connectedRooms.length"
+        @navigate="currentPage = $event"
+        @logout="handleLogout"
+        @open-api-selector="showApiNodeModal = true"
+      />
 
       <main class="flex-1 overflow-y-auto">
         <div class="mx-auto max-w-5xl px-6 py-6">
+          <!-- API Fallback Alert -->
+          <div
+            v-if="activeFallbackAlert"
+            class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-500/10 px-4 py-3 text-xs text-amber-900 dark:border-amber-500/30 dark:text-amber-200"
+          >
+            <div class="flex items-center gap-2">
+              <span class="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+              <span>
+                主 API 节点响应异常，已自动无缝切换到备用节点：
+                <code class="font-mono font-semibold">{{ activeFallbackAlert.fallbackOrigin }}</code>
+              </span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="rounded border border-amber-400/50 bg-amber-500/20 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-amber-500/30"
+                @click="showApiNodeModal = true"
+              >
+                测速与切换
+              </button>
+              <button
+                type="button"
+                class="text-amber-700 hover:text-amber-900 dark:text-amber-300"
+                title="关闭提示"
+                @click="dismissFallbackAlert"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
           <Transition name="page" mode="out-in">
             <CoreControlDashboardTab v-if="currentPage === 'dashboard'" key="dashboard" :runtime-state="runtimeState" :recording-room-ids="recordingRoomIds" :recording-stats-by-room="recordingStatsByRoom" :remote-clients="remoteClients" :local-client-id="localClientId" :account-name="accountNameForDisplay" :account-id="accountIdForDisplay" :refreshing-state="refreshingState" :forcing-lock="forcingLock" :starting-core="startingCore" :stopping-core="stoppingCore" :app-update-busy="appUpdateBusy" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" @refresh-runtime-state="refreshRuntimeState" @clear-runtime-error="handleClearRuntimeError" @force-takeover="handleForceTakeover" @start-core="handleStartCore" @stop-core="handleStopCore" @install-app-update="handleInstallAppUpdate" />
 
-            <CoreControlSettingsTab v-else-if="currentPage === 'settings'" key="settings" :core-config="coreConfigDraft" :local-config="localConfig" :available-areas="availableAreas" :recordings="recordings" :refreshing-recordings="refreshingRecordings" :adding-recording="addingRecording" :removing-recording-uid="removingRecordingUid" :updating-recording-uid="updatingRecordingUid" :saving-config="savingConfig" :importing-follows="importingFollows" :import-follows-progress="importFollowsProgress" @save-config="handleSaveConfig" @refresh-recordings="refreshRecordingList" @add-recording="handleAddRecording" @remove-recording="handleRemoveRecording" @update-recording-public="handleUpdateRecordingPublic" @import-follows="handleImportFollows" />
+            <CoreControlRecordingsTab
+              v-else-if="currentPage === 'recordings'"
+              key="recordings"
+              :recordings="recordings"
+              :local-config="localConfig"
+              :refreshing-recordings="refreshingRecordings"
+              :adding-recording="addingRecording"
+              :removing-recording-uid="removingRecordingUid"
+              :updating-recording-uid="updatingRecordingUid"
+              :importing-follows="importingFollows"
+              :import-follows-progress="importFollowsProgress"
+              @refresh-recordings="refreshRecordingList"
+              @add-recording="handleAddRecording"
+              @remove-recording="handleRemoveRecording"
+              @update-recording-public="handleUpdateRecordingPublic"
+              @import-follows="handleImportFollows"
+            />
 
-            <CoreControlAppTab v-else-if="currentPage === 'app'" key="app" :local-config="localConfig" :is-desktop-runtime="isDesktopApp" :is-macos-desktop-runtime="isMacosDesktopApp" :updater-supported="isUpdaterSupported" :app-update-busy="appUpdateBusy" :checking-app-update="checkingAppUpdate" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" :database-info="databaseInfo" :loading-database-info="loadingDatabaseInfo" :rebuilding-database="rebuildingDatabase" @check-app-update="handleCheckAppUpdate" @install-app-update="handleInstallAppUpdate" @refresh-database-info="refreshDatabaseInfo(false)" @rebuild-database="handleRebuildDatabase" />
+            <CoreControlSettingsTab
+              v-else-if="currentPage === 'settings'"
+              key="settings"
+              :core-config="coreConfigDraft"
+              :local-config="localConfig"
+              :available-areas="availableAreas"
+              :saving-config="savingConfig"
+              @save-config="handleSaveConfig"
+            />
 
-            <div v-else-if="currentPage === 'bilibili'" key="bilibili">
-              <h2 class="mb-4 text-xl font-semibold tracking-tight">Bilibili 连接管理</h2>
-              <p class="mb-5 text-sm text-muted-foreground">登录 Bilibili 账号或配置 CookieCloud，用于连接直播间弹幕服务</p>
-              <BilibiliLogin :local-config="localConfig" :auth-state="runtimeState.authState" :core-running="runtimeState.isRunning" @sync-cookie-cloud="handleSyncCookieCloud" />
-            </div>
+            <CoreControlAppTab
+              v-else-if="currentPage === 'app'"
+              key="app"
+              :local-config="localConfig"
+              :is-desktop-runtime="isDesktopApp"
+              :is-macos-desktop-runtime="isMacosDesktopApp"
+              :updater-supported="isUpdaterSupported"
+              :app-update-busy="appUpdateBusy"
+              :checking-app-update="checkingAppUpdate"
+              :installing-app-update="installingAppUpdate"
+              :available-update-version="availableUpdateVersion"
+              :database-info="databaseInfo"
+              :loading-database-info="loadingDatabaseInfo"
+              :rebuilding-database="rebuildingDatabase"
+              @check-app-update="handleCheckAppUpdate"
+              @install-app-update="handleInstallAppUpdate"
+              @refresh-database-info="refreshDatabaseInfo(false)"
+              @rebuild-database="handleRebuildDatabase"
+            />
+
+            <CoreControlBilibiliTab
+              v-else-if="currentPage === 'bilibili'"
+              key="bilibili"
+              :local-config="localConfig"
+              :auth-state="runtimeState.authState"
+              :core-running="runtimeState.isRunning"
+              @sync-cookie-cloud="handleSyncCookieCloud"
+            />
 
             <CoreControlAccountTab v-else-if="currentPage === 'account'" key="account" :user-info="userInfo" :recordings="recordings" @logout="handleLogout" />
           </Transition>
         </div>
       </main>
     </div>
+
+    <!-- API Node Selector Modal -->
+    <ApiNodeSelectorModal v-model:open="showApiNodeModal" />
   </div>
 </template>
