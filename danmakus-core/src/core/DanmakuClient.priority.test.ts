@@ -671,6 +671,22 @@ describe("DanmakuClient room pull flow", () => {
     client.messageQueue.enqueueExtractedEvent = (event: any) => {
       archivedEvents.push(event);
     };
+    client.danmakuExtractor.setRules({
+      version: 1,
+      rules: [
+        {
+          pattern: "^DANMU_MSG(:.*)?$",
+          target: "danmaku",
+          consts: { type: 0 },
+          fields: {
+            userId: { path: "info.2.0", as: "int" },
+            userName: { path: "info.2.1" },
+            message: { path: "info.1" },
+            sendDate: { path: "info.0.4", as: "timestamp" },
+          },
+        },
+      ],
+    });
 
     await client.connectToRoom(4455, "server");
 

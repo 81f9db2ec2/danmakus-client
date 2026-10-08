@@ -173,14 +173,22 @@ export class RuntimeWsConnection {
                 extractionRules?: DanmakuExtractionRuleSet;
               }>(frame.payload);
               if (result.success) {
+                // 规则非法时 setRules 抛错：先应用规则再置连接态，避免半连接（isConnected=true 但从不 settle）
+                if (result.extractionRules) {
+                  try {
+                    this.options.onExtractionRules?.(result.extractionRules);
+                  } catch (error) {
+                    this.logger.error('服务端解析规则无效，放弃本次连接', error);
+                    ws.close();
+                    settle(false);
+                    return;
+                  }
+                }
                 const isReconnect = this.hasConnectedOnce;
                 this.ws = ws;
                 this.isConnected = true;
                 this.hasConnectedOnce = true;
                 this.reconnectAttempts = 0;
-                if (result.extractionRules) {
-                  this.options.onExtractionRules?.(result.extractionRules);
-                }
                 this.logger.info(`WebSocket 鉴权成功，长连接已${isReconnect ? '重新' : ''}建立`);
                 if (isReconnect) {
                   this.options.onReconnected?.();

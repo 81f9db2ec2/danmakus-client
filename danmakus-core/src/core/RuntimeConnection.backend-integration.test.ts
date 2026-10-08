@@ -236,6 +236,7 @@ describe("RuntimeConnection backend integration", () => {
         const allowedRoomIds = new Set([
           ...liveRoomIds,
           ...recordingRoomIds,
+          ...client.connectedRooms,
         ]);
 
         expect(nextHoldingRooms.length).toBeLessThanOrEqual(client.maxConnections);
