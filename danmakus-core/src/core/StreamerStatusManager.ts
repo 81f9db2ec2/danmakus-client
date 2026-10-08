@@ -52,6 +52,38 @@ export class StreamerStatusManager {
   }
 
   /**
+   * 接收来自 WebSocket 的即时开播状态推送
+   */
+  applyStatusPush(updates: StreamerStatus[]): void {
+    if (!updates || updates.length === 0) {
+      return;
+    }
+
+    const validStatuses: StreamerStatus[] = [];
+    for (const update of updates) {
+      const roomId = Number(update.roomId) > 0 ? Math.floor(Number(update.roomId)) : 0;
+      if (roomId > 0) {
+        const normalized: StreamerStatus = {
+          roomId,
+          uId: typeof update.uId === 'number' && update.uId > 0 ? Math.floor(update.uId) : undefined,
+          isLive: Boolean(update.isLive),
+          title: update.title,
+          username: update.username,
+          faceUrl: update.faceUrl,
+          viewerCount: typeof update.viewerCount === 'number' ? update.viewerCount : undefined,
+          liveStartTime: typeof update.liveStartTime === 'number' ? update.liveStartTime : undefined,
+        };
+        this.statusCache.set(roomId, normalized);
+        validStatuses.push(normalized);
+      }
+    }
+
+    if (validStatuses.length > 0) {
+      this.onStatusUpdated?.(validStatuses);
+    }
+  }
+
+  /**
    * 启动状态检查
    */
   start(): void {
@@ -302,7 +334,7 @@ export class StreamerStatusManager {
   }
 
   /**
-   * 根据直播状态获取应该连接的房间
+   * 根据直播状态获取应该连接的房间（严格受服务端 holdingRooms 约束，杜绝多客户端本地竞争）
    */
   getRoomsToConnect(
     recordingRooms: number[],
@@ -310,33 +342,23 @@ export class StreamerStatusManager {
     maxConnections: number
   ): { roomId: number; priority: 'high' | 'server'; }[] {
     const rooms: { roomId: number; priority: 'high' | 'server'; }[] = [];
-    const normalizedRecordingRooms = Array.from(new Set(
+    const normalizedRecordingRooms = new Set(
       recordingRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
-    ));
+    );
     const normalizedServerRooms = Array.from(new Set(
       holdingRooms.map(r => Number(r)).filter(r => Number.isFinite(r) && r > 0)
     ));
-
-    for (const roomId of normalizedRecordingRooms) {
-      if (rooms.length >= maxConnections) {
-        break;
-      }
-      const status = this.statusCache.get(roomId);
-      if (status?.isLive) {
-        rooms.push({ roomId, priority: 'high' });
-      }
-    }
 
     for (const roomId of normalizedServerRooms) {
       if (rooms.length >= maxConnections) {
         break;
       }
-      if (rooms.some(r => r.roomId === roomId)) {
-        continue;
-      }
       const status = this.statusCache.get(roomId);
       if (status?.isLive) {
-        rooms.push({ roomId, priority: 'server' });
+        rooms.push({
+          roomId,
+          priority: normalizedRecordingRooms.has(roomId) ? 'high' : 'server',
+        });
       }
     }
 

@@ -1,214 +1,80 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { decode } from "@msgpack/msgpack";
+import { describe, expect, it } from "bun:test";
 import { RuntimeConnection } from "./RuntimeConnection.js";
 
 const TEST_STREAMER_UID = 84;
 
-const originalFetch = globalThis.fetch;
-const originalCompressionStream = globalThis.CompressionStream;
-
-const normalizeBodyBytes = async (body: BodyInit | null | undefined): Promise<Uint8Array> => {
-  if (!body) {
-    return new Uint8Array(0);
-  }
-  if (body instanceof Uint8Array) {
-    return body;
-  }
-  if (body instanceof ArrayBuffer) {
-    return new Uint8Array(body);
-  }
-  if (ArrayBuffer.isView(body)) {
-    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-  }
-  if (body instanceof Blob) {
-    return new Uint8Array(await body.arrayBuffer());
-  }
-  throw new Error(`unsupported request body type: ${Object.prototype.toString.call(body)}`);
-};
-
-afterEach(() => {
-  globalThis.fetch = originalFetch;
-  globalThis.CompressionStream = originalCompressionStream;
-});
-
-describe("RuntimeConnection room pull", () => {
-  it("posts local holding state to request-room and returns normalized response", async () => {
-    const requests: Array<{ url: string; body: unknown; headers: Headers }> = [];
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push({
-        url: String(input),
-        body: init?.body ? JSON.parse(String(init.body)) : null,
-        headers: new Headers(init?.headers),
-      });
-
-      return new Response(JSON.stringify({
-        code: 200,
-        data: {
-          holdingRooms: [202, 203],
-          newlyAssignedRooms: [203],
-          droppedRooms: [201],
-          effectiveCapacity: 4,
-          nextRequestAfter: 1710000000000,
-          shortfall: {
-            reason: 'candidate_pool_exhausted',
-            missingCount: 1,
-            candidateCount: 2,
-            assignableCandidateCount: 2,
-            blockedBySameAccountCount: 0,
-            blockedByOtherAccountsCount: 1,
-          },
-        },
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as typeof fetch;
-
+describe("RuntimeConnection", () => {
+  it("routes sendStateReport through wsConnection when available", async () => {
     const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
-    await runtime.connect();
-
-    const result = await (runtime as any).requestRooms({
-      holdingRooms: [201, 202],
-      connectedRooms: [202],
-      desiredCount: 2,
-      capacityOverride: 4,
-      reason: "capacity-refresh",
-    });
-
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/request-room");
-    expect(requests[0]?.headers.get("Token")).toBe("test-token");
-    expect(requests[0]?.body).toEqual({
-      clientId: "test-client",
-      holdingRooms: [201, 202],
-      connectedRooms: [202],
-      desiredCount: 2,
-      capacityOverride: 4,
-      reason: "capacity-refresh",
-    });
-    expect(result).toEqual({
-      holdingRooms: [202, 203],
-      newlyAssignedRooms: [203],
-      droppedRooms: [201],
-      effectiveCapacity: 4,
-      nextRequestAfter: 1710000000000,
-      shortfall: {
-        reason: 'candidate_pool_exhausted',
-        missingCount: 1,
-        candidateCount: 2,
-        assignableCandidateCount: 2,
-        blockedBySameAccountCount: 0,
-        blockedByOtherAccountsCount: 1,
+    let reportedState: any = null;
+    (runtime as any).wsConnection = {
+      connected: true,
+      sendStateReport: (state: any) => {
+        reportedState = state;
+        return true;
       },
-    });
-  });
-
-  it("falls back through ukamnads.icu chain when primary runtime api fails", async () => {
-    const requests: Array<{ url: string; body: unknown; headers: Headers }> = [];
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      requests.push({
-        url,
-        body: init?.body ? JSON.parse(String(init.body)) : null,
-        headers: new Headers(init?.headers),
-      });
-
-      if (!url.startsWith('https://api.danmakus.com/')) {
-        return new Response('bad gateway', { status: 502 });
-      }
-
-      return new Response(JSON.stringify({
-        code: 200,
-        data: {
-          holdingRooms: [401],
-          newlyAssignedRooms: [401],
-          droppedRooms: [],
-          effectiveCapacity: 1,
-          nextRequestAfter: 1710000001000,
-        },
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as typeof fetch;
-
-    const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
-    await runtime.connect();
-
-    const result = await (runtime as any).requestRooms({
-      holdingRooms: [],
-      connectedRooms: [],
-      desiredCount: 1,
-      reason: "fallback-check",
-    });
-
-    expect(requests.map((item) => item.url)).toEqual([
-      'https://example.com/api/v2/core-runtime/request-room',
-      'https://ukamnads.icu/api/v2/core-runtime/request-room',
-      'https://api.ukamnads.icu/api/v2/core-runtime/request-room',
-      'https://api.danmakus.com/api/v2/core-runtime/request-room'
-    ]);
-    expect(result).toEqual({
-      holdingRooms: [401],
-      newlyAssignedRooms: [401],
-      droppedRooms: [],
-      effectiveCapacity: 1,
-      nextRequestAfter: 1710000001000,
-      shortfall: null,
-    });
-    expect(runtime.getConnectionState()).toBe(true);
-  });
-
-  it("marks runtime disconnected after request-room fails on all candidates", async () => {
-    let disconnectedError: Error | undefined;
-    globalThis.fetch = (async () => new Response('bad gateway', { status: 502 })) as typeof fetch;
-
-    const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
-    runtime.onDisconnected = (error?: Error) => {
-      disconnectedError = error;
     };
-    await runtime.connect();
 
-    const result = await (runtime as any).requestRooms({
-      holdingRooms: [201],
-      connectedRooms: [201],
-      desiredCount: 1,
-      reason: "disconnect-check",
+    const success = runtime.sendStateReport({
+      holdingRooms: [101, 102],
+      connectedRooms: [101],
+      desiredCount: 2,
+      capacity: 4,
+      reason: "capacity-refresh",
     });
 
-    expect(result).toBeNull();
-    expect(runtime.getConnectionState()).toBe(false);
-    expect(disconnectedError).toBeInstanceOf(Error);
+    expect(success).toBe(true);
+    expect(reportedState).toEqual({
+      holdingRooms: [101, 102],
+      connectedRooms: [101],
+      desiredCount: 2,
+      capacity: 4,
+      reason: "capacity-refresh",
+    });
   });
 
-  it("posts archive batches with streamerUid and eventTsMs only", async () => {
-    const requests: Array<{ url: string; body: unknown; headers: Headers }> = [];
-    globalThis.CompressionStream = undefined as typeof CompressionStream | undefined;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const bodyBytes = await normalizeBodyBytes(init?.body);
-      const envelope = decode(bodyBytes) as { compression: string; payload: Uint8Array };
-      requests.push({
-        url: String(input),
-        body: decode(envelope.payload),
-        headers: new Headers(init?.headers),
-      });
-      expect(envelope.compression).toBe("identity");
-
-      return new Response(JSON.stringify({
-        code: 200,
-        data: {
-          rejected: [],
-        },
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as typeof fetch;
-
+  it("registers push callbacks to wsConnection", async () => {
     const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
-    await runtime.connect();
+    let registeredCallbacks: any = null;
+    (runtime as any).wsConnection = {
+      setCallbacks: (cb: any) => {
+        registeredCallbacks = cb;
+      },
+    };
 
-    await runtime.sendArchiveBatch([{
+    const callbacks = {
+      onStreamerStatusPush: () => undefined,
+      onRoomAssignPush: () => undefined,
+    };
+    runtime.setCallbacks(callbacks);
+
+    expect(registeredCallbacks).toEqual(callbacks);
+  });
+
+  it("routes sendArchiveBatch through wsConnection and throws when disconnected", async () => {
+    const runtime = new RuntimeConnection("https://example.com/api/v2/core-runtime?token=test-token&clientId=test-client");
+
+    // Disconnected: throws
+    expect(runtime.sendArchiveBatch([{
+      id: 7,
+      streamerUid: TEST_STREAMER_UID,
+      eventTsMs: 1710000001000,
+      payload: new Uint8Array([1, 2, 3]),
+      retryCount: 0,
+      nextRetryAtMs: 1710000001000,
+    }])).rejects.toThrow("WebSocket 未连接");
+
+    // Connected: delegates to wsConnection
+    let uploadedRecords: any = null;
+    (runtime as any).wsConnection = {
+      connected: true,
+      sendArchiveBatch: async (records: any) => {
+        uploadedRecords = records;
+        return { rejected: [] };
+      },
+    };
+
+    const res = await runtime.sendArchiveBatch([{
       id: 7,
       streamerUid: TEST_STREAMER_UID,
       eventTsMs: 1710000001000,
@@ -217,18 +83,8 @@ describe("RuntimeConnection room pull", () => {
       nextRetryAtMs: 1710000001000,
     }]);
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe("https://example.com/api/v2/core-runtime/upload-danmakus-v5");
-    expect(requests[0]?.headers.get("Content-Type")).toBe("application/x-msgpack");
-    expect(requests[0]?.headers.has("Content-Encoding")).toBe(false);
-    expect(requests[0]?.headers.get("X-Archive-Compression")).toBe("identity");
-    expect(requests[0]?.body).toEqual({
-      items: [{
-        localId: 7,
-        streamerUid: TEST_STREAMER_UID,
-        eventTsMs: 1710000001000,
-        payload: new Uint8Array([1, 2, 3]),
-      }],
-    });
+    expect(res).toEqual({ rejected: [] });
+    expect(uploadedRecords).toHaveLength(1);
+    expect(uploadedRecords[0].id).toBe(7);
   });
 });

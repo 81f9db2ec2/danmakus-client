@@ -30,11 +30,11 @@ describe('AccountApiClient 运行态地址跟随 runtimeUrl', () => {
     globalThis.fetch = originalFetch;
   });
 
-  test('默认指向 ukamnads.icu，setCoreRuntimeBaseUrl 后 sync 打到新地址', async () => {
+  test('默认指向 ukamnads.icu，setCoreRuntimeBaseUrl 后 clients 打到新地址', async () => {
     const captured: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       captured.push(typeof input === 'string' ? input : input.toString());
-      return new Response(JSON.stringify({ code: 200, data: {} }), {
+      return new Response(JSON.stringify({ code: 200, data: [] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -48,11 +48,11 @@ describe('AccountApiClient 运行态地址跟随 runtimeUrl', () => {
     client.setCoreRuntimeBaseUrl('https://client.danmakus.com/api/v2/core-runtime');
     expect(client.getCoreRuntimeBaseUrl()).toBe('https://client.danmakus.com/api/v2/core-runtime');
 
-    await client.syncRuntimeState({ clientId: 'client-1' });
+    await client.getCoreClients();
 
-    const syncCall = captured.find(url => url.includes('/sync'));
-    expect(syncCall).toBeDefined();
-    expect(syncCall!).toStartWith('https://client.danmakus.com/api/v2/core-runtime/sync');
+    const clientsCall = captured.find(url => url.includes('/clients'));
+    expect(clientsCall).toBeDefined();
+    expect(clientsCall!).toStartWith('https://client.danmakus.com/api/v2/core-runtime/clients');
   });
 
   test('空值回退到 account 中心派生地址', () => {

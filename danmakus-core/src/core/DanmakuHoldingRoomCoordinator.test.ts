@@ -12,18 +12,10 @@ function createCoordinatorContext(options?: {
   recordingRooms?: number[];
   connectedRooms?: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }>;
   runtimeConnected?: boolean;
-  requestRooms?: (payload: Record<string, unknown>) => Promise<{
-    holdingRooms: number[];
-    newlyAssignedRooms: number[];
-    droppedRooms: number[];
-    effectiveCapacity: number;
-    nextRequestAfter?: number | null;
-    shortfall?: RuntimeRoomPullShortfallDto | null;
-  } | null>;
+  sendStateReport?: (payload: Record<string, unknown>) => boolean;
 }) {
   const disconnectedRooms: number[] = [];
   const queuedConnects: Array<{ roomId: number; priority: "high" | "normal" | "low" | "server" }> = [];
-  let syncCallCount = 0;
   let statusChangedCallCount = 0;
   let updateConnectionsCallCount = 0;
   let refreshStatusNowCallCount = 0;
@@ -66,7 +58,7 @@ function createCoordinatorContext(options?: {
     getConfig: () => config,
     getRuntimeConnection: () => ({
       getConnectionState: () => options?.runtimeConnected ?? true,
-      requestRooms: async (payload: Record<string, unknown>) => options?.requestRooms?.(payload) ?? null,
+      sendStateReport: (payload: Record<string, unknown>) => options?.sendStateReport?.(payload) ?? true,
     }),
     getStatusManager: () => statusManager,
     getRecordingRoomIds: () => [...recordingRooms],
@@ -84,9 +76,6 @@ function createCoordinatorContext(options?: {
     },
     updateConnections: () => {
       updateConnectionsCallCount += 1;
-    },
-    syncRuntimeState: () => {
-      syncCallCount += 1;
     },
     refreshStatusNow: () => {
       refreshStatusNowCallCount += 1;
@@ -116,7 +105,6 @@ function createCoordinatorContext(options?: {
     disconnectedRooms,
     queuedConnects,
     connectionMap,
-    getSyncCallCount: () => syncCallCount,
     getStatusChangedCallCount: () => statusChangedCallCount,
     getUpdateConnectionsCallCount: () => updateConnectionsCallCount,
     getRefreshStatusNowCallCount: () => refreshStatusNowCallCount,
@@ -124,43 +112,42 @@ function createCoordinatorContext(options?: {
 }
 
 describe("DanmakuHoldingRoomCoordinator room selection", () => {
-  it("disconnects recording-only rooms when room pull mode is enabled", () => {
+  it("connects live recording rooms with high priority when assigned in holding rooms", () => {
     const originalSetTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number) => 1 as ReturnType<typeof setTimeout>) as typeof setTimeout;
 
     try {
-      const { coordinator, disconnectedRooms, connectionMap } = createCoordinatorContext({
+      const { coordinator, queuedConnects, connectionMap } = createCoordinatorContext({
         requestServerRooms: true,
-        holdingRooms: [301],
+        holdingRooms: [201, 301],
         recordingRooms: [201],
         connectedRooms: [{ roomId: 201, priority: "high" }],
       });
 
       coordinator.applyConnectionsUpdate();
 
-      expect(disconnectedRooms).toEqual([201]);
-      expect(connectionMap.has(201)).toBe(false);
+      expect(connectionMap.has(201)).toBe(true);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
     }
   });
 
-  it("disconnects recording-only rooms even when supplemental assignments are disabled", () => {
+  it("disconnects offline recording rooms", () => {
     const originalSetTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number) => 1 as ReturnType<typeof setTimeout>) as typeof setTimeout;
 
     try {
       const { coordinator, disconnectedRooms, connectionMap } = createCoordinatorContext({
         requestServerRooms: false,
-        holdingRooms: [301],
-        recordingRooms: [201],
-        connectedRooms: [{ roomId: 201, priority: "high" }],
+        holdingRooms: [],
+        recordingRooms: [999], // 999 is not live in statusCache
+        connectedRooms: [{ roomId: 999, priority: "high" }],
       });
 
       coordinator.applyConnectionsUpdate();
 
-      expect(disconnectedRooms).toEqual([201]);
-      expect(connectionMap.has(201)).toBe(false);
+      expect(disconnectedRooms).toEqual([999]);
+      expect(connectionMap.has(999)).toBe(false);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
     }
@@ -187,15 +174,9 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       } as DanmakuConfig),
       getRuntimeConnection: () => ({
         getConnectionState: () => true,
-        requestRooms: async (payload: Record<string, unknown>) => {
+        sendStateReport: (payload: Record<string, unknown>) => {
           requestPayload = payload;
-          return {
-            holdingRooms: [201],
-            newlyAssignedRooms: [201],
-            droppedRooms: [],
-            effectiveCapacity: 5,
-            nextRequestAfter: 0,
-          };
+          return true;
         },
       }),
       getStatusManager: () => statusManager,
@@ -221,7 +202,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       },
     } as never);
 
-    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "followed-only", { force: true });
+    const success = coordinator.reportHoldingRoomState("followed-only", { force: true });
 
     expect(success).toBe(true);
     expect(requestPayload).toEqual({
@@ -229,7 +210,15 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       holdingRooms: [],
       connectedRooms: [],
       desiredCount: 5,
+      capacity: 5,
       capacityOverride: undefined,
+    });
+    coordinator.applyHoldingRoomResult({
+      holdingRooms: [201],
+      newlyAssignedRooms: [201],
+      droppedRooms: [],
+      effectiveCapacity: 5,
+      nextRequestAfter: 0,
     });
     expect(holdingRooms).toEqual([201]);
   });
@@ -256,7 +245,6 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
 
     expect(getRefreshStatusNowCallCount()).toBe(0);
     expect(getUpdateConnectionsCallCount()).toBe(0);
-    expect(getSyncCallCount()).toBe(0);
     expect(getStatusChangedCallCount()).toBe(0);
   });
 
@@ -299,14 +287,12 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     expect(getRefreshStatusNowCallCount()).toBe(0);
     expect(getUpdateConnectionsCallCount()).toBe(0);
     expect(getStatusChangedCallCount()).toBe(1);
-    expect(getSyncCallCount()).toBe(1);
   });
 
   it("clears stale shortfall after capacity is filled", async () => {
     const {
       coordinator,
       getStatusChangedCallCount,
-      getSyncCallCount,
     } = createCoordinatorContext({
       holdingRooms: [101, 102, 103, 104, 105],
       holdingRoomShortfall: {
@@ -315,12 +301,11 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       },
     });
 
-    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "capacity-refresh");
+    const success = coordinator.reportHoldingRoomState("capacity-refresh");
 
     expect(success).toBe(false);
     expect(coordinator.getHoldingRoomShortfall()).toBeNull();
     expect(getStatusChangedCallCount()).toBe(1);
-    expect(getSyncCallCount()).toBe(1);
   });
 
   it("uses local capacityOverride as the effective assignment capacity", async () => {
@@ -329,19 +314,13 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       maxConnections: 20,
       capacityOverride: 40,
       holdingRooms: Array.from({ length: 20 }, (_, index) => 1000 + index),
-      requestRooms: async (payload) => {
+      sendStateReport: (payload) => {
         requestPayload = payload;
-        return {
-          holdingRooms: Array.from({ length: 40 }, (_, index) => 1000 + index),
-          newlyAssignedRooms: Array.from({ length: 20 }, (_, index) => 2000 + index),
-          droppedRooms: [],
-          effectiveCapacity: 40,
-          nextRequestAfter: 0,
-        };
+        return true;
       },
     });
 
-    const success = await coordinator.refreshHoldingRoomsIfNeeded(20, "capacity-override", { force: true });
+    const success = coordinator.reportHoldingRoomState("capacity-override", { force: true });
 
     expect(success).toBe(true);
     expect(requestPayload).toEqual({
@@ -349,7 +328,15 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       holdingRooms: Array.from({ length: 20 }, (_, index) => 1000 + index),
       connectedRooms: [],
       desiredCount: 20,
+      capacity: 40,
       capacityOverride: 40,
+    });
+    coordinator.applyHoldingRoomResult({
+      holdingRooms: Array.from({ length: 40 }, (_, index) => 1000 + index),
+      newlyAssignedRooms: Array.from({ length: 20 }, (_, index) => 2000 + index),
+      droppedRooms: [],
+      effectiveCapacity: 40,
+      nextRequestAfter: 0,
     });
     expect(coordinator.getHoldingRoomIds()).toEqual(Array.from({ length: 40 }, (_, index) => 1000 + index));
   });
@@ -359,15 +346,13 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number) => 1 as ReturnType<typeof setTimeout>) as typeof setTimeout;
 
     try {
-      const { coordinator, getSyncCallCount } = createCoordinatorContext({
+      const { coordinator } = createCoordinatorContext({
         holdingRooms: [301],
         connectedRooms: [{ roomId: 301, priority: "server" }],
         runtimeConnected: false,
       });
 
       coordinator.applyConnectionsUpdate();
-
-      expect(getSyncCallCount()).toBe(0);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
     }
@@ -386,7 +371,7 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     }) as typeof setTimeout;
 
     try {
-      const { coordinator, getSyncCallCount } = createCoordinatorContext({
+      const { coordinator } = createCoordinatorContext({
         holdingRooms: [301],
       });
 
@@ -397,7 +382,6 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       coordinator.applyConnectionsUpdate();
 
       expect(coordinator.getHoldingRoomIds()).toEqual([]);
-      expect(getSyncCallCount()).toBeGreaterThan(0);
     } finally {
       Date.now = originalDateNow;
       globalThis.setTimeout = originalSetTimeout;
@@ -453,7 +437,42 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     }
   });
 
-  it("retains local holding rooms when request-room fails under unstable network", async () => {
+  it("automatically derives default shortfall when holding rooms do not fill capacity and no explicit shortfall is provided", () => {
+    const { coordinator, getStatusChangedCallCount } = createCoordinatorContext({
+      maxConnections: 5,
+      holdingRooms: [301, 302],
+    });
+
+    expect(coordinator.getHoldingRoomShortfall()).toEqual({
+      reason: "no_candidates",
+      candidateCount: 2,
+      assignableCandidateCount: 2,
+      blockedBySameAccountCount: 0,
+      blockedByOtherAccountsCount: 0,
+      missingCount: 3,
+    });
+
+    coordinator.applyHoldingRoomResult({
+      holdingRooms: [301, 302, 303, 304, 305],
+      newlyAssignedRooms: [303, 304, 305],
+      droppedRooms: [],
+      effectiveCapacity: 5,
+    });
+
+    expect(coordinator.getHoldingRoomShortfall()).toBeNull();
+    expect(getStatusChangedCallCount()).toBe(1);
+  });
+
+  it("returns null shortfall when holding rooms reach or exceed target capacity", () => {
+    const { coordinator } = createCoordinatorContext({
+      maxConnections: 3,
+      holdingRooms: [101, 102, 103],
+    });
+
+    expect(coordinator.getHoldingRoomShortfall()).toBeNull();
+  });
+
+  it("retains local holding rooms when sendStateReport fails under unstable network", () => {
     const {
       coordinator,
       getSyncCallCount,
@@ -462,31 +481,25 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       getRefreshStatusNowCallCount,
     } = createCoordinatorContext({
       holdingRooms: [301],
+      sendStateReport: () => false,
     });
 
-    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "network-flaky", { force: true });
+    const success = coordinator.reportHoldingRoomState("network-flaky", { force: true });
 
     expect(success).toBe(false);
     expect(coordinator.getHoldingRoomIds()).toEqual([301]);
     expect(getRefreshStatusNowCallCount()).toBe(0);
     expect(getUpdateConnectionsCallCount()).toBe(0);
     expect(getStatusChangedCallCount()).toBe(0);
-    expect(getSyncCallCount()).toBe(0);
   });
 
-  it("skips repeat request-room while newly assigned rooms are still pending connection", async () => {
-    let requestCallCount = 0;
+  it("skips repeat state report while newly assigned rooms are still pending connection", () => {
+    let reportCallCount = 0;
     const { coordinator } = createCoordinatorContext({
       holdingRooms: [301],
-      requestRooms: async () => {
-        requestCallCount += 1;
-        return {
-          holdingRooms: [301, 401],
-          newlyAssignedRooms: [401],
-          droppedRooms: [],
-          effectiveCapacity: 5,
-          nextRequestAfter: 0,
-        };
+      sendStateReport: () => {
+        reportCallCount += 1;
+        return true;
       },
     });
 
@@ -498,24 +511,24 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       nextRequestAfter: 0,
     });
 
-    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "assignment-tag-changed", { force: true });
+    const success = coordinator.reportHoldingRoomState("assignment-tag-changed", { force: true });
 
     expect(success).toBe(false);
-    expect(requestCallCount).toBe(0);
+    expect(reportCallCount).toBe(0);
   });
 
-  it("allows request-room again after pending room is represented in connections", async () => {
-    let requestCallCount = 0;
+  it("allows state report again after pending room is represented in connections", () => {
+    let reportCallCount = 0;
     let lastPayload: Record<string, unknown> | null = null;
     const {
       coordinator,
       connectionMap,
     } = createCoordinatorContext({
       holdingRooms: [301],
-      requestRooms: async (payload) => {
-        requestCallCount += 1;
+      sendStateReport: (payload) => {
+        reportCallCount += 1;
         lastPayload = payload;
-        return null;
+        return true;
       },
     });
 
@@ -535,15 +548,16 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
       },
     });
 
-    const success = await coordinator.refreshHoldingRoomsIfNeeded(5, "capacity-refresh", { force: true });
+    const success = coordinator.reportHoldingRoomState("capacity-refresh", { force: true });
 
-    expect(success).toBe(false);
-    expect(requestCallCount).toBe(1);
+    expect(success).toBe(true);
+    expect(reportCallCount).toBe(1);
     expect(lastPayload).toEqual({
       reason: "capacity-refresh",
       holdingRooms: [301, 401],
       connectedRooms: [401],
       desiredCount: 3,
+      capacity: 5,
       capacityOverride: undefined,
     });
   });
@@ -580,6 +594,5 @@ describe("DanmakuHoldingRoomCoordinator room selection", () => {
     expect(getRefreshStatusNowCallCount()).toBe(1);
     expect(getUpdateConnectionsCallCount()).toBe(1);
     expect(getStatusChangedCallCount()).toBe(1);
-    expect(getSyncCallCount()).toBe(1);
   });
 });

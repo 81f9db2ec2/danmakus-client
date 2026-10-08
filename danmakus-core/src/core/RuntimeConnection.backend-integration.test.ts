@@ -80,6 +80,26 @@ type SimulatedClient = {
   connectedRooms: number[];
 };
 
+async function requestRoomsHttp(
+  port: number,
+  token: string,
+  payload: DebugRequestRoomPayload,
+): Promise<{ holdingRooms: number[]; newlyAssignedRooms: number[]; droppedRooms: number[] } | null> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/v2/core-runtime/request-room`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Token: token,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    return null;
+  }
+  const json = (await response.json()) as { data?: { holdingRooms: number[]; newlyAssignedRooms: number[]; droppedRooms: number[] } };
+  return json.data ?? null;
+}
+
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDir, "../../../../");
 const smokeHostProjectPath = path.join(
@@ -130,7 +150,8 @@ describe("RuntimeConnection backend integration", () => {
     );
     await runtime.connect();
 
-    const response = await runtime.requestRooms({
+    const response = await requestRoomsHttp(host.port, "token-account-1", {
+      clientId: "client-1",
       holdingRooms: [],
       connectedRooms: [],
       desiredCount: 3,
@@ -198,7 +219,7 @@ describe("RuntimeConnection backend integration", () => {
           reason: `client-seeded-round-${round}`,
         };
         lastPayloadByClientId.set(client.clientId, payload);
-        const response = await client.runtime.requestRooms(payload);
+        const response = await requestRoomsHttp(host.port, client.token, payload);
 
         expect(response).not.toBeNull();
         const nextHoldingRooms = response?.holdingRooms ?? [];
@@ -206,8 +227,19 @@ describe("RuntimeConnection backend integration", () => {
           [...streamers.values()].filter(streamer => streamer.isLive).map(streamer => streamer.roomId),
         );
 
+        const account = client.token === accountOne.token ? accountOne : accountTwo;
+        const recordingRoomIds = new Set(
+          account.recordingUserIds
+            .map(uid => streamers.get(uid)?.roomId)
+            .filter((id): id is number => typeof id === 'number')
+        );
+        const allowedRoomIds = new Set([
+          ...liveRoomIds,
+          ...recordingRoomIds,
+        ]);
+
         expect(nextHoldingRooms.length).toBeLessThanOrEqual(client.maxConnections);
-        nextHoldingRooms.forEach(roomId => expect(liveRoomIds.has(roomId)).toBe(true));
+        nextHoldingRooms.forEach(roomId => expect(allowedRoomIds.has(roomId)).toBe(true));
 
         client.holdingRooms = [...nextHoldingRooms];
         client.connectedRooms = nextHoldingRooms.filter(() => random() < 0.65);

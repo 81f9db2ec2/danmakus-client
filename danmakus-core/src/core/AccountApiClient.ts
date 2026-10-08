@@ -1,6 +1,5 @@
 import {
   CoreControlConfigDto,
-  CoreHeartbeatStateDto,
   CoreRuntimeStateDto,
   CoreSyncTagSnapshot,
   CoreTaggedApiResult,
@@ -13,26 +12,9 @@ import { BACKEND_PRIMARY_ORIGIN, fetchBackendApiWithFallback } from './BackendAp
 import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
 import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 
-type ServerTimeSample = {
-  unixMs: number;
-  monotonicMs: number;
-};
-
-type HeartbeatRuntimeStateResult = {
-  configTag: string | null;
-  assignmentTag: string | null;
-  clientsTag: string | null;
-  recordingTag: string | null;
-  serverTime: ServerTimeSample;
-};
-
 const CONFIG_TAG_HEADER = 'X-Core-Config-Tag';
-const ASSIGNMENT_TAG_HEADER = 'X-Core-Assignment-Tag';
 const CLIENTS_TAG_HEADER = 'X-Core-Clients-Tag';
 const RECORDING_TAG_HEADER = 'X-Core-Recording-Tag';
-const HEARTBEAT_FEATURES_HEADER = 'X-Core-Heartbeat-Features';
-const SERVER_TIME_HEADER = 'X-Core-Server-Time-Ms';
-const HEARTBEAT_FEATURES = 'recording';
 const DEFAULT_ACCOUNT_API_BASE = `${BACKEND_PRIMARY_ORIGIN}/api/v2/account`;
 const DEFAULT_BACKEND_REQUEST_TIMEOUT_MS = 15000;
 
@@ -133,102 +115,6 @@ export class AccountApiClient {
     return this.requestTaggedRuntime<CoreRuntimeStateDto[]>('/clients', {
       method: 'GET',
     });
-  }
-
-  async getCoreHeartbeatTags(clientId?: string): Promise<HeartbeatRuntimeStateResult> {
-    const suffix = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
-    const { response, startedAt, receivedAt } = await this.fetchHeartbeat(`/heartbeat${suffix}`, { method: 'GET' });
-
-    if (!response.ok) {
-      await this.parseResponsePayload(response);
-    }
-
-    return {
-      ...this.readCoreSyncTags(response.headers),
-      assignmentTag: this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER)),
-      serverTime: this.readServerTime(response, startedAt, receivedAt),
-    };
-  }
-
-  async syncRuntimeState(
-    payload: Partial<CoreRuntimeStateDto> & { clientId: string },
-    options?: { force?: boolean }
-  ): Promise<CoreRuntimeStateDto> {
-    const suffix = options?.force ? '?force=true' : '';
-    return this.requestRuntime<CoreRuntimeStateDto>(`/sync${suffix}`, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-  }
-
-  async heartbeatRuntimeState(
-    payload: CoreHeartbeatStateDto,
-    options?: { force?: boolean }
-  ): Promise<HeartbeatRuntimeStateResult> {
-    const suffix = options?.force ? '?force=true' : '';
-    return this.requestRuntimeSignal(`/heartbeat${suffix}`, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-  }
-
-  async releaseRuntimeState(clientId: string, options?: { force?: boolean }): Promise<void> {
-    const suffix = options?.force ? `?clientId=${encodeURIComponent(clientId)}&force=true` : `?clientId=${encodeURIComponent(clientId)}`;
-    await this.requestRuntime(`/state${suffix}`, {
-      method: 'DELETE'
-    });
-  }
-
-  private requestRuntime<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-    return this.requestWithBase(this.coreRuntimeBaseUrl, path, init);
-  }
-
-  private async requestRuntimeSignal(path: string, init?: RequestInit): Promise<HeartbeatRuntimeStateResult> {
-    const { response, startedAt, receivedAt } = await this.fetchHeartbeat(path, init);
-    const tags = this.readCoreSyncTags(response.headers);
-    const assignmentTag = this.normalizeTag(response.headers.get(ASSIGNMENT_TAG_HEADER));
-    if (response.status === 204) {
-      return {
-        configTag: tags.configTag,
-        assignmentTag,
-        clientsTag: tags.clientsTag,
-        recordingTag: tags.recordingTag,
-        serverTime: this.readServerTime(response, startedAt, receivedAt),
-      };
-    }
-
-    await this.parseResponsePayload(response);
-    return {
-      configTag: tags.configTag,
-      assignmentTag,
-      clientsTag: tags.clientsTag,
-      recordingTag: tags.recordingTag,
-      serverTime: this.readServerTime(response, startedAt, receivedAt),
-    };
-  }
-
-  private async fetchHeartbeat(path: string, init?: RequestInit): Promise<{
-    response: Response;
-    startedAt: number;
-    receivedAt: number;
-  }> {
-    const headers = new Headers(init?.headers ?? {});
-    headers.set(HEARTBEAT_FEATURES_HEADER, HEARTBEAT_FEATURES);
-    const startedAt = performance.now();
-    const response = await this.fetchWithBase(this.coreRuntimeBaseUrl, path, { ...init, headers });
-    return { response, startedAt, receivedAt: performance.now() };
-  }
-
-  private readServerTime(response: Response, startedAt: number, receivedAt: number): ServerTimeSample {
-    const serverUnixMs = Number(response.headers.get(SERVER_TIME_HEADER));
-    if (!Number.isSafeInteger(serverUnixMs) || serverUnixMs <= 0) {
-      throw new Error(`心跳响应缺少有效的 ${SERVER_TIME_HEADER}`);
-    }
-
-    return {
-      unixMs: serverUnixMs + (receivedAt - startedAt) / 2,
-      monotonicMs: receivedAt,
-    };
   }
 
   private async requestTaggedAccount<T>(path: string, init?: RequestInit): Promise<CoreTaggedApiResult<T>> {

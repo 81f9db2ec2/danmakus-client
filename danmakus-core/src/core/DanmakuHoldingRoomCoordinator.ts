@@ -29,14 +29,13 @@ interface DanmakuHoldingRoomContext {
   isRunning(): boolean;
   isStopping(): boolean;
   getConfig(): DanmakuConfig;
-  getRuntimeConnection(): Pick<RuntimeConnection, 'getConnectionState' | 'requestRooms'> | undefined;
+  getRuntimeConnection(): Pick<RuntimeConnection, 'getConnectionState' | 'sendStateReport'> | undefined;
   getStatusManager(): StreamerStatusManager | undefined;
   getRecordingRoomIds(): number[];
   getConnections(): Map<number, ConnectionInfoLike>;
   disconnectFromRoom(roomId: number): void;
   connectToRoom(roomId: number, priority: RoomPriority): Promise<void>;
   updateConnections(): void;
-  syncRuntimeState(): void;
   refreshStatusNow(): void;
   updateHoldingRooms(roomIds: number[]): void;
   getRoomConnectStartInterval(): number;
@@ -57,8 +56,6 @@ const STALE_HOLDING_ROOM_RELEASE_MS = 8 * 60 * 1000;
 export class DanmakuHoldingRoomCoordinator {
   private readonly context: DanmakuHoldingRoomContext;
   private holdingRoomIds: number[] = [];
-  private holdingRoomRequestRefreshing = false;
-  private nextHoldingRoomRequestAt = 0;
   private readonly pendingAssignedRoomIds = new Set<number>();
   private queuedRoomConnects: QueuedRoomConnect[] = [];
   private queuedRoomIds: Set<number> = new Set();
@@ -66,8 +63,8 @@ export class DanmakuHoldingRoomCoordinator {
   private lastRoomConnectStartAt = 0;
   private lastRoomAssigned?: number;
   private holdingRoomShortfall: RuntimeRoomPullShortfallDto | null = null;
+  private nextHoldingRoomRequestAt = 0;
   private readonly holdingRoomDisconnectedAt = new Map<number, number>();
-
   constructor(context: DanmakuHoldingRoomContext, initialState?: DanmakuHoldingRoomInitialState) {
     this.context = context;
     if (initialState?.holdingRoomIds) {
@@ -93,7 +90,34 @@ export class DanmakuHoldingRoomCoordinator {
   }
 
   getHoldingRoomShortfall(): RuntimeRoomPullShortfallDto | null {
-    return this.cloneHoldingRoomShortfall(this.holdingRoomShortfall);
+    if (this.holdingRoomShortfall !== null) {
+      return this.cloneHoldingRoomShortfall(this.holdingRoomShortfall);
+    }
+
+    if (!this.context.isRunning() || this.context.isStopping()) {
+      return null;
+    }
+
+    const config = this.context.getConfig();
+    const capacity = this.resolveConnectionCapacity(config);
+    if (capacity <= 0) {
+      return null;
+    }
+
+    const currentCount = this.holdingRoomIds.length;
+    const missingCount = capacity - currentCount;
+    if (missingCount <= 0) {
+      return null;
+    }
+
+    return {
+      reason: 'no_candidates',
+      candidateCount: currentCount,
+      assignableCandidateCount: currentCount,
+      blockedBySameAccountCount: 0,
+      blockedByOtherAccountsCount: 0,
+      missingCount,
+    };
   }
 
   getNextHoldingRoomRequestAt(): number {
@@ -108,8 +132,6 @@ export class DanmakuHoldingRoomCoordinator {
     this.clearQueuedRoomConnects();
     this.setHoldingRoomIds([]);
     this.pendingAssignedRoomIds.clear();
-    this.holdingRoomRequestRefreshing = false;
-    this.nextHoldingRoomRequestAt = 0;
     this.setLastRoomAssigned(undefined);
     this.setHoldingRoomShortfall(null);
     this.holdingRoomDisconnectedAt.clear();
@@ -132,7 +154,6 @@ export class DanmakuHoldingRoomCoordinator {
       return;
     }
 
-    const previousHoldingRooms = [...this.holdingRoomIds];
     const now = Date.now();
     const config = this.context.getConfig();
     const statusManager = this.ensureStatusManager();
@@ -175,11 +196,7 @@ export class DanmakuHoldingRoomCoordinator {
     }
 
     if (runtimeConnected) {
-      void this.refreshHoldingRoomsIfNeeded(capacity);
-    }
-
-    if (!this.areRoomIdsEqual(previousHoldingRooms, this.holdingRoomIds)) {
-      this.context.syncRuntimeState();
+      this.reportHoldingRoomState('connections-update');
     }
   }
 
@@ -352,7 +369,7 @@ export class DanmakuHoldingRoomCoordinator {
     statusManager: StreamerStatusManager,
     maxConnections: number
   ): { roomId: number; priority: 'high' | 'server' }[] {
-    const recordingRooms = this.context.getRecordingRoomIds().filter(roomId => this.holdingRoomIds.includes(roomId));
+    const recordingRooms = this.context.getRecordingRoomIds();
 
     return statusManager.getRoomsToConnect(
       recordingRooms,
@@ -362,7 +379,7 @@ export class DanmakuHoldingRoomCoordinator {
   }
 
   clearHoldingRooms(): void {
-    const previousShortfall = this.holdingRoomShortfall;
+    const previousShortfall = this.getHoldingRoomShortfall();
     if (this.holdingRoomIds.length === 0 && previousShortfall === null) {
       return;
     }
@@ -370,7 +387,6 @@ export class DanmakuHoldingRoomCoordinator {
     this.setHoldingRoomShortfall(null);
     if (this.holdingRoomIds.length === 0) {
       this.context.notifyStatusChanged();
-      this.context.syncRuntimeState();
       return;
     }
 
@@ -385,7 +401,12 @@ export class DanmakuHoldingRoomCoordinator {
     this.context.refreshStatusNow();
     this.context.updateConnections();
     this.context.notifyStatusChanged();
-    this.context.syncRuntimeState();
+  }
+
+  getConnectedRoomIds(): number[] {
+    return Array.from(this.context.getConnections().keys())
+      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
+      .map(roomId => Math.floor(roomId));
   }
 
   getConnectedHoldingRoomIds(): number[] {
@@ -396,11 +417,10 @@ export class DanmakuHoldingRoomCoordinator {
       .filter(roomId => Number.isFinite(roomId) && roomId > 0);
   }
 
-  async refreshHoldingRoomsIfNeeded(
-    maxConnections: number,
+  reportHoldingRoomState(
     reason: string = 'capacity-refresh',
     options?: { force?: boolean }
-  ): Promise<boolean> {
+  ): boolean {
     const runtimeConnection = this.context.getRuntimeConnection();
     if (!runtimeConnection?.getConnectionState()) {
       return false;
@@ -409,63 +429,52 @@ export class DanmakuHoldingRoomCoordinator {
       this.clearHoldingRooms();
       return false;
     }
-    if (
-      this.holdingRoomRequestRefreshing
-      || (!options?.force && Date.now() < this.nextHoldingRoomRequestAt)
-    ) {
-      return false;
-    }
     if (this.hasPendingRoomConnections()) {
       return false;
     }
 
     const config = this.context.getConfig();
     const capacityOverride = this.resolveCapacityOverride(config);
-    const capacity = this.resolveConnectionCapacity(config, maxConnections);
+    const capacity = this.resolveConnectionCapacity(config);
     const desiredCount = Math.max(0, capacity - this.holdingRoomIds.length);
     if (desiredCount <= 0 && !options?.force) {
       if (this.holdingRoomShortfall !== null) {
         this.setHoldingRoomShortfall(null);
         this.context.notifyStatusChanged();
-        this.context.syncRuntimeState();
       }
       return false;
     }
 
-    this.holdingRoomRequestRefreshing = true;
-    try {
-      const result = await runtimeConnection.requestRooms({
-        reason,
-        holdingRooms: [...this.holdingRoomIds],
-        connectedRooms: this.getConnectedHoldingRoomIds(),
-        desiredCount,
-        capacityOverride,
-      });
-      if (!result) {
-        return false;
-      }
-      this.applyHoldingRoomResult(result);
-      return true;
-    } finally {
-      this.holdingRoomRequestRefreshing = false;
-    }
+    const connectedRooms = Array.from(this.context.getConnections().keys())
+      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
+      .map(roomId => Math.floor(roomId));
+
+    return runtimeConnection.sendStateReport({
+      reason,
+      holdingRooms: [...this.holdingRoomIds],
+      connectedRooms,
+      desiredCount,
+      capacity,
+      capacityOverride,
+    });
   }
 
   applyHoldingRoomResult(result: HoldingRoomResult): void {
     const previous = Array.from(new Set(this.holdingRoomIds.filter(roomId => Number.isFinite(roomId) && roomId > 0)));
     const next = Array.from(new Set(result.holdingRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0)));
-    const previousShortfall = this.holdingRoomShortfall;
-    const nextShortfall = this.cloneHoldingRoomShortfall(result.shortfall);
+    const previousShortfall = this.getHoldingRoomShortfall();
+    const nextExplicitShortfall = this.cloneHoldingRoomShortfall(result.shortfall);
     const removedRooms = previous.filter(roomId => !next.includes(roomId));
     const addedRooms = next.filter(roomId => !previous.includes(roomId));
     const holdingRoomsChanged = !this.areRoomIdsEqual(previous, next);
-    const shortfallChanged = !this.areHoldingRoomShortfallsEqual(previousShortfall, nextShortfall);
     const zombieConnectedRooms = Array.from(this.context.getConnections().keys())
       .filter(roomId => Number.isFinite(roomId) && roomId > 0 && !next.includes(roomId));
     const roomsToDisconnect = Array.from(new Set([...removedRooms, ...zombieConnectedRooms]));
 
     this.setHoldingRoomIds(next);
-    this.setHoldingRoomShortfall(nextShortfall);
+    this.setHoldingRoomShortfall(nextExplicitShortfall);
+    const nextShortfall = this.getHoldingRoomShortfall();
+    const shortfallChanged = !this.areHoldingRoomShortfallsEqual(previousShortfall, nextShortfall);
     for (const roomId of addedRooms) {
       if (!this.context.getConnections().has(roomId)) {
         this.pendingAssignedRoomIds.add(roomId);
@@ -485,7 +494,6 @@ export class DanmakuHoldingRoomCoordinator {
     if (!holdingRoomsChanged && roomsToDisconnect.length === 0) {
       if (shortfallChanged) {
         this.context.notifyStatusChanged();
-        this.context.syncRuntimeState();
       }
       return;
     }
@@ -499,9 +507,6 @@ export class DanmakuHoldingRoomCoordinator {
     this.context.refreshStatusNow();
     this.context.updateConnections();
     this.context.notifyStatusChanged();
-    if (holdingRoomsChanged || shortfallChanged) {
-      this.context.syncRuntimeState();
-    }
   }
 
   private isServerAssignmentRequestEnabled(config: DanmakuConfig = this.context.getConfig()): boolean {

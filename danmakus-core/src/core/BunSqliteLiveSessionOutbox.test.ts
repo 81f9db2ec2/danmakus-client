@@ -43,7 +43,6 @@ describe('BunSqliteLiveSessionOutbox', () => {
 
     await reopenedOutbox.ack([dueRecords[0]!.id]);
     expect(await reopenedOutbox.countPending()).toBe(0);
-    expect(existsSync(`${databasePath}-wal`)).toBe(false);
   });
 
   it('rebuilds the database automatically when the sqlite file is corrupted', async () => {

@@ -63,7 +63,6 @@ describe("DanmakuClient room pull flow", () => {
       close: () => undefined,
     });
     client.messageQueue.scheduleMessageDispatch = () => undefined;
-    client.syncRuntimeState = async () => undefined;
 
     await client.connectToRoom(4455, "server");
 
@@ -87,82 +86,6 @@ describe("DanmakuClient room pull flow", () => {
     client.statusManager.onStatusUpdated?.([{ roomId: 2233, isLive: false }]);
 
     expect(client.messageQueue.getPendingCount()).toBe(0);
-  });
-
-  it("forces a room request on heartbeat when assignment tag changes", async () => {
-    const client: any = new DanmakuClient({
-      runtimeUrl: "https://example.com/api/v2/core-runtime",
-      maxConnections: 5,
-      requestServerRooms: true,
-      streamers: [],
-    });
-
-    const refreshCalls: Array<{ maxConnections: number; reason: string; options?: { force?: boolean } }> = [];
-    client.accountClient = {
-      heartbeatRuntimeState: async () => ({
-        configTag: null,
-        assignmentTag: "assignment-tag-v2",
-        clientsTag: null,
-        recordingTag: null,
-        serverTime: { unixMs: 1710000000000, monotonicMs: performance.now() },
-      }),
-    };
-    client.handleAccountConfigTagChange = async () => undefined;
-    client.refreshHoldingRoomsIfNeeded = async (
-      maxConnections: number,
-      reason: string,
-      options?: { force?: boolean }
-    ) => {
-      refreshCalls.push({ maxConnections, reason, options });
-      return true;
-    };
-
-    await client.runtimeSync.heartbeatRuntimeState();
-
-    expect(refreshCalls).toEqual([
-      {
-        maxConnections: 5,
-        reason: "assignment-tag-changed",
-        options: { force: true },
-      },
-    ]);
-    expect(client.assignmentTag).toBe("assignment-tag-v2");
-  });
-
-  it("does not request rooms on heartbeat when assignment tag is unchanged", async () => {
-    const client: any = new DanmakuClient({
-      runtimeUrl: "https://example.com/api/v2/core-runtime",
-      maxConnections: 5,
-      requestServerRooms: true,
-      streamers: [],
-    });
-
-    const refreshCalls: Array<{ maxConnections: number; reason: string; options?: { force?: boolean } }> = [];
-    client.assignmentTag = "assignment-tag-v2";
-    client.accountClient = {
-      heartbeatRuntimeState: async () => ({
-        configTag: null,
-        assignmentTag: "assignment-tag-v2",
-        clientsTag: null,
-        recordingTag: null,
-        serverTime: { unixMs: 1710000000000, monotonicMs: performance.now() },
-      }),
-    };
-    client.handleAccountConfigTagChange = async () => undefined;
-    client.handleClientsTagChange = async () => undefined;
-    client.handleRecordingTagChange = async () => undefined;
-    client.refreshHoldingRoomsIfNeeded = async (
-      maxConnections: number,
-      reason: string,
-      options?: { force?: boolean }
-    ) => {
-      refreshCalls.push({ maxConnections, reason, options });
-      return true;
-    };
-
-    await client.runtimeSync.heartbeatRuntimeState();
-
-    expect(refreshCalls).toEqual([]);
   });
 
   it("requests rooms with current holding state and applies the returned holding rooms", async () => {
@@ -190,32 +113,31 @@ describe("DanmakuClient room pull flow", () => {
     client.updateConnections = () => {
       client._connectionsUpdated = true;
     };
-    client.syncRuntimeState = async () => {
-      client._synced = true;
-    };
     client.runtimeConnection = {
       getConnectionState: () => true,
-      requestRooms: async (payload: unknown) => {
+      sendStateReport: (payload: unknown) => {
         client._requestPayload = payload;
-        return {
-          holdingRooms: [102, 103],
-          newlyAssignedRooms: [103],
-          droppedRooms: [101],
-          effectiveCapacity: 5,
-          nextRequestAfter: null,
-        };
+        return true;
       },
     };
 
-    const success = await client.refreshHoldingRoomsIfNeeded(5, "manual-refresh");
+    const success = client.reportHoldingRoomState("manual-refresh", { force: true });
 
     expect(success).toBe(true);
     expect(client._requestPayload).toEqual({
       reason: "manual-refresh",
       holdingRooms: [101, 102],
-      connectedRooms: [101],
+      connectedRooms: [101, 999],
       desiredCount: 3,
+      capacity: 5,
       capacityOverride: undefined,
+    });
+    client.holdingRoomCoordinator.applyHoldingRoomResult({
+      holdingRooms: [102, 103],
+      newlyAssignedRooms: [103],
+      droppedRooms: [101],
+      effectiveCapacity: 5,
+      nextRequestAfter: null,
     });
     expect(client.holdingRoomIds).toEqual([102, 103]);
     expect(client._updatedRooms).toEqual([102, 103]);
@@ -223,7 +145,6 @@ describe("DanmakuClient room pull flow", () => {
     expect(client.connections.has(999)).toBe(false);
     expect(closedRooms).toEqual([101, 999]);
     expect(client._connectionsUpdated).toBe(true);
-    expect(client._synced).toBe(true);
   });
 
   it("abandons an in-flight connect when the room is no longer desired", async () => {
@@ -251,7 +172,6 @@ describe("DanmakuClient room pull flow", () => {
         close: () => undefined,
       };
     };
-    client.syncRuntimeState = async () => undefined;
 
     const connecting = client.connectToRoom(4455, "server");
     client._desiredRooms = [];
@@ -283,22 +203,15 @@ describe("DanmakuClient room pull flow", () => {
       refreshNow: () => undefined,
     };
     client.updateConnections = () => undefined;
-    client.syncRuntimeState = async () => undefined;
     client.runtimeConnection = {
       getConnectionState: () => true,
-      requestRooms: async (payload: unknown) => {
+      sendStateReport: (payload: unknown) => {
         client._requestPayload = payload;
-        return {
-          holdingRooms: [101, 102, 103, 104, 105],
-          newlyAssignedRooms: [],
-          droppedRooms: [],
-          effectiveCapacity: 5,
-          nextRequestAfter: null,
-        };
+        return true;
       },
     };
 
-    const success = await client.refreshHoldingRoomsIfNeeded(5, "runtime-reconnect", { force: true });
+    const success = client.reportHoldingRoomState("runtime-reconnect", { force: true });
 
     expect(success).toBe(true);
     expect(client._requestPayload).toEqual({
@@ -306,6 +219,7 @@ describe("DanmakuClient room pull flow", () => {
       holdingRooms: [101, 102, 103, 104, 105],
       connectedRooms: [],
       desiredCount: 0,
+      capacity: 5,
       capacityOverride: undefined,
     });
   });
@@ -340,13 +254,11 @@ describe("DanmakuClient room pull flow", () => {
       updateHoldingRooms: () => undefined,
       refreshNow: () => undefined,
     };
-    client.syncRuntimeState = async () => {
-      phases.push("sync");
-    };
-    client.refreshHoldingRoomsIfNeeded = async () => {
+    client.reportHoldingRoomState = () => {
       phases.push("refresh:start");
-      await refreshPromise;
-      phases.push("refresh:end");
+      void refreshPromise.then(() => {
+        phases.push("refresh:end");
+      });
       return true;
     };
     client.updateConnections = () => {
@@ -404,6 +316,7 @@ describe("DanmakuClient room pull flow", () => {
       sendArchiveBatch: async (records: Array<{ id: number }>) => {
         phases.push("send");
         return {
+          acceptedCount: records.length,
           rejected: [],
         };
       },
@@ -411,7 +324,21 @@ describe("DanmakuClient room pull flow", () => {
     client.setupRuntimeEvents();
     client.messageQueue.messageUploadInterval = 10;
 
-    client.messageQueue.enqueuePacket(101, textEncoder.encode('{"cmd":"DANMU_MSG"}'), Date.now());
+    client.messageQueue.enqueueExtractedEvent({
+      roomId: 101,
+      streamerUid: TEST_RECORDING_UID,
+      eventTsMs: Date.now(),
+      danmaku: {
+        userId: 12345,
+        userName: "user",
+        message: "hello",
+        sendDate: Date.now(),
+        type: 1,
+        ct: 0,
+        sourceFingerprint: 123n,
+        isEmoji: false,
+      },
+    });
 
     runtimeConnected = false;
     client.runtimeConnection.onDisconnected?.(new Error("runtime down"));
@@ -457,13 +384,28 @@ describe("DanmakuClient room pull flow", () => {
       sendArchiveBatch: async (records: Array<{ id: number; streamerUid: number; eventTsMs: number }>) => {
         uploadedBatches.push(records);
         return {
+          acceptedCount: records.length,
           rejected: [],
         };
       },
     };
     client.messageQueue.messageUploadInterval = 10;
 
-    client.messageQueue.enqueuePacket(101, textEncoder.encode('{"cmd":"DANMU_MSG"}'), Date.now());
+    client.messageQueue.enqueueExtractedEvent({
+      roomId: 101,
+      streamerUid: TEST_RECORDING_UID,
+      eventTsMs: Date.now(),
+      danmaku: {
+        userId: 12345,
+        userName: "user",
+        message: "hello",
+        sendDate: Date.now(),
+        type: 1,
+        ct: 0,
+        sourceFingerprint: 123n,
+        isEmoji: false,
+      },
+    });
 
     await Bun.sleep(1100);
 
@@ -496,13 +438,28 @@ describe("DanmakuClient room pull flow", () => {
       sendArchiveBatch: async (records: Array<{ id: number; streamerUid: number; eventTsMs: number }>) => {
         uploadedBatches.push(records);
         return {
+          acceptedCount: records.length,
           rejected: [],
         };
       },
     };
     client.messageQueue.messageUploadInterval = 10;
 
-    client.messageQueue.enqueuePacket(202, textEncoder.encode('{"cmd":"DANMU_MSG"}'), Date.now());
+    client.messageQueue.enqueueExtractedEvent({
+      roomId: 202,
+      streamerUid: TEST_STATUS_UID,
+      eventTsMs: Date.now(),
+      danmaku: {
+        userId: 12345,
+        userName: "user",
+        message: "hello",
+        sendDate: Date.now(),
+        type: 1,
+        ct: 0,
+        sourceFingerprint: 123n,
+        isEmoji: false,
+      },
+    });
 
     await Bun.sleep(1100);
 
@@ -535,7 +492,7 @@ describe("DanmakuClient room pull flow", () => {
     client.updateConnections = () => {
       updateConnectionsCount += 1;
     };
-    client.refreshHoldingRoomsIfNeeded = async () => {
+    client.reportHoldingRoomState = () => {
       refreshHoldingRoomsCount += 1;
       return true;
     };
@@ -567,18 +524,17 @@ describe("DanmakuClient room pull flow", () => {
       streamers: [],
     });
 
-    const refreshCalls: Array<{ maxConnections: number; reason: string; options?: { force?: boolean } }> = [];
+    const reportCalls: Array<{ reason: string; options?: { force?: boolean } }> = [];
     let updateConnectionsCount = 0;
     client.isRunning = true;
     client.updateConnections = () => {
       updateConnectionsCount += 1;
     };
-    client.refreshHoldingRoomsIfNeeded = async (
-      maxConnections: number,
+    client.reportHoldingRoomState = (
       reason: string,
       options?: { force?: boolean }
     ) => {
-      refreshCalls.push({ maxConnections, reason, options });
+      reportCalls.push({ reason, options });
       return true;
     };
 
@@ -596,9 +552,8 @@ describe("DanmakuClient room pull flow", () => {
     }, "config-tag-v2");
 
     expect(client.configManager.getConfig().excludedServerRoomUserIds).toEqual([100, 200]);
-    expect(refreshCalls).toEqual([
+    expect(reportCalls).toEqual([
       {
-        maxConnections: 5,
         reason: "account-config-excluded-uids-changed",
         options: { force: true },
       },
@@ -637,7 +592,6 @@ describe("DanmakuClient room pull flow", () => {
         close: () => undefined,
       };
     };
-    client.syncRuntimeState = async () => undefined;
 
     await client.connectToRoom(1001, "high");
     await client.connectToRoom(1002, "server");
@@ -673,7 +627,7 @@ describe("DanmakuClient room pull flow", () => {
     expect(client.messageQueue.getPendingCount()).toBe(0);
   });
 
-  it("archives raw packets emitted while live websocket listeners are attached", async () => {
+  it("extracts and enqueues messages emitted while live websocket listeners are attached", async () => {
     const client: any = new DanmakuClient({
       runtimeUrl: "https://example.com/api/v2/core-runtime",
       maxConnections: 5,
@@ -681,7 +635,7 @@ describe("DanmakuClient room pull flow", () => {
       streamers: [],
     });
 
-    const archivedPackets: Array<{ roomId: number; payload: Uint8Array; timestamp: number }> = [];
+    const archivedEvents: any[] = [];
     client.isRunning = true;
     client.serverTime = { unixMs: 1710000000000, monotonicMs: performance.now() };
     client.statusManager = {
@@ -699,24 +653,30 @@ describe("DanmakuClient room pull flow", () => {
     });
     client.liveWsConnectionFactory = async () => ({
       addEventListener: (type: string, listener: (event?: any) => void) => {
-        if (type === "message") {
-          listener({ data: new Uint8Array([1, 2, 3]) });
+        if (type === "msg") {
+          listener({
+            data: {
+              cmd: "DANMU_MSG",
+              info: [
+                [0, 1, 25, 16777215, 1710000000500],
+                "hello test",
+                [12345, "user1", 0],
+              ],
+            },
+          });
         }
       },
       close: () => undefined,
     });
-    client.messageQueue.enqueuePacket = (roomId: number, payload: Uint8Array, timestamp: number) => {
-      archivedPackets.push({ roomId, payload, timestamp });
+    client.messageQueue.enqueueExtractedEvent = (event: any) => {
+      archivedEvents.push(event);
     };
-    client.syncRuntimeState = async () => undefined;
 
     await client.connectToRoom(4455, "server");
 
-    expect(archivedPackets).toHaveLength(1);
-    expect(archivedPackets[0]?.roomId).toBe(4455);
-    expect([...archivedPackets[0]!.payload]).toEqual([1, 2, 3]);
-    expect(archivedPackets[0]!.timestamp).toBeGreaterThanOrEqual(1710000000000);
-    expect(archivedPackets[0]!.timestamp).toBeLessThan(1710000001000);
+    expect(archivedEvents).toHaveLength(1);
+    expect(archivedEvents[0]?.roomId).toBe(4455);
+    expect(archivedEvents[0]?.danmaku?.message).toBe("hello test");
   });
 
   it("falls back to备用 WebSocket 地址 when the primary address fails", async () => {
@@ -754,7 +714,6 @@ describe("DanmakuClient room pull flow", () => {
         close: () => undefined,
       };
     };
-    client.syncRuntimeState = async () => undefined;
 
     await client.connectToRoom(4455, "server");
 
@@ -763,43 +722,5 @@ describe("DanmakuClient room pull flow", () => {
       "wss://tx-bj-live-comet-01.chat.bilibili.com/sub",
     ]);
     expect(client.connections.has(4455)).toBe(true);
-  });
-});
-
-describe("DanmakuClient sparse heartbeat", () => {
-  it("sends only fields accepted by the heartbeat endpoint", () => {
-    const client: any = new DanmakuClient({
-      runtimeUrl: "https://example.com/api/v2/core-runtime",
-      maxConnections: 5,
-      streamers: [],
-    });
-
-    expect(Object.keys(client.buildRuntimeHeartbeatPayload()).sort()).toEqual([
-      "clientId",
-      "clientVersion",
-      "cookieValid",
-      "isRunning",
-      "lastError",
-      "messageCount",
-      "runtimeConnected",
-    ]);
-  });
-
-  it("schedules control heartbeats between 10 and 12 seconds", () => {
-    const client: any = new DanmakuClient({
-      runtimeUrl: "https://example.com/api/v2/core-runtime",
-      maxConnections: 5,
-      streamers: [],
-    });
-    const originalRandom = Math.random;
-
-    try {
-      Math.random = () => 0;
-      expect(client.runtimeSync.getNextControlPollDelay()).toBe(10_000);
-      Math.random = () => 0.9999;
-      expect(client.runtimeSync.getNextControlPollDelay()).toBe(12_000);
-    } finally {
-      Math.random = originalRandom;
-    }
   });
 });

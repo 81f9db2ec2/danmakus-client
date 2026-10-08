@@ -22,18 +22,6 @@ const buildRemoteConfig = (runtimeUrl: string) => ({
 
 describe('DanmakuClient 全新启动应用服务端 runtimeUrl', () => {
   test('start() 后上传打到服务端下发地址（还原新启动 client 场景）', async () => {
-    const captured: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      captured.push(typeof input === 'string' ? input : input.toString());
-      return new Response(JSON.stringify({ code: 200, data: { rejected: [] } }), {
-        status: 200,
-        headers: {
-          'content-type': 'application/json',
-          'X-Core-Server-Time-Ms': '1710000000000',
-        },
-      });
-    }) as typeof fetch;
-
     const client: any = new DanmakuClient({
       clientId: 'client-1',
       accountToken: 'token',
@@ -50,29 +38,24 @@ describe('DanmakuClient 全新启动应用服务端 runtimeUrl', () => {
       getRecordingList: async () => ({ data: [], tags: { recordingTag: null, configTag: 'config-tag-1', clientsTag: null } }),
       releaseRuntimeState: async () => undefined,
     });
-    client.acquireRuntimeLock = async () => undefined;
     client.ensureCookieReadyForStartup = async () => undefined;
-    client.refreshHoldingRoomsIfNeeded = async () => true;
-    client.syncRuntimeState = async () => undefined;
+    client.reportHoldingRoomState = () => true;
+
+    // 拦截真实 ws 拨号避免测试超时
+    const originalEnsure = client.ensureRuntimeConnection.bind(client);
+    client.ensureRuntimeConnection = () => {
+      const conn = originalEnsure();
+      conn.connect = async () => true;
+      return conn;
+    };
 
     await client.start();
 
     expect(client.configManager.getConfig().runtimeUrl).toBe('https://client.danmakus.com/api/v2/core-runtime');
     expect(client.runtimeConnection.runtimeBaseUrl).toBe('https://client.danmakus.com/api/v2/core-runtime');
+    expect(client.runtimeConnection.wsConnection.options.runtimeUrl).toBe('https://client.danmakus.com/api/v2/core-runtime');
     // 运行态同步/心跳地址也必须跟随，否则 sync 仍打到默认 backend。
     expect(client.accountClient.getCoreRuntimeBaseUrl()).toBe('https://client.danmakus.com/api/v2/core-runtime');
-
-    captured.length = 0;
-    await client.runtimeConnection.sendArchiveBatch([{
-      id: 1,
-      streamerUid: 1001,
-      eventTsMs: 1710000001000,
-      payload: new Uint8Array([1, 2, 3]),
-      retryCount: 0,
-      nextRetryAtMs: 1710000001000,
-    }]);
-
-    expect(captured[0]).toBe('https://client.danmakus.com/api/v2/core-runtime/upload-danmakus-v5');
 
     await client.stop();
   });

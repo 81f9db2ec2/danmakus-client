@@ -2,12 +2,29 @@ import { describe, expect, it } from "bun:test";
 import type { LiveSessionOutboxItem, LiveSessionOutboxStore } from "../types/index.js";
 import { DanmakuMessageQueue } from "./DanmakuMessageQueue.js";
 import { ScopedLogger } from "./Logger.js";
+import type { ExtractedUploadEvent } from "./DanmakuExtractionTypes.js";
 
 const TEST_STREAMER_UID = 84;
-const textEncoder = new TextEncoder();
 
-const createPacket = (roomId: number, timestamp: number): Uint8Array =>
-  textEncoder.encode(`{"cmd":"DANMU_MSG","roomId":${roomId},"ts":${timestamp}}`);
+const createExtractedEvent = (
+  roomId: number,
+  timestamp: number,
+  streamerUid: number = TEST_STREAMER_UID,
+): ExtractedUploadEvent => ({
+  roomId,
+  streamerUid,
+  eventTsMs: timestamp,
+  danmaku: {
+    userId: 12345,
+    userName: "test_user",
+    message: "hello",
+    sendDate: timestamp,
+    type: 1,
+    ct: 0,
+    sourceFingerprint: 123456n,
+    isEmoji: false,
+  },
+});
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -87,9 +104,9 @@ describe("DanmakuMessageQueue", () => {
 
     (queue as any).messageBatchSize = 1;
 
-    queue.enqueuePacket(1001, createPacket(1001, 1710000001000), 1710000001000);
-    queue.enqueuePacket(1001, createPacket(1001, 1710000001001), 1710000001001);
-    queue.enqueuePacket(1001, createPacket(1001, 1710000001002), 1710000001002);
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001000));
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001001));
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001002));
     await sleep(1100);
 
     expect(appendCallCount).toBe(1);
@@ -117,7 +134,7 @@ describe("DanmakuMessageQueue", () => {
       emitQueueChanged: () => undefined,
     });
 
-    queue.enqueuePacket(1001, createPacket(1001, 1710000001000), 1710000001000);
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001000));
     queue.clearPendingPackets();
     await sleep(1100);
 
@@ -150,7 +167,7 @@ describe("DanmakuMessageQueue", () => {
     });
 
     for (let index = 0; index < 20_001; index += 1) {
-      queue.enqueuePacket(1001, createPacket(1001, 1710000001000 + index), 1710000001000 + index);
+      queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001000 + index));
     }
     await queue.flushPendingMessages();
 
@@ -186,7 +203,7 @@ describe("DanmakuMessageQueue", () => {
 
     (queue as any).messageBatchSize = 1;
 
-    queue.enqueuePacket(1001, createPacket(1001, Date.now()));
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, Date.now(), 0));
     await sleep(1100);
 
     expect(appendedItems).toHaveLength(0);
@@ -210,6 +227,7 @@ describe("DanmakuMessageQueue", () => {
         sendArchiveBatch: async (records) => {
           sentArchiveBatches.push(records.map(record => ({ ...record })));
           return {
+            acceptedCount: records.length,
             rejected: [],
           };
         },
@@ -254,7 +272,7 @@ describe("DanmakuMessageQueue", () => {
 
     (queue as any).messageBatchSize = 1;
 
-    queue.enqueuePacket(1001, createPacket(1001, 1710000001000), 1710000001000);
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001000));
     await sleep(1100);
 
     expect(appendedItems).toEqual([{
@@ -290,6 +308,7 @@ describe("DanmakuMessageQueue", () => {
           expect(records).toHaveLength(1);
           expect(records[0]?.id).toBe(7);
           return {
+            acceptedCount: records.length,
             rejected: [],
           };
         },
@@ -335,7 +354,7 @@ describe("DanmakuMessageQueue", () => {
         getConnectionState: () => false,
         sendArchiveBatch: async (records) => {
           sentIds.push(...records.map(record => record.id));
-          return { rejected: [] };
+          return { acceptedCount: records.length, rejected: [] };
         },
       }),
       getLiveSessionOutbox: () => createOutboxStore({
@@ -512,7 +531,7 @@ describe("DanmakuMessageQueue", () => {
     await queue.refreshArchiveStats();
     void queue.flushPendingMessages();
     await sleep(30);
-    queue.enqueuePacket(1001, createPacket(1001, 1710000002000), 1710000002000);
+    queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000002000));
     await sleep(1100);
     queue.clearMessageDispatch();
 

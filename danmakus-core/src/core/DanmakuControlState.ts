@@ -9,7 +9,7 @@ import {
   UserInfo,
 } from '../types/index.js';
 
-const CONTROL_SYNC_INTERVAL_MS = 30000;
+const CONTROL_SYNC_INTERVAL_MS = 10000;
 
 interface ControlStateErrorContext {
   category?: 'config' | 'runtime-sync' | 'unknown';
@@ -22,14 +22,14 @@ interface DanmakuControlStateContext {
   getOptionalAccountClient(): AccountApiClient | undefined;
   isRunning(): boolean;
   isStopping(): boolean;
+  isClusterPresenceSyncEnabled?(): boolean;
   logger: ScopedLogger;
   emitError(error: Error): void;
   emitControlStateChanged(): void;
   getControlState(): CoreControlStateSnapshot;
   applyAccountConfigSnapshot(remoteConfig: CoreControlConfigDto, nextTag: string | null): Promise<void>;
   recordError(error: unknown, context?: ControlStateErrorContext): void;
-  syncRuntimeState(overrides?: Partial<CoreRuntimeStateDto>, options?: { force?: boolean; strict?: boolean }): Promise<void>;
-  refreshHoldingRoomsIfNeeded(maxConnections: number, reason: string, options?: { force?: boolean }): Promise<boolean>;
+  reportHoldingRoomState(reason: string, options?: { force?: boolean }): boolean;
   updateConnections(): void;
   refreshStatusNow(): void;
   replaceUserInfo(userInfo: UserInfo | null): void;
@@ -133,7 +133,7 @@ export class DanmakuControlState {
   }
 
   async forceTakeoverRuntimeState(): Promise<CoreControlStateSnapshot> {
-    await this.context.syncRuntimeState({}, { strict: true, force: true });
+    this.context.reportHoldingRoomState('force-takeover', { force: true });
     await this.refreshRemoteClients(true);
     this.context.emitControlStateChanged();
     return this.context.getControlState();
@@ -227,11 +227,7 @@ export class DanmakuControlState {
       && !this.context.areRoomIdsEqual(previousRecordingRoomIds, this.context.getRecordingRoomIds())
     ) {
       this.context.refreshStatusNow();
-      await this.context.refreshHoldingRoomsIfNeeded(
-        this.context.getControlState().config.maxConnections,
-        'recording-list-changed',
-        { force: true }
-      );
+      this.context.reportHoldingRoomState('recording-list-changed', { force: true });
       this.context.updateConnections();
     }
     this.context.emitControlStateChanged();
@@ -275,11 +271,14 @@ export class DanmakuControlState {
 
     this.controlSyncRefreshing = true;
     try {
-      if (!this.context.isRunning()) {
-        const tags = await accountClient.getCoreHeartbeatTags();
-        await this.handleAccountConfigTagChange(tags.configTag);
-        await this.handleClientsTagChange(tags.clientsTag);
-        await this.handleRecordingTagChange(tags.recordingTag);
+      if (this.context.isClusterPresenceSyncEnabled?.() ?? true) {
+        const clientsResult = await accountClient.getCoreClients();
+        this.context.replaceRemoteClients(clientsResult.data);
+        this.updateSyncTags(clientsResult.tags);
+        await this.handleAccountConfigTagChange(clientsResult.tags.configTag);
+        await this.handleClientsTagChange(clientsResult.tags.clientsTag);
+        await this.handleRecordingTagChange(clientsResult.tags.recordingTag);
+        this.context.emitControlStateChanged();
       }
     } catch (error) {
       this.context.recordError(error, { category: 'runtime-sync', code: 'CONTROL_SYNC_FAILED', recoverable: true });

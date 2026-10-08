@@ -96,6 +96,7 @@ export interface DanmakuConfig {
   lockAcquireRetryDelay?: number;
   lockAcquireForceTakeover?: boolean;
   errorHistoryLimit?: number;
+  enableClusterPresenceSync?: boolean;
   liveSessionOutbox?: LiveSessionOutboxStore;
 }
 

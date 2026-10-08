@@ -9,9 +9,9 @@ import { StreamerStatusManager } from './StreamerStatusManager.js';
 import { AccountApiClient } from './AccountApiClient.js';
 import { readCookieValue } from './BilibiliCookie.js';
 import { DanmakuMessageQueue } from './DanmakuMessageQueue.js';
-import { DanmakuRuntimeSync } from './DanmakuRuntimeSync.js';
 import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator.js';
 import { DanmakuControlState } from './DanmakuControlState.js';
+import { DanmakuExtractor } from './DanmakuExtractor.js';
 import {
   DanmakuMessage,
   DanmakuClientEvents,
@@ -24,8 +24,6 @@ import {
   StreamerStatus,
   CoreSyncTagSnapshot,
   CoreRuntimeStateDto,
-  CoreHeartbeatStateDto,
-  CoreConnectionInfoDto,
   ErrorCategory,
   ClientErrorRecord,
   RecordingInfoDto,
@@ -33,7 +31,6 @@ import {
   UserInfo,
 } from '../types/index.js';
 import { ScopedLogger, normalizeLogLevel } from './Logger.js';
-import { DEFAULT_CORE_CLIENT_VERSION } from '../version.js';
 
 const ERROR_HISTORY_MIN_LIMIT = 10;
 const ROOM_CONNECT_START_INTERVAL = 10_000;
@@ -104,26 +101,22 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private holdingRoomCoordinator: DanmakuHoldingRoomCoordinator;
   private controlState: DanmakuControlState;
   private isRunning: boolean = false;
-  private lastRuntimeCookieValid?: boolean;
   private updateConnectionsTimer?: ReturnType<typeof setTimeout>;
   private accountConfigTag: string | null = null;
-  private assignmentTag: string | null = null;
   private clientsTag: string | null = null;
   private recordingTag: string | null = null;
-  private runtimeLockConflictStopping = false;
   private userInfo: UserInfo | null = null;
   private remoteClients: CoreRuntimeStateDto[] = [];
   private recordings: RecordingInfoDto[] = [];
   private recordingRoomIds: number[] = [];
   private messageQueue: DanmakuMessageQueue;
+  private readonly danmakuExtractor = new DanmakuExtractor();
   private isStopping = false;
   private messageCount = 0;
   private activeError: ClientErrorRecord | null = null;
-  private runtimeSync: DanmakuRuntimeSync;
   private roomConnectStartInterval = ROOM_CONNECT_START_INTERVAL;
   private errorHistoryLimit = 50;
   private recentErrors: ClientErrorRecord[] = [];
-  private suppressRuntimeAutoRegister = false;
   private runtimeGeneration = 0;
   private serverTime?: { unixMs: number; monotonicMs: number };
 
@@ -167,24 +160,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         this.emit('queueChanged', pendingCount);
       },
     });
-    this.runtimeSync = new DanmakuRuntimeSync({
-      getAccountClient: () => this.accountClient,
-      getRuntimeConnection: () => this.runtimeConnection,
-      getConfig: () => this.configManager.getConfig(),
-      getClientId: () => this.clientId,
-      isRunning: () => this.isRunning,
-      isStopping: () => this.isStopping,
-      isAutoRegisterSuppressed: () => this.suppressRuntimeAutoRegister,
-      logger: this.logger.child('RuntimeSync'),
-      recordError: (error, context) => this.recordError(error, context),
-      clearError: (codes) => this.clearActiveError({ codes }),
-      buildRuntimeStateSnapshot: () => this.buildRuntimeStateSnapshot(),
-      buildRuntimeHeartbeatPayload: () => this.buildRuntimeHeartbeatPayload(),
-      handleHeartbeatResult: (result) => this.handleRuntimeHeartbeatResult(result),
-      handleRuntimeLockConflict: (reason) => this.handleRuntimeLockConflict(reason),
-      refreshHoldingRoomsIfNeeded: (maxConnections, reason, options) => this.refreshHoldingRoomsIfNeeded(maxConnections, reason, options),
-      updateConnections: () => this.updateConnections(),
-    });
     this.holdingRoomCoordinator = new DanmakuHoldingRoomCoordinator({
       isRunning: () => this.isRunning,
       isStopping: () => this.isStopping,
@@ -196,9 +171,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       disconnectFromRoom: (roomId) => this.disconnectFromRoom(roomId),
       connectToRoom: (roomId, priority) => this.connectToRoom(roomId, priority),
       updateConnections: () => this.updateConnections(),
-      syncRuntimeState: () => {
-        void this.syncRuntimeState();
-      },
       refreshStatusNow: () => {
         this.statusManager?.refreshNow();
       },
@@ -216,6 +188,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       getOptionalAccountClient: () => this.accountClient,
       isRunning: () => this.isRunning,
       isStopping: () => this.isStopping,
+      isClusterPresenceSyncEnabled: () => Boolean(this.configManager.getConfig().enableClusterPresenceSync),
       logger: this.logger.child('ControlState'),
       emitError: (error) => {
         this.emit('error', error);
@@ -224,8 +197,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       getControlState: () => this.getControlState(),
       applyAccountConfigSnapshot: (remoteConfig, nextTag) => this.applyAccountConfigSnapshot(remoteConfig, nextTag),
       recordError: (error, context) => this.recordError(error, context),
-      syncRuntimeState: (overrides, options) => this.syncRuntimeState(overrides, options),
-      refreshHoldingRoomsIfNeeded: (maxConnections, reason, options) => this.refreshHoldingRoomsIfNeeded(maxConnections, reason, options),
+      reportHoldingRoomState: (reason, options) => this.reportHoldingRoomState(reason, options),
       updateConnections: () => this.updateConnections(),
       refreshStatusNow: () => {
         this.statusManager?.refreshNow();
@@ -326,14 +298,37 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       return;
     }
 
+    this.runtimeConnection?.setCallbacks?.({
+      onRoomAssignPush: (data) => {
+        this.logger.info(`收到服务端房间分配推送: holding=[${data.holdingRooms.join(',')}], +[${data.newlyAssigned.join(',')}], -[${data.dropped.join(',')}]`);
+        this.holdingRoomCoordinator.applyHoldingRoomResult({
+          holdingRooms: data.holdingRooms,
+          newlyAssignedRooms: data.newlyAssigned,
+          droppedRooms: data.dropped,
+          effectiveCapacity: data.effectiveCapacity ?? data.holdingRooms.length,
+          nextRequestAfter: data.nextRequestAfter,
+          shortfall: data.shortfall,
+        });
+      },
+      onStreamerStatusPush: (updates) => {
+        this.statusManager?.applyStatusPush(updates);
+      },
+      onExtractionRules: (rules) => {
+        this.logger.info(`收到服务端解析规则更新: version=${rules.version}, rules=${rules.rules?.length}`);
+        this.danmakuExtractor.setRules(rules);
+      },
+    });
+
     this.runtimeConnection.onConnected = () => {
       this.messageQueue.scheduleMessageDispatch(0);
-      this.triggerRuntimeClientRegistration('connected');
+      this.reportHoldingRoomState('connected', { force: true });
+      this.updateConnections();
     };
 
     this.runtimeConnection.onReconnected = () => {
       this.messageQueue.scheduleMessageDispatch(0);
-      this.triggerRuntimeClientRegistration('reconnected');
+      this.reportHoldingRoomState('reconnected', { force: true });
+      this.updateConnections();
     };
 
     this.runtimeConnection.onDisconnected = (error?: Error) => {
@@ -343,7 +338,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
       this.logger.warn('Runtime 连接已断开，保留当前录制并等待恢复', error);
       this.updateConnections();
-      void this.syncRuntimeState();
     };
   }
 
@@ -381,9 +375,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.logger.info('正在校验 Cookie 状态...');
       await this.ensureCookieReadyForStartup();
       await this.messageQueue.refreshArchiveStats();
-      this.logger.info('正在获取核心运行锁...');
-      await this.acquireRuntimeLock();
-
       // 连接Runtime
       this.logger.info('连接到Runtime服务器...');
       const runtimeConnection = this.ensureRuntimeConnection();
@@ -392,32 +383,20 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         throw new Error('无法连接到Runtime服务器');
       }
 
-      // 首次注册前同步空连接态，清理同 clientId 旧心跳残留导致的容量误判
-      await this.syncRuntimeState({
-        isRunning: true,
-        runtimeConnected: true,
-        connectedRooms: [],
-        connectionInfo: [],
-        holdingRooms: [],
-        lastRoomAssigned: null,
-        holdingRoomShortfall: null,
-      }, { strict: true });
-
       this.isRunning = true;
       this.messageCount = 0;
-      await this.runtimeSync.heartbeatRuntimeState({ strict: true });
 
       // 启动状态管理器
       this.logger.info('启动状态检查器...');
       const statusManager = this.ensureStatusManager();
       statusManager.updateHoldingRooms(this.holdingRoomCoordinator.getHoldingRoomIds());
+      statusManager.updateRecordingRooms(this.recordingRoomIds);
       statusManager.start();
-      await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'client-register', { force: true });
+      this.reportHoldingRoomState('client-register', { force: true });
 
       this.logger.info('弹幕客户端启动成功');
-      await this.syncRuntimeState();
-      this.ensureHeartbeat();
       this.messageQueue.scheduleMessageDispatch(0);
+      this.controlState.startControlSync();
 
     } catch (error) {
       this.logger.error('启动弹幕客户端失败:', error);
@@ -430,7 +409,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   /**
    * 停止客户端
    */
-  async stop(options?: { suppressReleaseErrors?: boolean; skipRuntimeRelease?: boolean; }): Promise<void> {
+  async stop(_options?: { suppressReleaseErrors?: boolean; skipRuntimeRelease?: boolean; }): Promise<void> {
     this.runtimeGeneration += 1;
     this.logger.info('正在停止弹幕客户端...');
     this.isStopping = true;
@@ -461,28 +440,10 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     await this.runtimeConnection?.disconnect();
     this.holdingRoomCoordinator.resetState();
     this.statusManager?.updateHoldingRooms([]);
-    this.assignmentTag = null;
     this.messageCount = 0;
     this.activeError = null;
     this.recentErrors = [];
     this.messageQueue.resetState();
-    this.clearHeartbeat();
-    if (!options?.skipRuntimeRelease) {
-      await this.syncRuntimeState();
-    }
-    if (this.accountClient && !options?.skipRuntimeRelease) {
-      try {
-        await this.accountClient.releaseRuntimeState(this.clientId, { force: true });
-      } catch (releaseError) {
-        this.recordError(releaseError, { category: 'lock', code: 'LOCK_RELEASE_FAILED', recoverable: true });
-        if (options?.suppressReleaseErrors) {
-          this.logger.warn('释放核心锁失败', releaseError);
-        } else {
-          this.isStopping = false;
-          throw releaseError;
-        }
-      }
-    }
     this.serverTime = undefined;
     this.isStopping = false;
     this.logger.info('弹幕客户端已停止');
@@ -608,9 +569,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       this.setupLiveWSEvents(liveWS, roomId);
 
       this.emit('connected', roomId);
-      void this.syncRuntimeState();
-
       this.logger.info(`房间 ${roomId} 连接已创建 (ws room=${targetRoomId})`);
+      this.reportHoldingRoomState('room-connected', { force: true });
       if (awaitedOpen) {
         this.logger.info(`房间 ${roomId} WebSocket连接已建立`);
       }
@@ -936,12 +896,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.connections.delete(roomId);
     this.emit('disconnected', roomId);
     this.statusManager?.refreshNow();
+    this.reportHoldingRoomState('room-disconnected', { force: true });
 
     if (connectionInfo?.priority === 'server' && Date.now() - connectionInfo.connectedAt < 10_000) {
       this.holdingRoomCoordinator.removeHoldingRoom(roomId);
     }
 
-    void this.syncRuntimeState();
     if (!this.isStopping && this.isRunning) {
       this.updateConnections();
     }
@@ -952,17 +912,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     roomId: number,
     isCurrentConnection: () => boolean,
   ): void {
-
-    liveWS.addEventListener('message', (event: any) => {
-      if (!isCurrentConnection()) {
-        return;
-      }
-      void this.handleRawMessagePacket(event, roomId).catch(error => {
-        const normalizedError = error instanceof Error ? error : new Error(String(error));
-        this.recordError(normalizedError, { category: 'livews', code: 'MESSAGE_PACKET_HANDLE_FAILED', roomId, recoverable: true });
-        this.emit('error', normalizedError, roomId);
-      });
-    });
 
     const handleParsedMessage = ({ data }: any) => {
       if (!isCurrentConnection()) {
@@ -976,6 +925,23 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         this.recordError(normalizedError, { category: 'livews', code: 'MESSAGE_HANDLE_FAILED', roomId, recoverable: true });
         this.emit('error', normalizedError, roomId);
       });
+
+      try {
+        const streamerUid = this.resolveRoomStreamerUid(roomId);
+        if (streamerUid) {
+          const extracted = this.danmakuExtractor.extract(
+            data,
+            roomId,
+            streamerUid,
+            this.getEventTimestamp(),
+          );
+          if (extracted) {
+            this.messageQueue.enqueueExtractedEvent(extracted);
+          }
+        }
+      } catch (extractError) {
+        this.logger.warn(`提取房间 ${roomId} 消息失败:`, extractError);
+      }
     };
     liveWS.addEventListener('msg', handleParsedMessage);
     liveWS.addEventListener('MESSAGE', handleParsedMessage);
@@ -997,30 +963,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       data: data,
       timestamp: this.getEventTimestamp()
     };
-  }
-
-  private async handleRawMessagePacket(event: any, roomId: number): Promise<void> {
-    const payload = await this.extractLiveWsMessageBytes(event);
-    if (payload.length > 0) {
-      this.messageQueue.enqueuePacket(roomId, payload, this.getEventTimestamp());
-    }
-  }
-
-  private async extractLiveWsMessageBytes(event: any): Promise<Uint8Array> {
-    const data = event?.data ?? event;
-    if (data instanceof Uint8Array) {
-      return data;
-    }
-    if (data instanceof ArrayBuffer) {
-      return new Uint8Array(data);
-    }
-    if (ArrayBuffer.isView(data)) {
-      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    }
-    if (data instanceof Blob) {
-      return new Uint8Array(await data.arrayBuffer());
-    }
-    throw new Error(`房间 WebSocket 收到无法归档的消息类型: ${Object.prototype.toString.call(data)}`);
   }
 
   /**
@@ -1050,7 +992,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       connectionInfo.connection.close();
       this.connections.delete(roomId);
       this.logger.info(`房间 ${roomId} 连接已断开`);
-      void this.syncRuntimeState();
     }
   }
 
@@ -1124,7 +1065,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned(),
       holdingRoomShortfall: this.holdingRoomCoordinator.getHoldingRoomShortfall(),
       lastError,
-      lastHeartbeat: this.runtimeSync.getLastHeartbeat(),
+      lastHeartbeat: this.runtimeConnection?.getConnectionState() ? Date.now() : 0,
       config: this.configManager.getConfig()
     };
   }
@@ -1179,9 +1120,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     }
 
     if ((previous.capacityOverride ?? undefined) !== (next.capacityOverride ?? undefined) && this.isRunning) {
-      void this.syncRuntimeState().catch((error) => {
-        this.logger.warn('热更新 capacityOverride 后同步运行态失败', error);
-      });
+      this.reportHoldingRoomState('capacity-override-changed', { force: true });
     }
   }
 
@@ -1246,11 +1185,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   }
 
   private cloneRemoteClients(remoteClients: CoreRuntimeStateDto[]): CoreRuntimeStateDto[] {
-    return remoteClients.map(remote => ({
+    const list = Array.isArray(remoteClients) ? remoteClients : [];
+    return list.map(remote => ({
       ...remote,
-      connectedRooms: [...remote.connectedRooms],
-      connectionInfo: remote.connectionInfo.map(info => ({ ...info })),
-      holdingRooms: [...remote.holdingRooms],
+      connectedRooms: Array.isArray(remote.connectedRooms) ? [...remote.connectedRooms] : [],
+      connectionInfo: Array.isArray(remote.connectionInfo) ? remote.connectionInfo.map(info => ({ ...info })) : [],
+      holdingRooms: Array.isArray(remote.holdingRooms) ? [...remote.holdingRooms] : [],
       holdingRoomShortfall: this.cloneHoldingRoomShortfall(remote.holdingRoomShortfall),
     }));
   }
@@ -1361,72 +1301,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.emit('authStateChanged', this.authManager.getState());
   }
 
-  private async acquireRuntimeLock(): Promise<void> {
-    await this.runtimeSync.acquireRuntimeLock();
-  }
-
-  private ensureHeartbeat(): void {
-    this.runtimeSync.ensureHeartbeat();
-  }
-
-  private clearHeartbeat(): void {
-    this.runtimeSync.clearHeartbeat();
-  }
-
-  private buildRuntimeStateSnapshot(): CoreRuntimeStateDto {
-    const now = Date.now();
-    const runtimeConnected = this.runtimeConnection?.getConnectionState() ?? false;
-    const connectionInfo = this.getConnectionInfo();
-    const connectedRooms = this.getConnectedRooms();
-    const config = this.configManager.getConfig();
-    const authState = this.authManager.getState();
-    const lastError = this.getActiveErrorText(now) ?? null;
-
-    return {
-      clientId: this.clientId,
-      clientVersion: config.clientVersion ?? DEFAULT_CORE_CLIENT_VERSION,
-      isRunning: this.isRunning,
-      runtimeConnected,
-      cookieValid: authState.hasUsableCookie,
-      authState,
-      connectedRooms,
-      connectionInfo: connectionInfo.map<CoreConnectionInfoDto>(info => ({
-        roomId: info.roomId,
-        priority: info.priority,
-        connectedAt: new Date(info.connectedAt).toISOString()
-      })),
-      holdingRooms: this.holdingRoomCoordinator.getHoldingRoomIds(),
-      messageCount: this.messageCount,
-      lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned() ?? null,
-      holdingRoomShortfall: this.holdingRoomCoordinator.getHoldingRoomShortfall(),
-      lastError,
-      lastHeartbeat: new Date(this.runtimeSync.getLastHeartbeat() || now).toISOString()
-    };
-  }
-
-  private buildRuntimeHeartbeatPayload(): CoreHeartbeatStateDto {
-    const config = this.configManager.getConfig();
-    const authState = this.authManager.getState();
-    const lastError = this.getActiveErrorText() ?? null;
-    return {
-      clientId: this.clientId,
-      clientVersion: config.clientVersion ?? DEFAULT_CORE_CLIENT_VERSION,
-      isRunning: this.isRunning,
-      runtimeConnected: this.runtimeConnection?.getConnectionState() ?? false,
-      cookieValid: authState.hasUsableCookie,
-      messageCount: this.messageCount,
-      lastError
-    };
-  }
-
-
-  private async syncRuntimeState(
-    overrides: Partial<CoreRuntimeStateDto> = {},
-    options?: { force?: boolean; strict?: boolean; }
-  ): Promise<void> {
-    await this.runtimeSync.syncRuntimeState(overrides, options);
-  }
-
   private isHoldingRoomRequestEnabled(config: DanmakuConfig = this.configManager.getConfig()): boolean {
     return (config.requestServerRooms ?? true) && Math.max(0, Math.floor(config.maxConnections)) > 0;
   }
@@ -1436,22 +1310,11 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   }
 
 
-  private async refreshHoldingRoomsIfNeeded(
-    maxConnections: number,
+  private reportHoldingRoomState(
     reason: string = 'capacity-refresh',
     options?: { force?: boolean; }
-  ): Promise<boolean> {
-    return this.holdingRoomCoordinator.refreshHoldingRoomsIfNeeded(maxConnections, reason, options);
-  }
-
-
-  private consumeAssignmentTag(nextTag: string | null): boolean {
-    if (nextTag === null || nextTag === this.assignmentTag) {
-      return false;
-    }
-
-    this.assignmentTag = nextTag;
-    return true;
+  ): boolean {
+    return this.holdingRoomCoordinator.reportHoldingRoomState(reason, options);
   }
 
   private updateControlSyncTags(tags: Partial<CoreSyncTagSnapshot>): void {
@@ -1466,27 +1329,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     }
   }
 
-  private async handleRuntimeHeartbeatResult(
-    result: Awaited<ReturnType<AccountApiClient['heartbeatRuntimeState']>>
-  ): Promise<void> {
-    this.serverTime = result.serverTime;
-    await this.controlState.handleAccountConfigTagChange(result.configTag);
-    await this.controlState.handleClientsTagChange(result.clientsTag);
-    await this.controlState.handleRecordingTagChange(result.recordingTag);
-    this.messageQueue.scheduleMessageDispatch(0);
-    if (this.consumeAssignmentTag(result.assignmentTag)) {
-      await this.refreshHoldingRoomsIfNeeded(this.configManager.getConfig().maxConnections, 'assignment-tag-changed', {
-        force: true,
-      });
-    }
-  }
-
   private getEventTimestamp(): number {
-    if (!this.serverTime) {
-      throw new Error('尚未同步服务端时间');
+    if (this.serverTime) {
+      return Math.floor(this.serverTime.unixMs + performance.now() - this.serverTime.monotonicMs);
     }
 
-    return Math.floor(this.serverTime.unixMs + performance.now() - this.serverTime.monotonicMs);
+    return Date.now();
   }
 
   private replaceUserInfo(userInfo: UserInfo | null): void {
@@ -1532,7 +1380,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private applyRuntimeTunings(config: DanmakuConfig): void {
     this.logger.setLevel(normalizeLogLevel(config.logLevel, this.logger.getLevel()));
     this.messageQueue.applyRuntimeTunings(config);
-    this.runtimeSync.applyRuntimeTunings(config);
 
     const errorLimit = Math.floor(config.errorHistoryLimit ?? 50);
     this.errorHistoryLimit = Math.max(ERROR_HISTORY_MIN_LIMIT, errorLimit);
@@ -1648,7 +1495,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     }
 
     if (excludedServerRoomUserIdsChanged && this.isHoldingRoomRequestEnabled(next)) {
-      await this.refreshHoldingRoomsIfNeeded(next.maxConnections, 'account-config-excluded-uids-changed', {
+      this.reportHoldingRoomState('account-config-excluded-uids-changed', {
         force: true
       });
     }
@@ -1682,12 +1529,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.authManager.onStateChanged((state) => {
       this.emit('authStateChanged', state);
       this.emit('cookieUpdated');
-      const cookieValidityChanged = this.lastRuntimeCookieValid !== undefined
-        && this.lastRuntimeCookieValid !== state.hasUsableCookie;
-      this.lastRuntimeCookieValid = state.hasUsableCookie;
-      if (cookieValidityChanged && this.isRunning && !this.isStopping) {
-        void this.syncRuntimeState();
-      }
     });
     this.authManager.start();
     void this.authManager.refreshState({ validateProfile: true, force: true }).catch(() => undefined);
@@ -1752,47 +1593,15 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       return;
     }
 
-    this.suppressRuntimeAutoRegister = true;
-    try {
-      const connected = await this.runtimeConnection.connect();
-      if (!connected) {
-        throw new Error('配置热更新后无法连接Runtime');
-      }
-
-      await this.refreshHoldingRoomsIfNeeded(config.maxConnections, 'runtime-rebuild', { force: true });
-    } finally {
-      this.suppressRuntimeAutoRegister = false;
+    const connected = await this.runtimeConnection.connect();
+    if (!connected) {
+      throw new Error('配置热更新后无法连接Runtime');
     }
 
+    this.reportHoldingRoomState('runtime-rebuild', { force: true });
     this.updateConnections();
-    await this.syncRuntimeState();
     this.messageQueue.scheduleMessageDispatch(0);
   }
-
-  private triggerRuntimeClientRegistration(reason: 'connected' | 'reconnected'): void {
-    this.runtimeSync.triggerRuntimeClientRegistration(reason);
-  }
-
-  private handleRuntimeLockConflict(reason: string): void {
-    if (!this.isRunning || this.isStopping || this.runtimeLockConflictStopping) {
-      return;
-    }
-
-    this.runtimeLockConflictStopping = true;
-    const normalizedReason = reason.trim() || '核心锁已失效';
-    const error = new Error(normalizedReason);
-    this.logger.warn(`检测到核心锁失效，停止客户端以避免重复录制: ${normalizedReason}`);
-    this.emit('error', error);
-    void this.stop({ suppressReleaseErrors: true, skipRuntimeRelease: true })
-      .catch((stopError) => {
-        this.recordError(stopError, { category: 'lock', code: 'LOCK_CONFLICT_STOP_FAILED' });
-        this.logger.error('核心锁失效后停止客户端失败', stopError);
-      })
-      .finally(() => {
-        this.runtimeLockConflictStopping = false;
-      });
-  }
-
 
   private normalizeCookieSecret(value?: string): string | undefined {
     if (typeof value !== 'string') {

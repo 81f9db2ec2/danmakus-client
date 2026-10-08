@@ -41,7 +41,7 @@ describe('RuntimeEndpoints 单一地址源', () => {
     expect(endpoints.getCoreRuntimeBaseUrl()).toBe('https://a.danmakus.com/api/v2/core-runtime');
   });
 
-  test('更新一次地址源，上传与同步同时切换（杜绝漏改）', async () => {
+  test('更新一次地址源，上传与客户端查询同时切换（杜绝漏改）', async () => {
     const endpoints = new RuntimeEndpoints('https://old.danmakus.com/api/v2/core-runtime');
     const upload = new RuntimeConnection(
       'https://old.danmakus.com/api/v2/core-runtime',
@@ -62,13 +62,11 @@ describe('RuntimeEndpoints 单一地址源', () => {
     const captured: string[] = [];
     stubFetch(captured);
 
-    await upload.sendArchiveBatch([dueRecord]);
-    await account.syncRuntimeState({ clientId: 'client-1' });
+    await account.getCoreClients();
 
-    expect(captured.find(u => u.includes('/upload-danmakus-v5')))
-      .toBe('https://new.danmakus.com/api/v2/core-runtime/upload-danmakus-v5');
-    expect(captured.find(u => u.includes('/sync')))
-      .toStartWith('https://new.danmakus.com/api/v2/core-runtime/sync');
+    expect(upload.runtimeBaseUrl).toBe('https://new.danmakus.com/api/v2/core-runtime');
+    expect(captured.find(u => u.includes('/clients')))
+      .toStartWith('https://new.danmakus.com/api/v2/core-runtime/clients');
     expect(account.getCoreRuntimeBaseUrl()).toBe('https://new.danmakus.com/api/v2/core-runtime');
   });
 });

@@ -7,6 +7,8 @@ import {
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import type { RuntimeConnection } from './RuntimeConnection.js';
+import { encodeMsgPackPayload } from './CoreWebSocketCodec.js';
+import type { ExtractedUploadEvent } from './DanmakuExtractionTypes.js';
 
 const MESSAGE_RETRY_MIN_DELAY = 200;
 const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
@@ -103,16 +105,17 @@ export class DanmakuMessageQueue {
     this.emitPendingCountChanged();
   }
 
-  enqueuePacket(roomId: number, payload: Uint8Array, receivedTsMs: number = Date.now()): void {
-    if (!this.context.isRunning() || this.context.isStopping() || payload.length === 0) {
+  enqueueExtractedEvent(event: ExtractedUploadEvent): void {
+    if (!this.context.isRunning() || this.context.isStopping()) {
       return;
     }
 
+    const payload = encodeMsgPackPayload(event);
     this.pendingPackets.push({
-      roomId,
-      streamerUid: this.context.resolveRecordingStreamerUid(roomId),
-      receivedTsMs,
-      payload: payload.slice(),
+      roomId: event.roomId,
+      streamerUid: event.streamerUid,
+      receivedTsMs: event.eventTsMs,
+      payload,
       retryCount: 0,
       nextRetryAt: Date.now(),
     });
@@ -365,6 +368,11 @@ export class DanmakuMessageQueue {
           .filter(item => item && Number.isFinite(Number(item.localId)) && Number(item.localId) > 0)
           .map(item => [Math.floor(Number(item.localId)), item] as const),
       );
+      const acceptedCount = response.acceptedCount ?? 0;
+      if (acceptedCount <= 0 && rejectedById.size === 0) {
+        const detail = [response.code, response.error].filter(Boolean).join(' ');
+        throw new Error(detail ? `服务端未接受本批次: ${detail}` : '服务端未接受本批次，将保留 outbox 重试');
+      }
       const deleted = await outbox.ack(records.map(record => record.id));
       this.outboxPendingCount = Math.max(0, this.outboxPendingCount - deleted);
       this.emitPendingCountChanged();

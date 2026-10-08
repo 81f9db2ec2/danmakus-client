@@ -413,8 +413,7 @@ const runtimeErrorOccurredAgo = useTimeAgoIntl(
     relativeTimeFormatOptions: {
       numeric: 'always',
       style: 'long'
-    },
-    updateInterval: 1000
+    }
   }
 );
 

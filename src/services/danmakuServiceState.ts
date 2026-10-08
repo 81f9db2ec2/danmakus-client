@@ -180,12 +180,12 @@ export const toRemoteClientSnapshot = (remote: CoreClientRuntimeStateDto): Remot
   isRunning: Boolean(remote.isRunning),
   runtimeConnected: Boolean(remote.runtimeConnected),
   cookieValid: Boolean(remote.cookieValid),
-  connectedRooms: remote.connectedRooms
+  connectedRooms: (remote.connectedRooms ?? [])
     .map(roomId => Number(roomId))
     .filter(roomId => Number.isFinite(roomId) && roomId > 0)
     .map(roomId => Math.floor(roomId)),
-  connectionInfo: remote.connectionInfo.map(normalizeConnectionInfo),
-  holdingRooms: remote.holdingRooms
+  connectionInfo: (remote.connectionInfo ?? []).map(normalizeConnectionInfo),
+  holdingRooms: (remote.holdingRooms ?? [])
     .map(roomId => Number(roomId))
     .filter(roomId => Number.isFinite(roomId) && roomId > 0)
     .map(roomId => Math.floor(roomId)),

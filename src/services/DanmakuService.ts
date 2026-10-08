@@ -151,6 +151,7 @@ class DanmakuService {
       accountToken: token,
       clientVersion: desktopClientVersion,
       runtimeUrl: RUNTIME_URL,
+      enableClusterPresenceSync: true,
       liveSessionOutbox: outbox as LiveSessionOutboxStore,
     });
     this.lastInitializationSignature = signature;

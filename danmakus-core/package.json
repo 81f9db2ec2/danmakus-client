@@ -1,6 +1,6 @@
 {
   "name": "danmakus-core",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Danmakus的弹幕客户端核心",
   "type": "module",
   "main": "dist/lib/index.js",
@@ -37,16 +37,17 @@
   "author": "danmakus-core",
   "license": "MIT",
   "dependencies": {
-    "@laplace.live/ws": "^7.1.10",
+    "@laplace.live/ws": "^8.1.0",
     "@msgpack/msgpack": "^3.1.3",
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "eventemitter3": "^5.0.4",
+    "protobufjs": "^8.8.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@types/node": "^25.9.6",
+    "@types/node": "^26.6.4",
     "@types/qrcode": "^1.5.6",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=18.0.0"

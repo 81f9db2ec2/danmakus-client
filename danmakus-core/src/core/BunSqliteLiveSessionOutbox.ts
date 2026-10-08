@@ -15,8 +15,17 @@ export const DEFAULT_BUN_LIVE_SESSION_OUTBOX_PATH = resolve(
   'danmakus-live-session-outbox-streamer.sqlite3',
 );
 
+type BunSqliteStatement = {
+  run(...params: SqliteLiveSessionOutboxValue[]): {
+    changes: number;
+    lastInsertRowid: number | bigint;
+  };
+  values(params?: SqliteLiveSessionOutboxValue[]): unknown[][];
+};
+
 type BunSqliteDatabase = {
   exec(sql: string): void;
+  prepare(sql: string): BunSqliteStatement;
   run(sql: string, ...params: SqliteLiveSessionOutboxValue[][]): {
     changes: number;
     lastInsertRowid: number | bigint;
@@ -69,13 +78,24 @@ const createBunSqliteBackend = async (databasePath: string): Promise<ResettableS
   const openDatabase = (): BunSqliteDatabase => {
     const db = new Database(databasePath, { create: true });
     db.exec('SELECT 1;');
-    db.exec('PRAGMA journal_mode = DELETE;');
+    db.exec('PRAGMA journal_mode = WAL;');
     db.exec('PRAGMA synchronous = NORMAL;');
     db.exec('PRAGMA busy_timeout = 30000;');
+    db.exec('PRAGMA temp_store = MEMORY;');
+    db.exec('PRAGMA wal_autocheckpoint = 1000;');
     return db;
   };
 
   let db: BunSqliteDatabase;
+  const stmtCache = new Map<string, BunSqliteStatement>();
+  const getCachedStmt = (sql: string): BunSqliteStatement => {
+    let stmt = stmtCache.get(sql);
+    if (!stmt) {
+      stmt = db.prepare(sql);
+      stmtCache.set(sql, stmt);
+    }
+    return stmt;
+  };
   try {
     db = openDatabase();
   } catch (error) {
@@ -94,19 +114,31 @@ const createBunSqliteBackend = async (databasePath: string): Promise<ResettableS
     run: async (
       sql: string,
       params?: SqliteLiveSessionOutboxValue[],
-    ): Promise<number> => db.run(sql, params ?? []).changes,
+    ): Promise<number> => {
+      if (params && params.length <= 10) {
+        return getCachedStmt(sql).run(...params).changes;
+      }
+      return db.run(sql, params ?? []).changes;
+    },
 
     query: async (
       sql: string,
       params?: SqliteLiveSessionOutboxValue[],
-    ): Promise<unknown[][]> => db.query(sql).values(params),
+    ): Promise<unknown[][]> => {
+      if (params && params.length <= 10) {
+        return getCachedStmt(sql).values(params);
+      }
+      return db.query(sql).values(params);
+    },
 
     reconnect: async (): Promise<void> => {
+      stmtCache.clear();
       db.close(true);
       db = openDatabase();
     },
 
     reset: async (): Promise<void> => {
+      stmtCache.clear();
       db.close(true);
       deleteSqliteDatabaseFiles(databasePath);
     },

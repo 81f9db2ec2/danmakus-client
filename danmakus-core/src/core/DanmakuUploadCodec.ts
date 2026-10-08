@@ -1,4 +1,5 @@
 import { Encoder } from '@msgpack/msgpack';
+import { toWireIntegers } from './CoreWebSocketCodec.js';
 
 export type ArchiveRequestCompression = 'zstd' | 'brotli' | 'gzip' | 'identity';
 type CompressionStreamFormat = Exclude<ArchiveRequestCompression, 'identity'>;
@@ -12,7 +13,7 @@ export type ArchiveUploadEnvelope = {
   body: Uint8Array;
 };
 
-const messagePackEncoder = new Encoder();
+const messagePackEncoder = new Encoder({ useBigInt64: true });
 const compressionOrder: CompressionStreamFormat[] = ['zstd', 'brotli', 'gzip'];
 const COMPRESSION_ATTEMPT_TIMEOUT_MS = 3000;
 
@@ -116,7 +117,7 @@ export const encodeArchiveUploadEnvelope = async (
   payload: unknown,
   options?: { compressionAttemptTimeoutMs?: number },
 ): Promise<ArchiveUploadEnvelope> => {
-  const payloadBytes = messagePackEncoder.encode(payload);
+  const payloadBytes = messagePackEncoder.encode(toWireIntegers(payload));
   const timeoutMs = Math.max(1, Math.floor(options?.compressionAttemptTimeoutMs ?? COMPRESSION_ATTEMPT_TIMEOUT_MS));
   for (const compression of compressionOrder) {
     const compressed = await tryCompressWithStream(compression, payloadBytes, timeoutMs);

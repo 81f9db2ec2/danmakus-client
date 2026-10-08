@@ -42,5 +42,8 @@ export interface ArchiveUploadRejectedItem {
 }
 
 export interface ArchiveUploadResponse {
+  acceptedCount?: number;
   rejected: ArchiveUploadRejectedItem[];
+  code?: string;
+  error?: string;
 }

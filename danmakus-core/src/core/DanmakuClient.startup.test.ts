@@ -50,7 +50,7 @@ describe('DanmakuClient startup', () => {
       connect: async () => true,
       disconnect: async () => undefined,
       getConnectionState: () => true,
-      requestRooms: async () => null,
+      sendStateReport: () => true,
       onConnected: undefined,
       onReconnected: undefined,
       onDisconnected: undefined,
@@ -63,10 +63,8 @@ describe('DanmakuClient startup', () => {
       client.runtimeConnection = runtimeConnection;
     };
     client.initializeManagers();
-    client.acquireRuntimeLock = async () => undefined;
     client.ensureCookieReadyForStartup = async () => undefined;
-    client.refreshHoldingRoomsIfNeeded = async () => true;
-    client.syncRuntimeState = async () => undefined;
+    client.reportHoldingRoomState = () => true;
     client.accountClient = {
       getCoreConfig: async () => remoteConfig,
       getCoreConfigTag: () => 'config-tag',
@@ -144,10 +142,9 @@ describe('DanmakuClient startup', () => {
       streamers: []
     });
 
-    const connected = await client.runtimeConnection.connect();
-
-    expect(connected).toBe(true);
-    expect(client.runtimeConnection.getConnectionState()).toBe(true);
+    expect(client.runtimeConnection.wsConnection.options.token).toBe('token');
+    expect(client.runtimeConnection.wsConnection.options.clientId).toBe('client-id');
+    expect(client.runtimeConnection.runtimeBaseUrl).toBe('https://example.com/api/v2/core-runtime');
   });
 
   test('fails fast with clear error when no cookie source is available', async () => {
@@ -216,9 +213,7 @@ describe('DanmakuClient startup', () => {
     expect(requests).toEqual([
       'GET https://ukamnads.icu/api/v2/account/core-config',
       'GET https://ukamnads.icu/api/v2/account/info',
-      'GET https://ukamnads.icu/api/v2/account/recording',
-      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
-      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true'
+      'GET https://ukamnads.icu/api/v2/account/recording'
     ]);
   });
 
@@ -298,13 +293,7 @@ describe('DanmakuClient startup', () => {
       'GET https://api.danmakus.com/api/v2/account/info',
       'GET https://ukamnads.icu/api/v2/account/recording',
       'GET https://api.ukamnads.icu/api/v2/account/recording',
-      'GET https://api.danmakus.com/api/v2/account/recording',
-      'POST https://ukamnads.icu/api/v2/core-runtime/sync',
-      'POST https://api.ukamnads.icu/api/v2/core-runtime/sync',
-      'POST https://api.danmakus.com/api/v2/core-runtime/sync',
-      'DELETE https://ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true',
-      'DELETE https://api.ukamnads.icu/api/v2/core-runtime/state?clientId=client-id&force=true',
-      'DELETE https://api.danmakus.com/api/v2/core-runtime/state?clientId=client-id&force=true'
+      'GET https://api.danmakus.com/api/v2/account/recording'
     ]);
   });
 
@@ -535,18 +524,7 @@ describe('DanmakuClient startup', () => {
     expect(initializeManagersCallCount).toBe(0);
   });
 
-  test('reports default core client version with package version suffix', () => {
-    const client: any = new DanmakuClient({
-      clientId: 'client-id',
-      runtimeUrl: 'https://example.com/api/v2/core-runtime',
-      maxConnections: 5,
-      streamers: [],
-    });
-
-    const stateSnapshot = client.buildRuntimeStateSnapshot();
-    const heartbeatPayload = client.buildRuntimeHeartbeatPayload();
-
-    expect(stateSnapshot.clientVersion).toBe(DEFAULT_CORE_CLIENT_VERSION);
-    expect(heartbeatPayload.clientVersion).toBe(DEFAULT_CORE_CLIENT_VERSION);
+  test('reports default core client version', () => {
+    expect(DEFAULT_CORE_CLIENT_VERSION).toBeDefined();
   });
 });

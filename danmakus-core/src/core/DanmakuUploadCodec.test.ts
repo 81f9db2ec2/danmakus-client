@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { decode } from "@msgpack/msgpack";
 import { encodeArchiveUploadEnvelope } from "./DanmakuUploadCodec.js";
+import { encodeMsgPackPayload, toWireIntegers } from "./CoreWebSocketCodec.js";
 
 const originalCompressionStream = globalThis.CompressionStream;
 
@@ -61,5 +62,28 @@ describe("DanmakuUploadCodec", () => {
     expect(encoded.compression).toBe("gzip");
     expect(envelope.compression).toBe("gzip");
     expect(envelope.payload).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("encodes millisecond timestamps as 64-bit integers instead of float64", () => {
+    const wired = toWireIntegers({
+      eventTsMs: 1710000000000,
+      sendDate: 1710000000000,
+      roomId: 13308358,
+    }) as { eventTsMs: bigint; sendDate: bigint; roomId: number };
+    expect(wired.eventTsMs).toBe(1710000000000n);
+    expect(wired.sendDate).toBe(1710000000000n);
+    expect(wired.roomId).toBe(13308358);
+
+    const encoded = encodeMsgPackPayload({
+      eventTsMs: 1710000000000,
+      danmaku: { sendDate: 1710000000000, type: 0 },
+    });
+    expect(encoded.includes(0xcb)).toBe(false);
+    const decoded = decode(encoded, { useBigInt64: true }) as {
+      eventTsMs: bigint;
+      danmaku: { sendDate: bigint; type: number };
+    };
+    expect(decoded.eventTsMs).toBe(1710000000000n);
+    expect(decoded.danmaku.sendDate).toBe(1710000000000n);
   });
 });

@@ -273,23 +273,23 @@ onBeforeUnmount(() => {
           >
             <Avatar class="h-10 w-10 border border-border">
               <AvatarImage
-                :src="activeProfile.face || 'https://static.hdslb.com/images/member/noface.gif'"
+                :src="activeProfile?.face || 'https://static.hdslb.com/images/member/noface.gif'"
                 referrerpolicy="no-referrer"
               />
               <AvatarFallback><UserRound class="h-4 w-4 text-muted-foreground" /></AvatarFallback>
             </Avatar>
             <div class="min-w-0">
               <p class="flex items-center gap-1 truncate text-sm font-semibold">
-                {{ activeProfile.uname || '已登录用户' }}
+                {{ activeProfile?.uname || '已登录用户' }}
                 <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground" />
               </p>
-              <p class="text-xs text-muted-foreground">UID: {{ activeProfile.uid }}</p>
+              <p class="text-xs text-muted-foreground">UID: {{ activeProfile?.uid }}</p>
             </div>
           </a>
           <div class="flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-xs">
-            <Badge variant="outline">Lv.{{ activeProfile.level ?? 0 }}</Badge>
-            <Badge v-if="(activeProfile.vipStatus ?? 0) > 0" variant="secondary">
-              {{ activeProfile.vipLabel || '大会员' }}
+            <Badge variant="outline">Lv.{{ activeProfile?.level ?? 0 }}</Badge>
+            <Badge v-if="(activeProfile?.vipStatus ?? 0) > 0" variant="secondary">
+              {{ activeProfile?.vipLabel || '大会员' }}
             </Badge>
           </div>
         </div>

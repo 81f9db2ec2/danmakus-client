@@ -2,44 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { AccountApiClient } from './AccountApiClient.js';
 
 describe('AccountApiClient', () => {
-  test('heartbeatRuntimeState should read config and assignment tags from headers', async () => {
-    let request: RequestInit | undefined;
-    const client = new AccountApiClient(
-      'token',
-      async (_input, init) => {
-        request = init;
-        return new Response(null, {
-        status: 204,
-        headers: {
-          'X-Core-Config-Tag': '"config-tag"',
-          'X-Core-Assignment-Tag': 'assignment-tag',
-          'X-Core-Server-Time-Ms': '1710000000000',
-        }
-        });
-      }
-    );
-
-    const result = await client.heartbeatRuntimeState({
-      clientId: 'client-id',
-      clientVersion: '1.0.0',
-      isRunning: true,
-      runtimeConnected: true,
-      cookieValid: true,
-      messageCount: 12,
-      lastError: null,
-    });
-
-    expect(result).toMatchObject({
-      configTag: '"config-tag"',
-      assignmentTag: 'assignment-tag',
-      clientsTag: null,
-      recordingTag: null
-    });
-    expect(result.serverTime.unixMs).toBeGreaterThanOrEqual(1710000000000);
-    expect(result.serverTime.monotonicMs).toBeGreaterThanOrEqual(0);
-    expect(new Headers(request?.headers).get('X-Core-Heartbeat-Features')).toBe('recording');
-  });
-
   test('getCoreConfig should fallback through api.ukamnads.icu to api.danmakus.com when earlier backends fail', async () => {
     const requests: string[] = [];
     const client = new AccountApiClient(
@@ -78,32 +40,30 @@ describe('AccountApiClient', () => {
     expect(result.runtimeUrl).toBe('https://api.danmakus.com/api/v2/core-runtime');
   });
 
-  test('getCoreHeartbeatTags should include assignment changes', async () => {
+  test('getCoreClients should read from core runtime clients endpoint', async () => {
     let requestUrl = '';
     const client = new AccountApiClient(
       'token',
       async (input) => {
         requestUrl = String(input);
-        return new Response(null, {
-        status: 204,
-        headers: {
-          'X-Core-Config-Tag': 'config-tag',
-          'X-Core-Assignment-Tag': 'assignment-tag',
-          'X-Core-Recording-Tag': 'recording-tag',
-          'X-Core-Server-Time-Ms': '1710000000000',
-        },
+        return new Response(JSON.stringify({
+          code: 200,
+          data: [{ clientId: 'client-1', isRunning: true }],
+        }), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Core-Config-Tag': 'config-tag',
+            'X-Core-Clients-Tag': 'clients-tag',
+          },
         });
       },
     );
 
-    const result = await client.getCoreHeartbeatTags('client-id');
-    expect(result).toMatchObject({
-      configTag: 'config-tag',
-      assignmentTag: 'assignment-tag',
-      clientsTag: null,
-      recordingTag: 'recording-tag',
-    });
-    expect(result.serverTime.unixMs).toBeGreaterThanOrEqual(1710000000000);
-    expect(requestUrl).toContain('/heartbeat?clientId=client-id');
+    const result = await client.getCoreClients();
+    expect(result.data).toEqual([{ clientId: 'client-1', isRunning: true } as any]);
+    expect(result.tags.configTag).toBe('config-tag');
+    expect(result.tags.clientsTag).toBe('clients-tag');
+    expect(requestUrl).toContain('/clients');
   });
 });
