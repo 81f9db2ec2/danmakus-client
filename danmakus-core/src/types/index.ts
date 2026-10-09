@@ -356,6 +356,7 @@ export type DanmakuEventMap = DanmakuClientEvents & {
 
 // CLI选项类型
 export interface CliOptions {
+  runtimeUrl?: string;
   maxConnections?: number;
   capacityOverride?: number;
   cookieKey?: string;

@@ -168,14 +168,14 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.type).toBe(4);
     expect(event!.danmaku!.userId).toBe(666888);
     expect(event!.danmaku!.userName).toBe('入场大佬');
-    expect(event!.danmaku!.sendDate).toBe(1710000000123);
+    expect(event!.danmaku!.sendDate).toBe(1710000000000);
   });
 
   it('extracts INTERACT_WORD_V2 with username from nested uinfo.base when top username is empty', () => {
     const pbBase64 = encodePb(interactWordV2Type, {
       uid: 555333,
       username: '',
-      timestamp_ms: 1710000000456,
+      timestamp: 1710000000,
       uinfo: {
         uid: 555333,
         base: {
@@ -196,7 +196,7 @@ describe('DanmakuExtractor', () => {
     expect(event).not.toBeNull();
     expect(event!.danmaku!.userId).toBe(555333);
     expect(event!.danmaku!.userName).toBe('嵌套用户名');
-    expect(event!.danmaku!.sendDate).toBe(1710000000456);
+    expect(event!.danmaku!.sendDate).toBe(1710000000000);
   });
 
   it('extracts USER_TOAST_MSG_V2 correctly', () => {
@@ -235,6 +235,57 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.price).toBe(198);
     expect(event!.danmaku!.count).toBe(1);
     expect(event!.danmaku!.sendDate).toBe(1710000000000);
+  });
+
+  it('ignores GUARD_BUY', () => {
+    const event = extractor.extract({
+      cmd: 'GUARD_BUY',
+      data: {
+        uid: 10001,
+        username: 'user-a',
+        guard_level: 2,
+        num: 1,
+        price: 1998000,
+        gift_name: '提督',
+        start_time: 1710000000,
+      },
+    }, 1001, 8888, 1710000000000);
+    expect(event).toBeNull();
+  });
+
+  it('extracts USER_TOAST_MSG as fallback guard', () => {
+    const event = extractor.extract({
+      cmd: 'USER_TOAST_MSG',
+      data: {
+        uid: 10001,
+        username: 'user-a',
+        num: 1,
+        guard_level: 2,
+        price: 1598000,
+        role_name: '提督',
+        start_time: 1710000000,
+      },
+    }, 1001, 8888, 1710000000000);
+    expect(event).not.toBeNull();
+    expect(event!.danmaku!.type).toBe(2);
+    expect(event!.danmaku!.message).toBe('提督');
+    expect(event!.danmaku!.price).toBe(1598);
+  });
+
+  it('extracts USER_TOAST_MSG_V2 guard level when role name is missing', () => {
+    const event = extractor.extract({
+      cmd: 'USER_TOAST_MSG_V2',
+      data: {
+        sender_uinfo: { uid: 10001, base: { name: 'user-a' } },
+        guard_info: { guard_level: 2, start_time: 1710000000 },
+        pay_info: { num: 1, price: 1598000 },
+      },
+    }, 1001, 8888, 1710000000000);
+    expect(event).not.toBeNull();
+    expect(event!.danmaku!.type).toBe(2);
+    expect(event!.danmaku!.userId).toBe(10001);
+    expect(event!.danmaku!.message).toBe('2');
+    expect(event!.danmaku!.price).toBe(1598);
   });
 
   it('extracts SUPER_CHAT_MESSAGE correctly', () => {
@@ -479,7 +530,7 @@ message BossRaidEvent {
     const pbBase64 = encodePb(interactWordV2Type, {
       uid: 777666,
       username: '无Buffer环境用户',
-      timestamp_ms: 1710000000999,
+      timestamp: 1710000000,
     });
 
     const originalBuffer = globalThis.Buffer;
@@ -498,7 +549,7 @@ message BossRaidEvent {
       expect(event).not.toBeNull();
       expect(event!.danmaku!.userId).toBe(777666);
       expect(event!.danmaku!.userName).toBe('无Buffer环境用户');
-      expect(event!.danmaku!.sendDate).toBe(1710000000999);
+      expect(event!.danmaku!.sendDate).toBe(1710000000000);
     } finally {
       globalThis.Buffer = originalBuffer;
     }

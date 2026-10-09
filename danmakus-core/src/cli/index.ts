@@ -21,6 +21,7 @@ program
   .version(CORE_VERSION);
 
 program
+  .option('-r, --runtime-url <url>', 'Runtime服务器地址（例如 http://10.10.0.2:5000 或 https://client.danmakus.com）')
   .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
   .option('-k, --cookie-key <key>', 'CookieCloud密钥')
@@ -40,7 +41,12 @@ program
         ? parseInt(String(options.capacityOverride))
         : undefined;
       const accountToken = options.token || process.env.DANMAKUS_TOKEN;
-      const runtimeUrl = DEFAULT_RUNTIME_URL;
+      const rawRuntimeUrl = options.runtimeUrl || process.env.DANMAKUS_RUNTIME_URL;
+      const runtimeUrl = rawRuntimeUrl
+        ? (rawRuntimeUrl.trim().replace(/\/+$/, '').includes('/api/')
+            ? rawRuntimeUrl.trim().replace(/\/+$/, '')
+            : `${rawRuntimeUrl.trim().replace(/\/+$/, '')}/api/v2/core-runtime`)
+        : DEFAULT_RUNTIME_URL;
       const cookieCloudKey = options.cookieKey || process.env.DANMAKUS_COOKIECLOUD_KEY;
       const cookieCloudPassword = options.cookiePassword || process.env.DANMAKUS_COOKIECLOUD_PASSWORD;
       const cookieCloudHost = options.cookieHost || process.env.DANMAKUS_COOKIECLOUD_HOST || DEFAULT_COOKIE_CLOUD_HOST;
@@ -99,7 +105,7 @@ program
       });
 
       // 从CLI选项更新配置
-      client.applyCliOptions(options);
+      client.applyCliOptions({ ...options, runtimeUrl });
 
       // 设置事件监听
       attachCliEventListeners(client, options, console);

@@ -6,6 +6,7 @@ const DEFAULT_RUNTIME_URL = `${BACKEND_PRIMARY_ORIGIN}/api/v2/core-runtime`;
 
 export class ConfigManager {
   private config: DanmakuConfig;
+  private hasExplicitRuntimeUrl = false;
 
   private normalizeCookieSecret(value?: string | null): string | undefined {
     if (typeof value !== 'string') {
@@ -92,6 +93,10 @@ export class ConfigManager {
       streamers: []
     };
 
+    if (options.runtimeUrl) {
+      this.hasExplicitRuntimeUrl = true;
+    }
+
     this.config.cookieCloudKey = this.normalizeCookieSecret(this.config.cookieCloudKey);
     this.config.cookieCloudPassword = this.normalizeCookieSecret(this.config.cookieCloudPassword);
     this.config.cookieCloudHost = this.normalizeCookieHost(this.config.cookieCloudHost);
@@ -132,6 +137,11 @@ export class ConfigManager {
       this.config.accountToken = options.token;
     }
 
+    if (options.runtimeUrl) {
+      this.config.runtimeUrl = this.normalizeRuntimeUrl(options.runtimeUrl);
+      this.hasExplicitRuntimeUrl = true;
+    }
+
     if (options.logLevel) {
       this.config.logLevel = options.logLevel;
     } else if (options.verbose) {
@@ -140,10 +150,14 @@ export class ConfigManager {
   }
 
   applyAccountConfig(remote: CoreControlConfigDto): void {
+    const nextRuntimeUrl = this.hasExplicitRuntimeUrl && this.config.runtimeUrl
+      ? this.config.runtimeUrl
+      : this.normalizeRuntimeUrl(remote.runtimeUrl);
+
     this.config = {
       ...this.config,
       maxConnections: remote.maxConnections,
-      runtimeUrl: this.normalizeRuntimeUrl(remote.runtimeUrl),
+      runtimeUrl: nextRuntimeUrl,
       autoReconnect: remote.autoReconnect,
       reconnectInterval: remote.reconnectInterval,
       statusCheckInterval: remote.statusCheckInterval,

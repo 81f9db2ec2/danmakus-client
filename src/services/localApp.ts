@@ -343,14 +343,6 @@ export const toggleMainWindow = async (hideDockIconWhenHidden: boolean): Promise
   await showMainWindow();
 };
 
-export const quitApplication = async (): Promise<void> => {
-  if (!isDesktopRuntime()) {
-    return;
-  }
-  const { exit } = await import('@tauri-apps/plugin-process');
-  await exit(0);
-};
-
 export const registerCloseToTrayHandler = async (
   shouldMinimizeToTray: () => boolean,
   shouldHideDockIcon: () => boolean
@@ -415,12 +407,7 @@ export const setupTrayInTs = async (
         },
         {
           id: MENU_ID_QUIT,
-          text: '退出应用',
-          action: () => {
-            void quitApplication().catch(error => {
-              console.error('Failed to quit application from tray menu', error);
-            });
-          }
+          text: '退出应用'
         }
       ]
     });

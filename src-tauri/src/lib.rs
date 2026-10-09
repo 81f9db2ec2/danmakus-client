@@ -44,6 +44,11 @@ fn hide_main_window(app: tauri::AppHandle, hide_dock_icon: bool) -> Result<(), S
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "tray.quit" {
+                app.exit(0);
+            }
+        })
         .manage(live_session_outbox::LiveSessionOutboxState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Err(error) = restore_main_window(app) {
