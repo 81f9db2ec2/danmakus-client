@@ -318,6 +318,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         this.logger.info(`收到服务端解析规则更新: version=${rules.version}, rules=${rules.rules?.length}`);
         this.danmakuExtractor.setRules(rules);
       },
+      getStateReportPayload: () => this.holdingRoomCoordinator.getStateReportPayload(),
     });
 
     this.runtimeConnection.onConnected = () => {

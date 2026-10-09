@@ -21,7 +21,7 @@ program
   .version(CORE_VERSION);
 
 program
-  .option('-r, --runtime-url <url>', 'Runtime服务器地址（例如 http://10.10.0.2:5000 或 https://client.danmakus.com）')
+  .option('-r, --runtime-url <url>', 'Runtime服务器地址（例如 https://client.danmakus.com）')
   .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
   .option('-k, --cookie-key <key>', 'CookieCloud密钥')

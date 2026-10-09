@@ -351,6 +351,11 @@ export class DanmakuHoldingRoomCoordinator {
 
     if (this.queuedRoomConnects.length > 0) {
       this.scheduleQueuedRoomConnect();
+    } else {
+      this.prunePendingAssignedRooms();
+      if (!this.hasPendingRoomConnections()) {
+        this.reportHoldingRoomState('all-rooms-connected', { force: true });
+      }
     }
   }
 
@@ -415,6 +420,35 @@ export class DanmakuHoldingRoomCoordinator {
       .filter(connection => holdingRoomSet.has(connection.roomId))
       .map(connection => connection.roomId)
       .filter(roomId => Number.isFinite(roomId) && roomId > 0);
+  }
+
+  getStateReportPayload(reason: string = 'heartbeat-sync'): {
+    holdingRooms: number[];
+    connectedRooms: number[];
+    desiredCount?: number;
+    capacity?: number;
+    capacityOverride?: number;
+    reason?: string;
+  } | null {
+    if (!this.context.isRunning() || this.context.isStopping()) {
+      return null;
+    }
+    const config = this.context.getConfig();
+    const capacityOverride = this.resolveCapacityOverride(config);
+    const capacity = this.resolveConnectionCapacity(config);
+    const desiredCount = Math.max(0, capacity - this.holdingRoomIds.length);
+    const connectedRooms = Array.from(this.context.getConnections().keys())
+      .filter(roomId => Number.isFinite(roomId) && roomId > 0)
+      .map(roomId => Math.floor(roomId));
+
+    return {
+      reason,
+      holdingRooms: [...this.holdingRoomIds],
+      connectedRooms,
+      desiredCount,
+      capacity,
+      capacityOverride,
+    };
   }
 
   reportHoldingRoomState(

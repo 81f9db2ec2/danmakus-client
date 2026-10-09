@@ -91,11 +91,31 @@ export class RuntimeConnection {
     return false;
   }
 
+  getStateReportPayload?: () => {
+    holdingRooms: number[];
+    connectedRooms: number[];
+    desiredCount?: number;
+    capacity?: number;
+    capacityOverride?: number;
+    reason?: string;
+  } | null;
+
   setCallbacks(callbacks: {
     onStreamerStatusPush?: (updates: any[]) => void;
     onRoomAssignPush?: (data: any) => void;
     onExtractionRules?: (rules: DanmakuExtractionRuleSet) => void;
+    getStateReportPayload?: () => {
+      holdingRooms: number[];
+      connectedRooms: number[];
+      desiredCount?: number;
+      capacity?: number;
+      capacityOverride?: number;
+      reason?: string;
+    } | null;
   }): void {
+    if (callbacks.getStateReportPayload) {
+      this.getStateReportPayload = callbacks.getStateReportPayload;
+    }
     this.wsConnection?.setCallbacks(callbacks);
   }
 
@@ -124,6 +144,7 @@ export class RuntimeConnection {
         onReconnected: () => {
           this.onReconnected?.();
         },
+        getStateReportPayload: () => this.getStateReportPayload?.() ?? null,
       }, this.logger);
     }
 

@@ -50,6 +50,14 @@ export interface RuntimeWsConnectionOptions {
   }>) => void;
   onRoomAssignPush?: (data: ServerPushRoomAssignPayload) => void;
   onExtractionRules?: (rules: DanmakuExtractionRuleSet) => void;
+  getStateReportPayload?: () => {
+    holdingRooms: number[];
+    connectedRooms: number[];
+    desiredCount?: number;
+    capacity?: number;
+    capacityOverride?: number;
+    reason?: string;
+  } | null;
 }
 
 const WS_CONNECT_TIMEOUT_MS = 10_000;
@@ -337,6 +345,7 @@ export class RuntimeWsConnection {
     onStreamerStatusPush?: RuntimeWsConnectionOptions['onStreamerStatusPush'];
     onRoomAssignPush?: RuntimeWsConnectionOptions['onRoomAssignPush'];
     onExtractionRules?: RuntimeWsConnectionOptions['onExtractionRules'];
+    getStateReportPayload?: RuntimeWsConnectionOptions['getStateReportPayload'];
   }): void {
     if (callbacks.onStreamerStatusPush) {
       this.options.onStreamerStatusPush = callbacks.onStreamerStatusPush;
@@ -346,6 +355,9 @@ export class RuntimeWsConnection {
     }
     if (callbacks.onExtractionRules) {
       this.options.onExtractionRules = callbacks.onExtractionRules;
+    }
+    if (callbacks.getStateReportPayload) {
+      this.options.getStateReportPayload = callbacks.getStateReportPayload;
     }
   }
 
@@ -455,9 +467,17 @@ export class RuntimeWsConnection {
     this.pingTimer = setInterval(() => {
       if (this.connected && this.ws) {
         try {
-          // 发送轻量状态上报或空帧保持活跃
-          const pingFrame = encodeWsFrame(CoreWsOpCode.CLIENT_STATE_REPORT, 0);
-          this.ws.send(pingFrame as any);
+          const reportPayload = this.options.getStateReportPayload?.();
+          if (reportPayload) {
+            this.sendStateReport({
+              ...reportPayload,
+              reason: reportPayload.reason || 'heartbeat-sync',
+            });
+          } else {
+            // 发送轻量状态上报或空帧保持活跃
+            const pingFrame = encodeWsFrame(CoreWsOpCode.CLIENT_STATE_REPORT, 0);
+            this.ws.send(pingFrame as any);
+          }
         } catch {
           // 忽略 ping 发送错误
         }

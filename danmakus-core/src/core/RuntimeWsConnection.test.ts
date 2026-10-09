@@ -270,4 +270,65 @@ describe('RuntimeWsConnection', () => {
     conn.disconnect();
     expect(conn.connected).toBe(false);
   });
+
+  it('heartbeat ping attaches state report payload when provider is configured', async () => {
+    let receivedStateReports: any[] = [];
+    server = Bun.serve({
+      port,
+      fetch(req, server) {
+        if (server.upgrade(req)) {
+          return;
+        }
+        return new Response('Expected upgrade', { status: 400 });
+      },
+      websocket: {
+        message(ws, message) {
+          const data = new Uint8Array(message as ArrayBuffer);
+          const frame = decodeWsFrame(data);
+
+          if (frame.opCode === CoreWsOpCode.CLIENT_AUTH) {
+            const resultPayload = encodeMsgPackPayload({
+              success: true,
+              serverTime: Date.now(),
+            });
+            ws.send(encodeWsFrame(CoreWsOpCode.SERVER_AUTH_RESULT, frame.seq, resultPayload));
+          } else if (frame.opCode === CoreWsOpCode.CLIENT_STATE_REPORT) {
+            if (frame.payload.byteLength > 0) {
+              receivedStateReports.push(decodeMsgPackPayload(frame.payload));
+            }
+          }
+        },
+      },
+    });
+
+    const conn = new RuntimeWsConnection({
+      runtimeUrl: `http://127.0.0.1:${port}/api/v2/core-runtime`,
+      token: 'test-token',
+      clientId: 'client-1',
+      getStateReportPayload: () => ({
+        holdingRooms: [1280629],
+        connectedRooms: [1280629],
+        desiredCount: 0,
+        capacity: 5,
+      }),
+    });
+
+    const ok = await conn.connect();
+    expect(ok).toBe(true);
+
+    // 触发内部 ping 逻辑
+    (conn as any).startPing();
+    // 手动调用一次 interval 回调里的逻辑
+    const report = (conn as any).options.getStateReportPayload?.();
+    expect(report).toBeDefined();
+    expect(report.connectedRooms).toEqual([1280629]);
+    (conn as any).sendStateReport({ ...report, reason: 'heartbeat-sync' });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(receivedStateReports.length).toBeGreaterThan(0);
+    expect(receivedStateReports[0].connectedRooms).toEqual([1280629]);
+    expect(receivedStateReports[0].reason).toBe('heartbeat-sync');
+
+    conn.disconnect();
+  });
 });
