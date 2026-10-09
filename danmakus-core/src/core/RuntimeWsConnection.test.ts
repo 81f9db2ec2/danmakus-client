@@ -28,6 +28,7 @@ describe('RuntimeWsConnection', () => {
     let receivedAuth = false;
     let receivedUploadBatch = false;
     let pushReceived = false;
+    let authVersion: string | undefined;
 
     server = Bun.serve({
       port,
@@ -44,6 +45,7 @@ describe('RuntimeWsConnection', () => {
 
           if (frame.opCode === CoreWsOpCode.CLIENT_AUTH) {
             receivedAuth = true;
+            authVersion = decodeMsgPackPayload<{ version?: string }>(frame.payload).version;
             // 回复 AUTH_RESULT
             const resultPayload = encodeMsgPackPayload({
               success: true,
@@ -79,6 +81,7 @@ describe('RuntimeWsConnection', () => {
       runtimeUrl: `http://127.0.0.1:${port}/api/v2/core-runtime`,
       token: 'test-token',
       clientId: 'client-1',
+      version: 'desktop@9.9.9',
       onStreamerStatusPush(updates) {
         if (updates.some((u) => u.roomId === 123456 && u.isLive)) {
           pushReceived = true;
@@ -89,6 +92,7 @@ describe('RuntimeWsConnection', () => {
     const ok = await conn.connect();
     expect(ok).toBe(true);
     expect(receivedAuth).toBe(true);
+    expect(authVersion).toBe('desktop@9.9.9');
 
     // 等待 push 接收
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -24,7 +24,8 @@ export class RuntimeConnection {
     _reconnectInterval: number = 5000,
     runtimeHeaders?: Record<string, string>,
     private logger: ScopedLogger = new ScopedLogger('RuntimeConnection'),
-    endpoints?: RuntimeEndpoints
+    endpoints?: RuntimeEndpoints,
+    private version?: string,
   ) {
     const runtimeContext = this.resolveRuntimeContext(url, runtimeHeaders);
     this.resolvedBaseUrl = runtimeContext.runtimeBaseUrl;
@@ -112,6 +113,7 @@ export class RuntimeConnection {
         runtimeUrl: this.runtimeBaseUrl,
         token: this.token,
         clientId: this.clientId,
+        version: this.version,
         headers: this.passthroughHeaders,
         onConnected: () => {
           this.onConnected?.();

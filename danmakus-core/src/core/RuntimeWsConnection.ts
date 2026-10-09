@@ -18,6 +18,7 @@ import type {
   ExtractedUploadBatch,
   ExtractedUploadEvent,
 } from './DanmakuExtractionTypes.js';
+import { DEFAULT_CORE_CLIENT_VERSION } from '../version.js';
 
 export interface ServerPushRoomAssignPayload {
   holdingRooms: number[];
@@ -150,7 +151,7 @@ export class RuntimeWsConnection {
             const authPayload = encodeMsgPackPayload({
               token: this.options.token,
               clientId: this.options.clientId,
-              version: this.options.version ?? '1.0.0',
+              version: this.options.version || DEFAULT_CORE_CLIENT_VERSION,
             });
             const frame = encodeWsFrame(CoreWsOpCode.CLIENT_AUTH, 0, authPayload);
             ws.send(frame as any);

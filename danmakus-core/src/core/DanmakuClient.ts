@@ -270,7 +270,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       finalConfig.reconnectInterval,
       this.buildRuntimeHeaders(finalConfig),
       this.logger.child('Runtime'),
-      this.runtimeEndpoints
+      this.runtimeEndpoints,
+      finalConfig.clientVersion,
     );
     this.setupRuntimeEvents();
 
@@ -1585,7 +1586,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       config.reconnectInterval,
       this.buildRuntimeHeaders(config),
       this.logger.child('Runtime'),
-      this.runtimeEndpoints
+      this.runtimeEndpoints,
+      config.clientVersion,
     );
     this.setupRuntimeEvents();
 
