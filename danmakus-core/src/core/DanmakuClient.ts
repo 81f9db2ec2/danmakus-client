@@ -1449,7 +1449,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       || (previous.messageRetryBaseDelay ?? 1000) !== (next.messageRetryBaseDelay ?? 1000)
       || (previous.messageRetryMaxDelay ?? 30000) !== (next.messageRetryMaxDelay ?? 30000)
       || (previous.messageRetryMaxAttempts ?? 6) !== (next.messageRetryMaxAttempts ?? 6)
-      || (previous.batchUploadSize ?? 500) !== (next.batchUploadSize ?? 500)
+      || (previous.batchUploadSize ?? 2000) !== (next.batchUploadSize ?? 2000)
       || (previous.lockAcquireRetryCount ?? 4) !== (next.lockAcquireRetryCount ?? 4)
       || (previous.lockAcquireRetryDelay ?? 1200) !== (next.lockAcquireRetryDelay ?? 1200)
       || (previous.lockAcquireForceTakeover ?? false) !== (next.lockAcquireForceTakeover ?? false)

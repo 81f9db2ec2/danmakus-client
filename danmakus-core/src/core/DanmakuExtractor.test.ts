@@ -311,7 +311,7 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.userName).toBe('醒目留言者');
   });
 
-  it('extracts WATCHED_CHANGE and LIKE_INFO_V3_UPDATE as RuntimeDelta', () => {
+  it('extracts WATCHED_CHANGE, LIKE_INFO_V3_UPDATE and ONLINE_RANK_COUNT as RuntimeDelta', () => {
     const watchMsg = {
       cmd: 'WATCHED_CHANGE',
       data: {
@@ -333,6 +333,17 @@ describe('DanmakuExtractor', () => {
     expect(likeEvent).not.toBeNull();
     expect(likeEvent!.runtimeDelta).toBeDefined();
     expect(likeEvent!.runtimeDelta!.likeCount).toBe(9999);
+
+    const onlineRankMsg = {
+      cmd: 'ONLINE_RANK_COUNT',
+      data: {
+        count: 888,
+      },
+    };
+    const onlineRankEvent = extractor.extract(onlineRankMsg, 1001, 8888, 1710000000000);
+    expect(onlineRankEvent).not.toBeNull();
+    expect(onlineRankEvent!.runtimeDelta).toBeDefined();
+    expect(onlineRankEvent!.runtimeDelta!.onlineRank).toBe(888);
   });
 
   it('extracts PREPARING lifecycle signal', () => {
@@ -369,8 +380,7 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku).toMatchObject({ isEmoji: true, roomEmojiName: 'room_1_e', roomEmojiUrl: 'https://e.png' });
   });
 
-  it('discards unknown spam packets like ONLINE_RANK_COUNT and HOT_ROOM_NOTIFY', () => {
-    expect(extractor.extract({ cmd: 'ONLINE_RANK_COUNT', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
+  it('discards unknown spam packets like HOT_ROOM_NOTIFY and WIDGET_BANNER', () => {
     expect(extractor.extract({ cmd: 'HOT_ROOM_NOTIFY', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
     expect(extractor.extract({ cmd: 'WIDGET_BANNER', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
   });

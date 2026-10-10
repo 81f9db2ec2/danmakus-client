@@ -13,7 +13,8 @@ import type { ExtractedUploadEvent } from './DanmakuExtractionTypes.js';
 const MESSAGE_RETRY_MIN_DELAY = 200;
 const MESSAGE_RETRY_MIN_ATTEMPTS = 1;
 const MESSAGE_BATCH_MIN_SIZE = 1;
-const MESSAGE_BATCH_MAX_SIZE = 500;
+const MESSAGE_BATCH_MAX_SIZE = 5000;
+const MESSAGE_BATCH_DEFAULT_SIZE = 2000;
 const MESSAGE_UPLOAD_INTERVAL_MS = 2000;
 const OUTBOX_PERSIST_INTERVAL_MS = 1000;
 const OUTBOX_BLOCKED_LOG_INTERVAL_MS = 10_000;
@@ -65,7 +66,7 @@ export class DanmakuMessageQueue {
   private messageRetryBaseDelay = 1000;
   private messageRetryMaxDelay = 30_000;
   private messageRetryMaxAttempts = 6;
-  private messageBatchSize = 500;
+  private messageBatchSize = MESSAGE_BATCH_DEFAULT_SIZE;
   private readonly messageUploadInterval = MESSAGE_UPLOAD_INTERVAL_MS;
   private outboxPendingCount = 0;
   private outboxCountInitialized = false;
@@ -218,7 +219,7 @@ export class DanmakuMessageQueue {
     const retryMaxAttempts = Math.floor(config.messageRetryMaxAttempts ?? 6);
     this.messageRetryMaxAttempts = Math.max(MESSAGE_RETRY_MIN_ATTEMPTS, retryMaxAttempts);
 
-    const batchSize = Math.floor(config.batchUploadSize ?? 500);
+    const batchSize = Math.floor(config.batchUploadSize ?? MESSAGE_BATCH_DEFAULT_SIZE);
     this.messageBatchSize = Math.min(MESSAGE_BATCH_MAX_SIZE, Math.max(MESSAGE_BATCH_MIN_SIZE, batchSize));
   }
 
@@ -260,6 +261,10 @@ export class DanmakuMessageQueue {
       }
 
       await this.uploadOutboxBatch(outbox, runtimeConnection, dueRecords, now);
+
+      if (dueRecords.length >= this.messageBatchSize || this.outboxPendingCount > 0) {
+        this.pendingDispatchDelayMs = 0;
+      }
     } finally {
       this.outboxUploading = false;
       this.scheduleNextDispatchIfNeeded();

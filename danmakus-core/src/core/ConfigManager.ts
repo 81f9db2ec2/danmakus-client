@@ -82,7 +82,7 @@ export class ConfigManager {
       messageRetryBaseDelay: 1000,
       messageRetryMaxDelay: 30000,
       messageRetryMaxAttempts: 6,
-      batchUploadSize: 500,
+      batchUploadSize: 2000,
       lockAcquireRetryCount: 4,
       lockAcquireRetryDelay: 1200,
       lockAcquireForceTakeover: false,
@@ -92,10 +92,6 @@ export class ConfigManager {
       // 录制主播来源统一由 account.Recording（服务端分配）管理
       streamers: []
     };
-
-    if (options.runtimeUrl) {
-      this.hasExplicitRuntimeUrl = true;
-    }
 
     this.config.cookieCloudKey = this.normalizeCookieSecret(this.config.cookieCloudKey);
     this.config.cookieCloudPassword = this.normalizeCookieSecret(this.config.cookieCloudPassword);

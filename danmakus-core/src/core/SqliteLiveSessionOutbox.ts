@@ -5,8 +5,8 @@ import type {
   LiveSessionOutboxStore,
 } from './LocalArchiveTypes.js';
 
-const LIST_DUE_LIMIT_DEFAULT = 200;
-const LIST_DUE_LIMIT_MAX = 2000;
+const LIST_DUE_LIMIT_DEFAULT = 2000;
+const LIST_DUE_LIMIT_MAX = 10_000;
 const OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const OUTBOX_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const SCHEMA_VERSION = 4;
