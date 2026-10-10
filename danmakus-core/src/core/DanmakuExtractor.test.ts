@@ -338,12 +338,22 @@ describe('DanmakuExtractor', () => {
       cmd: 'ONLINE_RANK_COUNT',
       data: {
         count: 888,
+        online_count: 1234,
       },
     };
     const onlineRankEvent = extractor.extract(onlineRankMsg, 1001, 8888, 1710000000000);
     expect(onlineRankEvent).not.toBeNull();
     expect(onlineRankEvent!.runtimeDelta).toBeDefined();
-    expect(onlineRankEvent!.runtimeDelta!.onlineRank).toBe(888);
+    expect(onlineRankEvent!.runtimeDelta!.onlineRank).toBe(1234);
+  });
+
+  it.each([
+    [{ count: 7 }, undefined],
+    [{ count: 7, online_count: 0 }, 0],
+    [{ count: 7, online_count: 234 }, 234],
+  ])('extracts only the current online count from %j', (data, expected) => {
+    const event = extractor.extract({ cmd: 'ONLINE_RANK_COUNT', data }, 1001, 8888, 1710000000000);
+    expect(event?.runtimeDelta?.onlineRank).toBe(expected);
   });
 
   it('extracts PREPARING lifecycle signal', () => {
@@ -683,16 +693,28 @@ message BossRaidEvent {
     },
   );
 
-  it('does not treat ENTRY_EFFECT as enter',
-    () => {
-      expect(
-        extractor.extract(
-          { cmd: 'ENTRY_EFFECT', data: { uid: 9, copy_writing: '欢迎舰长' } },
-          1001,
-          8888,
-          1710000000000,
-        ),
-      ).toBeNull();
+  it.each([0, 1, 2, 3])('extracts ENTRY_EFFECT as enter for privilege type %i',
+    (privilegeType) => {
+      const event = extractor.extract(
+        {
+          cmd: 'ENTRY_EFFECT',
+          data: {
+            uid: 9,
+            privilege_type: privilegeType,
+            uinfo: { uid: 9, base: { name: 'entry-user' } },
+            trigger_time: 1710000000000000000,
+          },
+        },
+        1001,
+        8888,
+        1710000000000,
+      );
+      expect(event?.danmaku?.type).toBe(4);
+      expect(event?.danmaku?.userId).toBe(9);
+      expect(event?.danmaku?.userName).toBe('entry-user');
+      expect(event?.danmaku?.sendDate).toBeUndefined();
+      expect(event?.eventTsMs).toBe(1710000000000);
+      expect(event?.danmaku?.sourceFingerprint).toBeGreaterThan(0n);
     },
   );
 

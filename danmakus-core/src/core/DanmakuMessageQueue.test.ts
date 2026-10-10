@@ -335,7 +335,7 @@ describe("DanmakuMessageQueue", () => {
     expect(queue.getPendingCount()).toBe(0);
   });
 
-  it("attempts archive upload even when the runtime soft connection flag is false", async () => {
+  it("holds outbox uploads until the runtime websocket is connected", async () => {
     const sentIds: number[] = [];
     const ackedIds: number[] = [];
     const dueRecords: LiveSessionOutboxItem[] = [{
@@ -375,9 +375,63 @@ describe("DanmakuMessageQueue", () => {
     await queue.refreshArchiveStats();
     await queue.flushPendingMessages();
 
-    expect(sentIds).toEqual([9]);
-    expect(ackedIds).toEqual([9]);
-    expect(queue.getPendingCount()).toBe(0);
+    expect(sentIds).toEqual([]);
+    expect(ackedIds).toEqual([]);
+    expect(queue.getPendingCount()).toBe(1);
+  });
+
+  it("keeps outbox records due when sendArchiveBatch reports websocket disconnect", async () => {
+    const ackedIds: number[] = [];
+    const rescheduledIds: number[] = [];
+    const errors: unknown[] = [];
+    const dueRecords: LiveSessionOutboxItem[] = [{
+      id: 11,
+      streamerUid: TEST_STREAMER_UID,
+      eventTsMs: 1710000001000,
+      payload: new Uint8Array([1, 2, 3]),
+      retryCount: 0,
+      nextRetryAtMs: 1710000001000,
+    }];
+
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => ({
+        getConnectionState: () => true,
+        sendArchiveBatch: async () => {
+          throw new Error("WebSocket 未连接");
+        },
+      }),
+      getLiveSessionOutbox: () => createOutboxStore({
+        countPending: async () => 1,
+        listDue: async () => dueRecords,
+        ack: async (ids) => {
+          ackedIds.push(...ids);
+          return ids.length;
+        },
+        reschedule: async (updates) => {
+          rescheduledIds.push(...updates.map(item => item.id));
+          return updates.length;
+        },
+      }),
+      resolveRecordingStreamerUid: () => null,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: (error) => {
+        errors.push(error);
+      },
+      emitError: (error) => {
+        errors.push(error);
+      },
+      emitQueueChanged: () => undefined,
+    });
+
+    await queue.refreshArchiveStats();
+    await queue.flushPendingMessages();
+
+    expect(ackedIds).toEqual([]);
+    expect(rescheduledIds).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(queue.getPendingCount()).toBe(1);
   });
 
   it("deletes rejected outbox records after the backend explicitly rejects them", async () => {

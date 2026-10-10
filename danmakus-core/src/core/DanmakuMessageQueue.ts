@@ -38,7 +38,7 @@ interface QueueErrorContext {
 interface DanmakuMessageQueueContext {
   isRunning(): boolean;
   isStopping(): boolean;
-  getRuntimeConnection(): Pick<RuntimeConnection, 'sendArchiveBatch'> | undefined;
+  getRuntimeConnection(): Pick<RuntimeConnection, 'getConnectionState' | 'sendArchiveBatch'> | undefined;
   getLiveSessionOutbox(): LiveSessionOutboxStore | undefined;
   resolveRecordingStreamerUid(roomId: number): number | null;
   logger: ScopedLogger;
@@ -244,11 +244,8 @@ export class DanmakuMessageQueue {
       const now = Date.now();
 
       const runtimeConnection = this.context.getRuntimeConnection();
-      if (!runtimeConnection) {
-        this.logOutboxBlocked(`runtime 未连接: pendingBuffered=${this.pendingPackets.length}, pendingOutbox=${this.outboxPendingCount}`);
-        if (this.hasPendingWork()) {
-          this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
-        }
+      if (!runtimeConnection?.getConnectionState()) {
+        this.holdOutboxForDisconnectedRuntime();
         return;
       }
 
@@ -394,6 +391,11 @@ export class DanmakuMessageQueue {
         this.emitRejectedOutboxErrors(rejectedRecords);
       }
     } catch (error) {
+      if (this.isRuntimeDisconnectedError(error)) {
+        this.holdOutboxForDisconnectedRuntime();
+        return;
+      }
+
       const retryUpdates: LiveSessionOutboxRescheduleUpdate[] = [];
 
       for (const record of records) {
@@ -507,6 +509,17 @@ export class DanmakuMessageQueue {
     if (queued) {
       queued.payload = new Uint8Array(0);
     }
+  }
+
+  private holdOutboxForDisconnectedRuntime(): void {
+    this.logOutboxBlocked(`runtime 未连接: pendingBuffered=${this.pendingPackets.length}, pendingOutbox=${this.outboxPendingCount}`);
+    if (this.hasPendingWork()) {
+      this.scheduleMessageDispatch(Math.max(this.messageUploadInterval, this.messageRetryBaseDelay));
+    }
+  }
+
+  private isRuntimeDisconnectedError(error: unknown): boolean {
+    return error instanceof Error && error.message === 'WebSocket 未连接';
   }
 
   private logOutboxBlocked(message: string): void {
