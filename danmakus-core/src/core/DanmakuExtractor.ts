@@ -8,7 +8,6 @@ import type {
   ExtractedPayload,
   ExtractedUploadEvent,
 } from './DanmakuExtractionTypes.js';
-import { computeDanmakuFingerprint } from './Fingerprint.js';
 
 type PathKey = string | number;
 type Scalar = string | number | boolean;
@@ -99,7 +98,13 @@ function coerce(raw: unknown, as: DanmakuFieldValueType): Scalar | undefined {
     case 'timestamp': {
       const num = toNumber(raw);
       if (num !== undefined) {
-        return num > 0 ? (num < 10_000_000_000 ? num * 1000 : num) : undefined;
+        return num > 0
+          ? num < 10_000_000_000
+            ? num * 1000
+            : num > 10_000_000_000_000_000
+              ? Math.floor(num / 1_000_000)
+              : num
+          : undefined;
       }
       const parsed = typeof raw === 'string' ? Date.parse(raw) : NaN;
       return Number.isNaN(parsed) ? undefined : parsed;
@@ -167,7 +172,6 @@ export class DanmakuExtractor {
     roomId: number,
     streamerUid: number,
     eventTsMs: number,
-    rawPayloadBytes?: Uint8Array,
   ): ExtractedUploadEvent | null {
     const cmd = String(message?.cmd ?? message?.msg?.cmd ?? '');
     const { version, rules } = this.ruleSet;
@@ -182,12 +186,6 @@ export class DanmakuExtractor {
     }
 
     const payload: ExtractedPayload = { ...rule.consts, ...this.extractFields(rule.fields, targets) };
-    if (rule.target === 'danmaku') {
-      const fingerprint = computeDanmakuFingerprint(rawPayloadBytes ?? JSON.stringify(message));
-      if (fingerprint > 0n) {
-        payload.sourceFingerprint = fingerprint;
-      }
-    }
 
     return { streamerUid, eventTsMs, roomId, rulesVersion: version, [rule.target]: payload };
   }

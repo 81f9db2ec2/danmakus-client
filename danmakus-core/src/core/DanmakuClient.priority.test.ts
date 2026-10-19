@@ -335,7 +335,6 @@ describe("DanmakuClient room pull flow", () => {
         sendDate: Date.now(),
         type: 1,
         ct: 0,
-        sourceFingerprint: 123n,
         isEmoji: false,
       },
     });
@@ -402,7 +401,6 @@ describe("DanmakuClient room pull flow", () => {
         sendDate: Date.now(),
         type: 1,
         ct: 0,
-        sourceFingerprint: 123n,
         isEmoji: false,
       },
     });
@@ -456,7 +454,6 @@ describe("DanmakuClient room pull flow", () => {
         sendDate: Date.now(),
         type: 1,
         ct: 0,
-        sourceFingerprint: 123n,
         isEmoji: false,
       },
     });

@@ -21,7 +21,6 @@ const createExtractedEvent = (
     sendDate: timestamp,
     type: 1,
     ct: 0,
-    sourceFingerprint: 123456n,
     isEmoji: false,
   },
 });

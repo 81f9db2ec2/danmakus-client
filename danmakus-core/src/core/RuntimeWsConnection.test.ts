@@ -114,7 +114,6 @@ describe('RuntimeWsConnection', () => {
           userName: 'user',
           userId: 1,
           message: 'hi',
-          sourceFingerprint: 1n,
         },
       }),
       retryCount: 0,

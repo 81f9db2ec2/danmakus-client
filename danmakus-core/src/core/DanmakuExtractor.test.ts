@@ -57,7 +57,6 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.ct).toBe('web');
     expect(event!.danmaku!.sendDate).toBe(1710000000000);
     expect(event!.danmaku!.userCrc32).toBe(0xa1b2c3d4);
-    expect(event!.danmaku!.sourceFingerprint).toBeGreaterThan(0n);
   });
 
   it('extracts DANMU_MSG with protocol version suffix like DANMU_MSG:4:0:2:2:2:0', () => {
@@ -168,7 +167,7 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.type).toBe(4);
     expect(event!.danmaku!.userId).toBe(666888);
     expect(event!.danmaku!.userName).toBe('入场大佬');
-    expect(event!.danmaku!.sendDate).toBe(1710000000000);
+    expect(event!.danmaku!.sendDate).toBe(1710000000123);
   });
 
   it('extracts INTERACT_WORD_V2 with username from nested uinfo.base when top username is empty', () => {
@@ -461,9 +460,7 @@ describe('DanmakuExtractor', () => {
       1,
       1,
     );
-    const { sourceFingerprint, ...fields } = event!.danmaku!;
-    expect(fields).toEqual({ id: 42, cost: 1.5, n: 3, flag: true, blob: '{"a":[1]}' });
-    expect(sourceFingerprint).toBeGreaterThan(0n);
+    expect(event!.danmaku!).toEqual({ id: 42, cost: 1.5, n: 3, flag: true, blob: '{"a":[1]}' });
     expect(event!.rulesVersion).toBe(7);
   });
 
@@ -575,27 +572,25 @@ message BossRaidEvent {
     }
   });
 
-  it('serializes and deserializes ExtractedUploadEvent with BigInt sourceFingerprint via MessagePack seamlessly', () => {
+  it('serializes and deserializes ExtractedUploadEvent via MessagePack seamlessly', () => {
     const rawMsg = {
       cmd: 'DANMU_MSG',
       info: [
         [0, 1, 25, 16777215, 1710000000, 123456, 0, 'a1b2c3d4', 0, 0, 0, '', 0, '{}', '{}', {}],
-        '测试BigInt序列化',
+        '测试MessagePack序列化',
         [12345678, '测试用户', 0, 0, 0, 10000, 1, ''],
       ],
     };
 
     const event = extractor.extract(rawMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
-    expect(typeof event!.danmaku!.sourceFingerprint).toBe('bigint');
 
     const encoded = encodeMsgPackPayload(event);
     expect(encoded.length).toBeGreaterThan(0);
 
     const decoded = decodeMsgPackPayload<typeof event>(encoded);
     expect(decoded).not.toBeNull();
-    expect(decoded!.danmaku!.sourceFingerprint).toBe(event!.danmaku!.sourceFingerprint);
-    expect(decoded!.danmaku!.message).toBe('测试BigInt序列化');
+    expect(decoded!.danmaku!.message).toBe('测试MessagePack序列化');
   });
 
   it('does not extract anything before server rules arrive',
@@ -712,9 +707,8 @@ message BossRaidEvent {
       expect(event?.danmaku?.type).toBe(4);
       expect(event?.danmaku?.userId).toBe(9);
       expect(event?.danmaku?.userName).toBe('entry-user');
-      expect(event?.danmaku?.sendDate).toBeUndefined();
+      expect(event?.danmaku?.sendDate).toBe(1710000000000);
       expect(event?.eventTsMs).toBe(1710000000000);
-      expect(event?.danmaku?.sourceFingerprint).toBeGreaterThan(0n);
     },
   );
 
