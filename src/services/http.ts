@@ -3,7 +3,6 @@ import { getApiBase } from './env';
 import { fetchBackendApiWithFallback } from './backendApi';
 
 const authTokenRef = ref('');
-const serverLoggedInRef = ref(false);
 
 const tokenStorageKey = 'danmakus_token';
 
@@ -13,18 +12,8 @@ if (typeof localStorage !== 'undefined') {
 
 export const getAuthToken = () => authTokenRef.value;
 
-export { serverLoggedInRef };
-
-export const setServerLoggedIn = (loggedIn: boolean) => {
-  serverLoggedInRef.value = loggedIn;
-};
-
 export const setAuthToken = (token: string) => {
-  const normalizedToken = token.trim();
-  if (normalizedToken !== authTokenRef.value) {
-    serverLoggedInRef.value = false;
-  }
-  authTokenRef.value = normalizedToken;
+  authTokenRef.value = token.trim();
   if (typeof localStorage !== 'undefined') {
     if (authTokenRef.value) {
       localStorage.setItem(tokenStorageKey, authTokenRef.value);

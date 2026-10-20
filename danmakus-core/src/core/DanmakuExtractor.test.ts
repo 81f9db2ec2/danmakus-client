@@ -148,26 +148,43 @@ describe('DanmakuExtractor', () => {
   });
 
   it('extracts INTERACT_WORD_V2 purely from decoded protobuf object', () => {
-    const pbBase64 = encodePb(interactWordV2Type, {
-      uid: 666888,
-      username: '入场大佬',
-      timestamp: 1710000000,
-      timestamp_ms: 1710000000123,
-    });
-
-    const enterMsg = {
-      cmd: 'INTERACT_WORD_V2',
-      data: {
-        pb: pbBase64,
-      },
+    const originalToObject = protobuf.Type.prototype.toObject;
+    let toObjectCalls = 0;
+    protobuf.Type.prototype.toObject = function toObjectSpy(
+      this: protobuf.Type,
+      ...args: Parameters<typeof originalToObject>
+    ) {
+      toObjectCalls += 1;
+      return originalToObject.apply(this, args);
     };
 
-    const event = extractor.extract(enterMsg, 1001, 8888, 1710000000000);
-    expect(event).not.toBeNull();
-    expect(event!.danmaku!.type).toBe(4);
-    expect(event!.danmaku!.userId).toBe(666888);
-    expect(event!.danmaku!.userName).toBe('入场大佬');
-    expect(event!.danmaku!.sendDate).toBe(1710000000123);
+    try {
+      const pbBase64 = encodePb(interactWordV2Type, {
+        uid: 666888,
+        username: '入场大佬',
+        timestamp: 1710000000,
+        timestamp_ms: 1710000000123,
+      });
+
+      const event = extractor.extract(
+        {
+          cmd: 'INTERACT_WORD_V2',
+          data: { pb: pbBase64 },
+        },
+        1001,
+        8888,
+        1710000000000,
+      );
+
+      expect(toObjectCalls).toBe(0);
+      expect(event).not.toBeNull();
+      expect(event!.danmaku!.type).toBe(4);
+      expect(event!.danmaku!.userId).toBe(666888);
+      expect(event!.danmaku!.userName).toBe('入场大佬');
+      expect(event!.danmaku!.sendDate).toBe(1710000000123);
+    } finally {
+      protobuf.Type.prototype.toObject = originalToObject;
+    }
   });
 
   it('extracts INTERACT_WORD_V2 with username from nested uinfo.base when top username is empty', () => {

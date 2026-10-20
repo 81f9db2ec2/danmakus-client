@@ -295,6 +295,21 @@ export interface RuntimeRoomPullShortfallDto {
   blockedByOtherAccountsCount?: number | null;
 }
 
+export function cloneHoldingRoomShortfall(
+  shortfall: RuntimeRoomPullShortfallDto | null | undefined,
+): RuntimeRoomPullShortfallDto | null {
+  return shortfall
+    ? {
+        reason: shortfall.reason ?? null,
+        missingCount: shortfall.missingCount ?? null,
+        candidateCount: shortfall.candidateCount ?? null,
+        assignableCandidateCount: shortfall.assignableCandidateCount ?? null,
+        blockedBySameAccountCount: shortfall.blockedBySameAccountCount ?? null,
+        blockedByOtherAccountsCount: shortfall.blockedByOtherAccountsCount ?? null,
+      }
+    : null;
+}
+
 export interface CoreRuntimeStateDto {
   clientId: string;
   clientVersion?: string | null;

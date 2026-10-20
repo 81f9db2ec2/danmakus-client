@@ -574,6 +574,7 @@ describe("DanmakuClient room pull flow", () => {
     ];
     client.statusManager = {
       getRoomsToConnect: () => client._desiredRooms,
+      getStreamerStatus: () => undefined,
     };
     client.resolveLiveWsConnectionOptions = async (roomId: number) => ({
       roomId: 5566,
@@ -621,6 +622,8 @@ describe("DanmakuClient room pull flow", () => {
     await client.handleMessage({ ...message, timestamp: message.timestamp + 1 });
 
     expect(client.messageCount).toBe(2);
+    expect(client.getStatus().messageCmdCountMap.DANMU_MSG).toBe(2);
+    expect(client.getStatus().roomMessageCountMap['7788']).toBe(2);
     expect(client.messageQueue.getPendingCount()).toBe(0);
   });
 

@@ -1,10 +1,15 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
   BACKEND_API_ORIGINS,
   BACKEND_PRIMARY_ORIGIN,
   buildBackendApiCandidateUrls,
   fetchBackendApiWithFallback,
+  setBackendApiFallbackOrigins,
 } from './BackendApiFallback.js';
+
+afterEach(() => {
+  setBackendApiFallbackOrigins(null);
+});
 
 describe('buildBackendApiCandidateUrls', () => {
   test('primary origin is followed by the remaining fallback chain', () => {
@@ -42,6 +47,33 @@ describe('buildBackendApiCandidateUrls', () => {
       'https://ukamnads.icu/health',
     ]);
   });
+
+  test('configured preferred origin rewrites official API hosts to that chain first', () => {
+    setBackendApiFallbackOrigins([
+      'https://proxy.example.com',
+      ...BACKEND_API_ORIGINS,
+    ]);
+    expect(buildBackendApiCandidateUrls('https://ukamnads.icu/api/v2/account/core-config')).toEqual([
+      'https://proxy.example.com/api/v2/account/core-config',
+      'https://ukamnads.icu/api/v2/account/core-config',
+      'https://api.ukamnads.icu/api/v2/account/core-config',
+      'https://api.danmakus.com/api/v2/account/core-config',
+    ]);
+  });
+
+  test('configured origins do not rewrite unrelated runtime hosts', () => {
+    setBackendApiFallbackOrigins([
+      'https://proxy.example.com',
+      ...BACKEND_API_ORIGINS,
+    ]);
+    expect(buildBackendApiCandidateUrls('https://relay.example.net/api/v2/core-runtime/sync')).toEqual([
+      'https://relay.example.net/api/v2/core-runtime/sync',
+      'https://proxy.example.com/api/v2/core-runtime/sync',
+      'https://ukamnads.icu/api/v2/core-runtime/sync',
+      'https://api.ukamnads.icu/api/v2/core-runtime/sync',
+      'https://api.danmakus.com/api/v2/core-runtime/sync',
+    ]);
+  });
 });
 
 describe('fetchBackendApiWithFallback', () => {
@@ -64,6 +96,30 @@ describe('fetchBackendApiWithFallback', () => {
       'https://ukamnads.icu/api/v2/account/core-config',
       'https://api.ukamnads.icu/api/v2/account/core-config',
       'https://api.danmakus.com/api/v2/account/core-config',
+    ]);
+  });
+
+  test('walks configured preferred origin before the official chain', async () => {
+    setBackendApiFallbackOrigins([
+      'https://proxy.example.com',
+      ...BACKEND_API_ORIGINS,
+    ]);
+    const requests: string[] = [];
+    const response = await fetchBackendApiWithFallback(
+      async (input) => {
+        const url = String(input);
+        requests.push(url);
+        if (url === 'https://proxy.example.com/api/v2/account/core-config') {
+          return new Response('ok', { status: 200 });
+        }
+        return new Response('bad gateway', { status: 502 });
+      },
+      'https://ukamnads.icu/api/v2/account/core-config',
+    );
+
+    expect(response.ok).toBe(true);
+    expect(requests).toEqual([
+      'https://proxy.example.com/api/v2/account/core-config',
     ]);
   });
 });

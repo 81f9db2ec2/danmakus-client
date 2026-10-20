@@ -592,4 +592,102 @@ describe("DanmakuMessageQueue", () => {
     expect((queue as any).pendingPackets).toHaveLength(0);
     expect(queue.getPendingCount()).toBe(2);
   });
+
+  it("coalesces queueChanged emits to at most once per second while enqueueing", async () => {
+    const emitTimes: number[] = [];
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => undefined,
+      getLiveSessionOutbox: () => undefined,
+      resolveRecordingStreamerUid: () => TEST_STREAMER_UID,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: () => undefined,
+      emitError: () => undefined,
+      emitQueueChanged: () => {
+        emitTimes.push(Date.now());
+      },
+    });
+
+    for (let index = 0; index < 50; index += 1) {
+      queue.enqueueExtractedEvent(createExtractedEvent(1001, 1710000001000 + index));
+    }
+
+    expect(emitTimes).toHaveLength(1);
+
+    await sleep(1100);
+    expect(emitTimes).toHaveLength(2);
+    expect(emitTimes[1]! - emitTimes[0]!).toBeGreaterThanOrEqual(1000);
+    queue.resetState();
+  });
+
+  it("drains remaining outbox with a 50ms floor instead of a 0ms busy loop", async () => {
+    const listDueAt: number[] = [];
+    const storedRecords: LiveSessionOutboxItem[] = [
+      {
+        id: 1,
+        streamerUid: TEST_STREAMER_UID,
+        eventTsMs: 1710000001000,
+        payload: new Uint8Array([1]),
+        retryCount: 0,
+        nextRetryAtMs: 1710000001000,
+      },
+      {
+        id: 2,
+        streamerUid: TEST_STREAMER_UID,
+        eventTsMs: 1710000001001,
+        payload: new Uint8Array([2]),
+        retryCount: 0,
+        nextRetryAtMs: 1710000001001,
+      },
+    ];
+
+    const queue = new DanmakuMessageQueue({
+      isRunning: () => true,
+      isStopping: () => false,
+      getRuntimeConnection: () => ({
+        getConnectionState: () => true,
+        sendArchiveBatch: async (records) => ({
+          acceptedCount: records.length,
+          rejected: [],
+        }),
+      }),
+      getLiveSessionOutbox: () => createOutboxStore({
+        countPending: async () => storedRecords.length,
+        listDue: async () => {
+          listDueAt.push(Date.now());
+          return storedRecords.slice(0, 1);
+        },
+        ack: async (ids) => {
+          for (const id of ids) {
+            const index = storedRecords.findIndex(item => item.id === id);
+            if (index >= 0) {
+              storedRecords.splice(index, 1);
+            }
+          }
+          return ids.length;
+        },
+      }),
+      resolveRecordingStreamerUid: () => TEST_STREAMER_UID,
+      logger: new ScopedLogger("DanmakuMessageQueueTest"),
+      recordError: () => undefined,
+      emitError: () => undefined,
+      emitQueueChanged: () => undefined,
+    });
+
+    (queue as any).messageBatchSize = 1;
+    (queue as any).outboxPendingCount = 2;
+    (queue as any).outboxCountInitialized = true;
+    queue.scheduleMessageDispatch(0);
+
+    await sleep(20);
+    expect(listDueAt).toHaveLength(1);
+
+    await sleep(20);
+    expect(listDueAt).toHaveLength(1);
+
+    await sleep(80);
+    expect(listDueAt.length).toBeGreaterThanOrEqual(2);
+    expect(listDueAt[1]! - listDueAt[0]!).toBeGreaterThanOrEqual(40);
+  });
 });

@@ -18,6 +18,8 @@ const MESSAGE_BATCH_DEFAULT_SIZE = 2000;
 const MESSAGE_UPLOAD_INTERVAL_MS = 2000;
 const OUTBOX_PERSIST_INTERVAL_MS = 1000;
 const OUTBOX_BLOCKED_LOG_INTERVAL_MS = 10_000;
+const QUEUE_CHANGED_EMIT_INTERVAL_MS = 1000;
+const OUTBOX_DRAIN_MIN_DELAY_MS = 50;
 
 interface QueuedPacket {
   roomId: number;
@@ -62,6 +64,8 @@ export class DanmakuMessageQueue {
   private messageDispatching = false;
   private outboxUploading = false;
   private pendingDispatchDelayMs?: number;
+  private lastQueueChangedEmitAt = 0;
+  private queueChangedEmitTimer?: ReturnType<typeof setTimeout>;
   private outboxBlockedLastLogAt = 0;
   private messageRetryBaseDelay = 1000;
   private messageRetryMaxDelay = 30_000;
@@ -103,7 +107,7 @@ export class DanmakuMessageQueue {
     this.outboxUploading = false;
     this.outboxPendingCount = 0;
     this.outboxCountInitialized = false;
-    this.emitPendingCountChanged();
+    this.emitPendingCountChanged(true);
   }
 
   enqueueExtractedEvent(event: ExtractedUploadEvent): void {
@@ -134,7 +138,7 @@ export class DanmakuMessageQueue {
       this.releaseQueuedPacket(queued);
     }
     this.pendingPackets = [];
-    this.emitPendingCountChanged();
+    this.emitPendingCountChanged(true);
   }
 
   scheduleMessageDispatch(delayMs: number = this.messageUploadInterval): void {
@@ -156,7 +160,7 @@ export class DanmakuMessageQueue {
     }
 
     if (this.messageDispatchTimer) {
-      if (delay > 0) {
+      if (delay > OUTBOX_DRAIN_MIN_DELAY_MS) {
         return;
       }
       clearTimeout(this.messageDispatchTimer);
@@ -176,6 +180,7 @@ export class DanmakuMessageQueue {
       clearTimeout(this.messageDispatchTimer);
       this.messageDispatchTimer = undefined;
     }
+    this.clearQueueChangedEmitTimer();
     this.messageDispatching = false;
     this.pendingDispatchDelayMs = undefined;
   }
@@ -260,7 +265,7 @@ export class DanmakuMessageQueue {
       await this.uploadOutboxBatch(outbox, runtimeConnection, dueRecords, now);
 
       if (dueRecords.length >= this.messageBatchSize || this.outboxPendingCount > 0) {
-        this.pendingDispatchDelayMs = 0;
+        this.scheduleMessageDispatch(OUTBOX_DRAIN_MIN_DELAY_MS);
       }
     } finally {
       this.outboxUploading = false;
@@ -484,8 +489,36 @@ export class DanmakuMessageQueue {
     this.emitPendingCountChanged();
   }
 
-  private emitPendingCountChanged(): void {
-    this.context.emitQueueChanged(this.getPendingCount());
+  private emitPendingCountChanged(immediate = false): void {
+    if (immediate) {
+      this.clearQueueChangedEmitTimer();
+      this.lastQueueChangedEmitAt = Date.now();
+      this.context.emitQueueChanged(this.getPendingCount());
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - this.lastQueueChangedEmitAt;
+    if (elapsed >= QUEUE_CHANGED_EMIT_INTERVAL_MS) {
+      this.lastQueueChangedEmitAt = now;
+      this.context.emitQueueChanged(this.getPendingCount());
+      return;
+    }
+
+    if (!this.queueChangedEmitTimer) {
+      this.queueChangedEmitTimer = setTimeout(() => {
+        this.queueChangedEmitTimer = undefined;
+        this.lastQueueChangedEmitAt = Date.now();
+        this.context.emitQueueChanged(this.getPendingCount());
+      }, QUEUE_CHANGED_EMIT_INTERVAL_MS - elapsed);
+    }
+  }
+
+  private clearQueueChangedEmitTimer(): void {
+    if (this.queueChangedEmitTimer) {
+      clearTimeout(this.queueChangedEmitTimer);
+      this.queueChangedEmitTimer = undefined;
+    }
   }
 
   private scheduleNextDispatchIfNeeded(): void {

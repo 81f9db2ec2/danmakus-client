@@ -1,15 +1,11 @@
 export type {
-  StreamerPriority,
   StreamerStatus,
-  CoreStreamerConfigDto,
   CoreControlConfigDto,
   UserInfo,
   RecordingChannelDto,
   RecordingLiveInfoDto,
   RecordingSettingDto,
   RecordingInfoDto,
-  CoreConnectionPriority,
-  CoreConnectionInfoDto,
   CoreRuntimeStateDto
 } from 'danmakus-core';
 

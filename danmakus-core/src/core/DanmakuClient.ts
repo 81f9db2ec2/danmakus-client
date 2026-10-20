@@ -27,8 +27,8 @@ import {
   ErrorCategory,
   ClientErrorRecord,
   RecordingInfoDto,
-  RuntimeRoomPullShortfallDto,
   UserInfo,
+  cloneHoldingRoomShortfall,
 } from '../types/index.js';
 import { ScopedLogger, normalizeLogLevel } from './Logger.js';
 
@@ -50,6 +50,7 @@ interface ConnectionInfo {
   connection: LiveWsConnection;
   roomId: number;
   resolvedRoomId: number;
+  streamerUid: number | null;
   priority: 'high' | 'normal' | 'low' | 'server';
   connectedAt: number;
 }
@@ -113,6 +114,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private readonly danmakuExtractor = new DanmakuExtractor();
   private isStopping = false;
   private messageCount = 0;
+  private messageCmdCountMap: Record<string, number> = {};
+  private roomMessageCountMap: Record<string, number> = {};
   private activeError: ClientErrorRecord | null = null;
   private roomConnectStartInterval = ROOM_CONNECT_START_INTERVAL;
   private errorHistoryLimit = 50;
@@ -386,7 +389,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       }
 
       this.isRunning = true;
-      this.messageCount = 0;
+      this.resetMessageStats();
 
       // 启动状态管理器
       this.logger.info('启动状态检查器...');
@@ -442,7 +445,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     await this.runtimeConnection?.disconnect();
     this.holdingRoomCoordinator.resetState();
     this.statusManager?.updateHoldingRooms([]);
-    this.messageCount = 0;
+    this.resetMessageStats();
     this.activeError = null;
     this.recentErrors = [];
     this.messageQueue.resetState();
@@ -562,6 +565,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
         connection: liveWS,
         roomId,
         resolvedRoomId: targetRoomId,
+        streamerUid: this.resolveRoomStreamerUid(roomId),
         priority,
         connectedAt: Date.now()
       };
@@ -914,39 +918,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     roomId: number,
     isCurrentConnection: () => boolean,
   ): void {
-
-    const handleParsedMessage = ({ data }: any) => {
+    liveWS.addEventListener('msg', ({ data }: any) => {
       if (!isCurrentConnection()) {
         return;
       }
-      const message = this.parseMessage(data, roomId);
-      this.logger.debug(`房间 ${roomId} 收到消息 cmd=${message.cmd}`);
-      this.handleMessage(message).catch(error => {
-        this.logger.error(`处理房间 ${roomId} 消息时发生错误:`, error);
-        const normalizedError = error instanceof Error ? error : new Error(String(error));
-        this.recordError(normalizedError, { category: 'livews', code: 'MESSAGE_HANDLE_FAILED', roomId, recoverable: true });
-        this.emit('error', normalizedError, roomId);
-      });
-
-      try {
-        const streamerUid = this.resolveRoomStreamerUid(roomId);
-        if (streamerUid) {
-          const extracted = this.danmakuExtractor.extract(
-            data,
-            roomId,
-            streamerUid,
-            this.getEventTimestamp(),
-          );
-          if (extracted) {
-            this.messageQueue.enqueueExtractedEvent(extracted);
-          }
-        }
-      } catch (extractError) {
-        this.logger.warn(`提取房间 ${roomId} 消息失败:`, extractError);
-      }
-    };
-    liveWS.addEventListener('msg', handleParsedMessage);
-    liveWS.addEventListener('MESSAGE', handleParsedMessage);
+      this.ingestLiveMessage(roomId, data);
+    });
   }
 
   /**
@@ -967,21 +944,60 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     };
   }
 
-  /**
-   * 处理消息
-   */
-  private async handleMessage(message: DanmakuMessage): Promise<void> {
+  private ingestLiveMessage(roomId: number, data: any): void {
     if (!this.isRunning || this.isStopping) {
       return;
     }
 
+    const cmd = typeof data?.cmd === 'string'
+      ? data.cmd
+      : typeof data?.msg?.cmd === 'string'
+        ? data.msg.cmd
+        : 'UNKNOWN';
+    this.recordLiveMessage(roomId, cmd, data);
+
+    const connection = this.connections.get(roomId);
+    const streamerUid = connection?.streamerUid ?? this.rememberStreamerUid(roomId);
+    if (!streamerUid) {
+      return;
+    }
+
+    try {
+      const extracted = this.danmakuExtractor.extract(
+        data,
+        roomId,
+        streamerUid,
+        this.getEventTimestamp(),
+      );
+      if (extracted) {
+        this.messageQueue.enqueueExtractedEvent(extracted);
+      }
+    } catch (extractError) {
+      this.logger.warn(`提取房间 ${roomId} 消息失败:`, extractError);
+    }
+  }
+
+  private recordLiveMessage(roomId: number, cmd: string, data: unknown): void {
     this.messageCount += 1;
-    // 发射 'msg' 事件（所有消息）
-    this.emit('msg', message);
+    this.messageCmdCountMap[cmd] = (this.messageCmdCountMap[cmd] ?? 0) + 1;
+    if (Number.isFinite(roomId) && roomId > 0) {
+      const roomKey = String(Math.floor(roomId));
+      this.roomMessageCountMap[roomKey] = (this.roomMessageCountMap[roomKey] ?? 0) + 1;
+    }
 
-    // 发射特定cmd的事件
-    this.emit(message.cmd, message);
+    if (this.listenerCount('msg') === 0) {
+      return;
+    }
+    this.emit('msg', this.parseMessage(data, roomId, cmd));
+  }
 
+  private rememberStreamerUid(roomId: number): number | null {
+    const uid = this.resolveRoomStreamerUid(roomId);
+    const connection = this.connections.get(roomId);
+    if (connection && uid) {
+      connection.streamerUid = uid;
+    }
+    return uid;
   }
 
   /**
@@ -1041,6 +1057,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     return [...this.recordingRoomIds];
   }
 
+  private resetMessageStats(): void {
+    this.messageCount = 0;
+    this.messageCmdCountMap = {};
+    this.roomMessageCountMap = {};
+  }
+
   /**
    * 获取客户端状态
    */
@@ -1062,6 +1084,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       holdingRooms: this.holdingRoomCoordinator.getHoldingRoomIds(),
       recordingRoomIds: [...this.recordingRoomIds],
       messageCount: this.messageCount,
+      messageCmdCountMap: { ...this.messageCmdCountMap },
+      roomMessageCountMap: { ...this.roomMessageCountMap },
       pendingMessageCount: this.messageQueue.getPendingCount(),
       recentErrors: this.recentErrors.map(item => ({ ...item })),
       lastRoomAssigned: this.holdingRoomCoordinator.getLastRoomAssigned(),
@@ -1158,9 +1182,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     await this.controlState.updateRecordingPublic(uid, isPublic);
   }
 
-  async forceTakeoverRuntimeState(): Promise<CoreControlStateSnapshot> {
-    return this.controlState.forceTakeoverRuntimeState();
-  }
+
 
   private buildCoreControlConfigSnapshot(): CoreControlConfigDto {
     const config = this.configManager.getConfig();
@@ -1193,7 +1215,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       connectedRooms: Array.isArray(remote.connectedRooms) ? [...remote.connectedRooms] : [],
       connectionInfo: Array.isArray(remote.connectionInfo) ? remote.connectionInfo.map(info => ({ ...info })) : [],
       holdingRooms: Array.isArray(remote.holdingRooms) ? [...remote.holdingRooms] : [],
-      holdingRoomShortfall: this.cloneHoldingRoomShortfall(remote.holdingRoomShortfall),
+      holdingRoomShortfall: cloneHoldingRoomShortfall(remote.holdingRoomShortfall),
     }));
   }
 
@@ -1217,21 +1239,6 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       },
       setting: { ...item.setting },
     }));
-  }
-
-  private cloneHoldingRoomShortfall(
-    shortfall: RuntimeRoomPullShortfallDto | null | undefined
-  ): RuntimeRoomPullShortfallDto | null {
-    return shortfall
-      ? {
-        reason: shortfall.reason ?? null,
-        missingCount: shortfall.missingCount ?? null,
-        candidateCount: shortfall.candidateCount ?? null,
-        assignableCandidateCount: shortfall.assignableCandidateCount ?? null,
-        blockedBySameAccountCount: shortfall.blockedBySameAccountCount ?? null,
-        blockedByOtherAccountsCount: shortfall.blockedByOtherAccountsCount ?? null,
-      }
-      : null;
   }
 
   private emitControlStateChanged(): void {

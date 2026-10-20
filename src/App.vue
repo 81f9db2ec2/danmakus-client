@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
 import { onBeforeUnmount, onMounted } from 'vue';
-import IndexPage from './pages/Index.vue';
+import CoreControlPanel from './components/CoreControlPanel.vue';
 import 'vue-sonner/style.css';
 import { Toaster } from '@/components/ui/sonner';
 import { applyThemeMode, loadLocalAppConfig } from './services/localApp';
@@ -44,7 +44,7 @@ onBeforeUnmount(() => {
       aria-hidden="true"
       class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.08),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(16,185,129,0.06),transparent_36%)]"
     />
-    <IndexPage />
+    <CoreControlPanel />
     <Toaster rich-colors position="top-right" />
   </div>
 </template>

@@ -83,8 +83,6 @@ type RuntimeStateSnapshot = {
   holdingRoomShortfall: RuntimeRoomPullShortfallDto | null;
   streamerStatuses: StreamerStatus[];
   lastError: string | null;
-  lockConflict: boolean;
-  lockConflictOwnerClientId: string | null;
   lastRoomAssigned: number | null;
   authState: AuthStateSnapshot;
 };
@@ -115,7 +113,6 @@ const props = defineProps<{
   accountName: string;
   accountId: number | null;
   refreshingState: boolean;
-  forcingLock: boolean;
   startingCore: boolean;
   stoppingCore: boolean;
   appUpdateBusy: boolean;
@@ -461,7 +458,6 @@ const copyErrorText = async () => {
 const emit = defineEmits<{
   (e: 'refresh-runtime-state'): void;
   (e: 'clear-runtime-error', error: string): void;
-  (e: 'force-takeover'): void;
   (e: 'start-core'): void;
   (e: 'stop-core'): void;
   (e: 'install-app-update'): void;
@@ -648,23 +644,6 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Alerts -->
-    <Alert v-if="runtimeState.lockConflict" class="border-amber-300/80 bg-amber-500/10">
-      <AlertCircle class="h-4 w-4 text-amber-600 dark:text-amber-300" />
-      <AlertTitle>核心锁冲突</AlertTitle>
-      <AlertDescription class="flex items-center justify-between gap-3">
-        <span>
-          当前账号下已有同 IP 客户端持有核心锁
-          <template v-if="runtimeState.lockConflictOwnerClientId">
-            ：<code class="rounded bg-muted px-1 text-xs">{{ runtimeState.lockConflictOwnerClientId }}</code>
-          </template>
-        </span>
-        <Button variant="outline" size="sm" :disabled="forcingLock" @click="emit('force-takeover')">
-          <Loader2 v-if="forcingLock" class="h-3.5 w-3.5 animate-spin" />
-          强制接管
-        </Button>
-      </AlertDescription>
-    </Alert>
-
     <Alert v-if="visibleRuntimeError" variant="destructive" class="gap-3">
       <AlertCircle class="h-4 w-4" />
       <div class="min-w-0 flex-1 space-y-1.5">

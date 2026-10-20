@@ -19,7 +19,7 @@ export function parseCookieHeader(cookieHeader: string): Map<string, string> {
   return map;
 }
 
-export function splitSetCookieHeader(setCookie: string): string[] {
+function splitSetCookieHeader(setCookie: string): string[] {
   const chunks: string[] = [];
   let current = '';
   let inExpires = false;

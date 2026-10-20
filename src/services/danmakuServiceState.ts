@@ -2,7 +2,6 @@ import type {
   AuthSourceStateSnapshot,
   AuthStateSnapshot,
   CoreRuntimeStateDto as CoreClientRuntimeStateDto,
-  RuntimeRoomPullShortfallDto,
 } from 'danmakus-core'
 import { RUNTIME_URL } from './env'
 import type { CoreControlConfigDto, RecordingInfoDto } from '../types/api'
@@ -85,33 +84,6 @@ const parseServerTimeMs = (value: unknown, fieldName: string): number | null => 
     throw new Error(`账号中心返回的 ${fieldName} 无效`)
   }
   return ms
-}
-
-const normalizeNonNegativeInteger = (value: unknown): number | null => {
-  if (value === null || value === undefined || value === '') {
-    return null
-  }
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return null
-  }
-  return Math.floor(parsed)
-}
-
-export const cloneHoldingRoomShortfall = (
-  shortfall: RuntimeRoomPullShortfallDto | null | undefined
-): RuntimeRoomPullShortfallDto | null => {
-  if (!shortfall) {
-    return null
-  }
-  return {
-    reason: typeof shortfall.reason === 'string' ? shortfall.reason : null,
-    missingCount: normalizeNonNegativeInteger(shortfall.missingCount),
-    candidateCount: normalizeNonNegativeInteger(shortfall.candidateCount),
-    assignableCandidateCount: normalizeNonNegativeInteger(shortfall.assignableCandidateCount),
-    blockedBySameAccountCount: normalizeNonNegativeInteger(shortfall.blockedBySameAccountCount),
-    blockedByOtherAccountsCount: normalizeNonNegativeInteger(shortfall.blockedByOtherAccountsCount),
-  }
 }
 
 export const normalizeConnectionInfo = (info: {

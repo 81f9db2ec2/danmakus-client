@@ -17,8 +17,6 @@ export const CoreWsOpCode = {
   SERVER_ERROR_NOTIFY: 0x8F,
 } as const;
 
-export type CoreWsOpCodeValue = typeof CoreWsOpCode[keyof typeof CoreWsOpCode];
-
 export interface CoreWsFrame {
   opCode: number;
   seq: number;

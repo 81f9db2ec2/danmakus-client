@@ -1,5 +1,5 @@
 import { computed, reactive, ref } from 'vue';
-import { BACKEND_API_ORIGINS, BACKEND_PRIMARY_ORIGIN } from 'danmakus-core';
+import { BACKEND_API_ORIGINS, BACKEND_PRIMARY_ORIGIN, setBackendApiFallbackOrigins } from 'danmakus-core';
 import { fetchImpl } from './fetchImpl';
 
 export type NodeHealthStatus = 'idle' | 'testing' | 'ok' | 'slow' | 'error';
@@ -184,6 +184,7 @@ export async function pingApiNode(origin: string, timeoutMs = 4000): Promise<Api
     node.errorMessage = error instanceof Error ? (error.name === 'AbortError' ? '请求超时 (4s)' : error.message) : '连接失败';
   }
 
+  syncCoreFallbackOrigins();
   return node;
 }
 
@@ -204,12 +205,14 @@ export function setPreferredApiOrigin(origin: string | null): void {
   if (origin === null) {
     preferredOriginRef.value = null;
     writeStorage(STORAGE_KEY_PREFERRED, null);
+    syncCoreFallbackOrigins();
     return;
   }
   const normalized = normalizeOrigin(origin);
   if (!normalized) return;
   preferredOriginRef.value = normalized;
   writeStorage(STORAGE_KEY_PREFERRED, normalized);
+  syncCoreFallbackOrigins();
 }
 
 // 添加自定义节点
@@ -234,6 +237,8 @@ export function removeCustomApiNode(origin: string): void {
   nodeResults.delete(origin);
   if (preferredOriginRef.value === origin) {
     setPreferredApiOrigin(null);
+  } else {
+    syncCoreFallbackOrigins();
   }
 }
 
@@ -267,6 +272,10 @@ export function getOrderedApiOrigins(): string[] {
   return candidates;
 }
 
+function syncCoreFallbackOrigins() {
+  setBackendApiFallbackOrigins(getOrderedApiOrigins());
+}
+
 // 记录业务调用时节点失败并触发降级提示
 export function notifyNodeFallback(failedOrigin: string, nextOrigin: string): void {
   const node = nodeResults.get(failedOrigin);
@@ -280,11 +289,14 @@ export function notifyNodeFallback(failedOrigin: string, nextOrigin: string): vo
     fallbackOrigin: nextOrigin,
     timestamp: Date.now()
   };
+  syncCoreFallbackOrigins();
 }
 
 export function dismissFallbackAlert(): void {
   activeFallbackAlert.value = null;
 }
+
+syncCoreFallbackOrigins();
 
 export {
   preferredOriginRef,

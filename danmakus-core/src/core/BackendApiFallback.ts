@@ -8,11 +8,53 @@ export const BACKEND_PRIMARY_ORIGIN = BACKEND_API_ORIGINS[0];
 
 type FetchBackendApiFallbackOptions = {
   timeoutMs?: number;
+  origins?: readonly string[];
 };
 
 const isBackendApiPath = (pathname: string): boolean => pathname.startsWith('/api/');
 
-export const buildBackendApiCandidateUrls = (url: string): string[] => {
+const builtinOriginSet: ReadonlySet<string> = new Set(BACKEND_API_ORIGINS);
+
+let configuredOrigins: readonly string[] | null = null;
+
+const normalizeOriginList = (origins: readonly string[]): string[] => {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const origin of origins) {
+    const trimmed = origin.trim().replace(/\/+$/, '');
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    next.push(trimmed);
+  }
+  return next;
+};
+
+export function setBackendApiFallbackOrigins(origins: readonly string[] | null): void {
+  if (!origins || origins.length === 0) {
+    configuredOrigins = null;
+    return;
+  }
+  const next = normalizeOriginList(origins);
+  configuredOrigins = next.length > 0 ? next : null;
+}
+
+export function getBackendApiFallbackOrigins(): readonly string[] {
+  return configuredOrigins ?? BACKEND_API_ORIGINS;
+}
+
+const resolveFallbackChain = (origins?: readonly string[]): readonly string[] => {
+  if (origins && origins.length > 0) {
+    return normalizeOriginList(origins);
+  }
+  return configuredOrigins ?? BACKEND_API_ORIGINS;
+};
+
+const shouldRewriteToPreferredChain = (origin: string, chain: readonly string[]): boolean =>
+  configuredOrigins != null && (builtinOriginSet.has(origin) || chain.includes(origin));
+
+export const buildBackendApiCandidateUrls = (url: string, origins?: readonly string[]): string[] => {
   const normalizedUrl = url.trim();
   if (!normalizedUrl) {
     return [];
@@ -36,9 +78,16 @@ export const buildBackendApiCandidateUrls = (url: string): string[] => {
       candidates.push(next);
     };
 
-    pushOrigin(parsed.origin);
-    for (const origin of BACKEND_API_ORIGINS) {
-      pushOrigin(origin);
+    const chain = resolveFallbackChain(origins);
+    if (origins == null && shouldRewriteToPreferredChain(parsed.origin, chain)) {
+      for (const origin of chain) {
+        pushOrigin(origin);
+      }
+    } else {
+      pushOrigin(parsed.origin);
+      for (const origin of chain) {
+        pushOrigin(origin);
+      }
     }
     return candidates;
   } catch {
@@ -52,7 +101,7 @@ export async function fetchBackendApiWithFallback(
   init?: RequestInit,
   options?: FetchBackendApiFallbackOptions,
 ): Promise<Response> {
-  const candidates = buildBackendApiCandidateUrls(url);
+  const candidates = buildBackendApiCandidateUrls(url, options?.origins);
   let lastError: unknown = null;
 
   for (let index = 0; index < candidates.length; index += 1) {

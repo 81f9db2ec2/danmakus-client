@@ -31,7 +31,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import { biliCookie } from '../../services/bilibili';
+import { biliCookie } from '../../services/biliCookieStore';
 import { danmakuService } from '../../services/DanmakuService';
 import { fetchImpl } from '../../services/fetchImpl';
 import type { LocalAppConfigDto } from '../../types/api';

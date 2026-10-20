@@ -32,16 +32,32 @@ interface CompiledRule {
 
 interface CompiledRuleSet {
   version: number;
-  rules: CompiledRule[];
+  exact: Map<string, CompiledRule>;
+  regex: CompiledRule[];
 }
 
-const protobufToObjectOptions: protobuf.IConversionOptions = {
-  longs: Number,
-  enums: Number,
-  bytes: String,
-  defaults: false,
-  arrays: true,
-};
+function exactCmdFromPattern(pattern: string): string | null {
+  if (pattern.length < 3 || pattern[0] !== '^' || pattern[pattern.length - 1] !== '$') {
+    return null;
+  }
+  const inner = pattern.slice(1, -1);
+  return /^[A-Za-z0-9_]+$/.test(inner) ? inner : null;
+}
+
+function ruleMatchesCmd(rule: CompiledRule, cmd: string): boolean {
+  return rule.pattern.test(cmd) && !rule.discards.some((d) => d.test(cmd));
+}
+
+function matchRule(cmd: string, exact: Map<string, CompiledRule>, regex: CompiledRule[]): CompiledRule | undefined {
+  if (!cmd) {
+    return undefined;
+  }
+  const exactRule = exact.get(cmd);
+  if (exactRule && !exactRule.discards.some((d) => d.test(cmd))) {
+    return exactRule;
+  }
+  return regex.find((rule) => ruleMatchesCmd(rule, cmd));
+}
 
 function parsePath(path: string): PathKey[] {
   return path.split('.').map((part) => (/^\d+$/.test(part) ? Number(part) : part));
@@ -59,7 +75,14 @@ function resolvePath(target: unknown, path: PathKey[]): unknown {
 }
 
 function isPresent(value: unknown): boolean {
-  return value !== undefined && value !== null && value !== '';
+  if (value === undefined || value === null || value === '') {
+    return false;
+  }
+  if (typeof value === 'object' && typeof (value as { toNumber?: unknown }).toNumber === 'function') {
+    const num = (value as { toNumber: () => number }).toNumber();
+    return Number.isFinite(num) && num !== 0;
+  }
+  return true;
 }
 
 function resolveFirst(targets: unknown[], paths: PathKey[][]): unknown {
@@ -75,8 +98,18 @@ function resolveFirst(targets: unknown[], paths: PathKey[][]): unknown {
 }
 
 function toNumber(raw: unknown): number | undefined {
-  const num = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
-  return Number.isFinite(num) ? num : undefined;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? raw : undefined;
+  }
+  if (typeof raw === 'string') {
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : undefined;
+  }
+  if (raw && typeof raw === 'object' && typeof (raw as { toNumber?: unknown }).toNumber === 'function') {
+    const num = (raw as { toNumber: () => number }).toNumber();
+    return Number.isFinite(num) ? num : undefined;
+  }
+  return undefined;
 }
 
 function coerce(raw: unknown, as: DanmakuFieldValueType): Scalar | undefined {
@@ -127,7 +160,7 @@ function decodeBase64(base64: string): Uint8Array {
 }
 
 export class DanmakuExtractor {
-  private ruleSet: CompiledRuleSet = { version: 0, rules: [] };
+  private ruleSet: CompiledRuleSet = { version: 0, exact: new Map(), regex: [] };
 
   constructor(ruleSet?: DanmakuExtractionRuleSet) {
     if (ruleSet) {
@@ -145,10 +178,18 @@ export class DanmakuExtractor {
     for (const schema of ruleSet.protobufs ?? []) {
       protoTypes.set(schema.name, protobuf.parse(schema.proto, { keepCase: true }).root.lookupType(schema.name));
     }
-    this.ruleSet = {
-      version: ruleSet.version,
-      rules: ruleSet.rules.map((rule) => this.compileRule(rule, protoTypes)),
-    };
+    const exact = new Map<string, CompiledRule>();
+    const regex: CompiledRule[] = [];
+    for (const rule of ruleSet.rules) {
+      const compiled = this.compileRule(rule, protoTypes);
+      const cmd = exactCmdFromPattern(rule.pattern);
+      if (cmd) {
+        exact.set(cmd, compiled);
+      } else {
+        regex.push(compiled);
+      }
+    }
+    this.ruleSet = { version: ruleSet.version, exact, regex };
   }
 
   private compileRule(rule: DanmakuExtractionRule, protoTypes: Map<string, protobuf.Type>): CompiledRule {
@@ -174,8 +215,8 @@ export class DanmakuExtractor {
     eventTsMs: number,
   ): ExtractedUploadEvent | null {
     const cmd = String(message?.cmd ?? message?.msg?.cmd ?? '');
-    const { version, rules } = this.ruleSet;
-    const rule = cmd ? rules.find((r) => r.pattern.test(cmd) && !r.discards.some((d) => d.test(cmd))) : undefined;
+    const { version, exact, regex } = this.ruleSet;
+    const rule = matchRule(cmd, exact, regex);
     if (!rule) {
       return null;
     }
@@ -201,7 +242,7 @@ export class DanmakuExtractor {
       if (!bytes?.byteLength) {
         return null;
       }
-      return [rule.protoType.toObject(rule.protoType.decode(bytes), protobufToObjectOptions)];
+      return [rule.protoType.decode(bytes)];
     } catch {
       return null;
     }

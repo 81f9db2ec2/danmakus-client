@@ -1,18 +1,16 @@
-import { DanmakuClient } from 'danmakus-core';
+import { cloneHoldingRoomShortfall, DanmakuClient } from 'danmakus-core';
 import type {
   AuthStateSnapshot,
   CoreControlStateSnapshot as CoreClientControlStateSnapshot,
-  DanmakuMessage,
   LiveSessionOutboxStore,
   RuntimeRoomPullShortfallDto,
   StreamerStatus,
 } from 'danmakus-core';
 import { reactive } from 'vue';
-import { biliCookie } from './bilibili';
+import { biliCookie } from './biliCookieStore';
 import { liveSessionOutbox } from './liveSessionOutbox';
 import {
   cloneAuthState,
-  cloneHoldingRoomShortfall,
   cloneRecordingInfo,
   createDefaultCoreConfig,
   createEmptyAuthState,
@@ -49,15 +47,6 @@ const getOrCreateClientId = (): string => {
   return created;
 };
 
-const hasRuntimeLockConflict = (message: string | null | undefined): boolean => {
-  if (!message) {
-    return false;
-  }
-
-  const normalized = message.replace(/\s+/g, '');
-  return normalized.includes('同一IP已存在其他客户端连接');
-};
-
 const normalizeRoomId = (value: unknown): number | null => {
   const roomId = Number(value);
   if (!Number.isFinite(roomId) || roomId <= 0) {
@@ -86,8 +75,6 @@ class DanmakuService {
     holdingRooms: [] as number[],
     holdingRoomShortfall: null as RuntimeRoomPullShortfallDto | null,
     lastError: null as string | null,
-    lockConflict: false,
-    lockConflictOwnerClientId: null as string | null,
     lastRoomAssigned: null as number | null,
     cookieValid: false,
     authState: createEmptyAuthState() as AuthStateSnapshot,
@@ -258,11 +245,6 @@ class DanmakuService {
     this.syncCurrentControlState();
   }
 
-  public async forceTakeoverRuntimeState(): Promise<void> {
-    const snapshot = await this.requireClient().forceTakeoverRuntimeState();
-    this.applyControlStateSnapshot(snapshot);
-  }
-
   public async dispose(): Promise<void> {
     await this.disposeExistingClient();
   }
@@ -352,8 +334,6 @@ class DanmakuService {
     this.state.holdingRooms = [];
     this.state.holdingRoomShortfall = null;
     this.state.lastError = null;
-    this.state.lockConflict = false;
-    this.state.lockConflictOwnerClientId = null;
     this.state.lastRoomAssigned = null;
     this.state.cookieValid = false;
     this.state.lastHeartbeat = null;
@@ -399,21 +379,8 @@ class DanmakuService {
       this.state.streamerStatuses = statuses.map(status => ({ ...status }));
     });
 
-    this.client.on('queueChanged', (pendingMessageCount: number) => {
-      this.state.pendingMessageCount = pendingMessageCount;
+    this.client.on('queueChanged', () => {
       this.applyStatusSnapshot();
-    });
-
-    this.client.on('msg', (message: DanmakuMessage) => {
-      this.state.messageCount += 1;
-      const cmd = message.cmd;
-      this.state.messageCmdCountMap[cmd] = (this.state.messageCmdCountMap[cmd] || 0) + 1;
-      const roomId = normalizeRoomId(message.roomId);
-      if (roomId === null) {
-        return;
-      }
-      const roomKey = String(roomId);
-      this.state.roomMessageCountMap[roomKey] = (this.state.roomMessageCountMap[roomKey] || 0) + 1;
     });
 
     this.client.on('error', (error: Error) => {
@@ -434,31 +401,22 @@ class DanmakuService {
   }
 
   private refreshRuntimeIndicators(): void {
-    const normalizedClients = this.state.remoteClients;
-    const conflictOwner = normalizedClients
-      .filter(client => client.clientId !== this.localClientId)
-      .sort((a, b) => (b.lastHeartbeat ?? 0) - (a.lastHeartbeat ?? 0))[0]
-      ?? null;
-
-    this.state.lockConflict = hasRuntimeLockConflict(this.state.lastError);
-    this.state.lockConflictOwnerClientId = this.state.lockConflict ? (conflictOwner?.clientId ?? null) : null;
-
-    if (!this.client?.getStatus().isRunning && normalizedClients.length === 0) {
-      this.state.isRunning = false;
-      this.state.runtimeConnected = false;
-      this.state.connectedRooms = [];
-      this.state.connectionInfo = [];
-      this.state.holdingRooms = [];
-      this.state.holdingRoomShortfall = null;
-      this.state.messageCount = 0;
-      this.state.pendingMessageCount = 0;
-      this.state.messageCmdCountMap = {};
-      this.state.roomMessageCountMap = {};
-      this.state.lastRoomAssigned = null;
-      this.state.lastError = null;
-      this.state.lockConflict = false;
-      this.state.lockConflictOwnerClientId = null;
+    if (this.client?.getStatus().isRunning || this.state.remoteClients.length > 0) {
+      return;
     }
+
+    this.state.isRunning = false;
+    this.state.runtimeConnected = false;
+    this.state.connectedRooms = [];
+    this.state.connectionInfo = [];
+    this.state.holdingRooms = [];
+    this.state.holdingRoomShortfall = null;
+    this.state.messageCount = 0;
+    this.state.pendingMessageCount = 0;
+    this.state.messageCmdCountMap = {};
+    this.state.roomMessageCountMap = {};
+    this.state.lastRoomAssigned = null;
+    this.state.lastError = null;
   }
 
   private applyStatusSnapshot(): void {
@@ -474,9 +432,11 @@ class DanmakuService {
     this.state.cookieValid = status.cookieValid;
     this.state.authState = cloneAuthState(status.authState);
     this.state.holdingRooms = [...status.holdingRooms];
-    this.pruneRoomMessageCounts([...status.connectedRooms, ...status.holdingRooms]);
     this.state.holdingRoomShortfall = cloneHoldingRoomShortfall(status.holdingRoomShortfall);
     this.state.messageCount = status.messageCount;
+    this.state.messageCmdCountMap = { ...status.messageCmdCountMap };
+    this.state.roomMessageCountMap = { ...status.roomMessageCountMap };
+    this.pruneRoomMessageCounts([...status.connectedRooms, ...status.holdingRooms]);
     this.state.pendingMessageCount = status.pendingMessageCount;
     this.state.lastRoomAssigned = status.lastRoomAssigned ?? null;
     this.state.lastError = status.lastError ?? null;

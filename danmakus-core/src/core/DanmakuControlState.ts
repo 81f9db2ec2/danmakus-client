@@ -132,13 +132,6 @@ export class DanmakuControlState {
     await this.refreshRecordingList(true);
   }
 
-  async forceTakeoverRuntimeState(): Promise<CoreControlStateSnapshot> {
-    this.context.reportHoldingRoomState('force-takeover', { force: true });
-    await this.refreshRemoteClients(true);
-    this.context.emitControlStateChanged();
-    return this.context.getControlState();
-  }
-
   async handleAccountConfigTagChange(nextTag: string | null): Promise<void> {
     if (nextTag === null || nextTag === this.context.getAccountConfigTag()) {
       return;

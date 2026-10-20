@@ -9,7 +9,7 @@ import {
   type SqliteLiveSessionOutboxValue,
 } from './SqliteLiveSessionOutbox.js';
 
-export const DEFAULT_BUN_LIVE_SESSION_OUTBOX_PATH = resolve(
+const DEFAULT_BUN_LIVE_SESSION_OUTBOX_PATH = resolve(
   process.cwd(),
   '.danmakus',
   'danmakus-live-session-outbox-streamer.sqlite3',

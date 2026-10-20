@@ -1,4 +1,4 @@
-import { DanmakuConfig, RuntimeRoomPullShortfallDto } from '../types/index.js';
+import { cloneHoldingRoomShortfall, DanmakuConfig, RuntimeRoomPullShortfallDto } from '../types/index.js';
 import { RuntimeConnection } from './RuntimeConnection.js';
 import { ScopedLogger } from './Logger.js';
 import { StreamerStatusManager } from './StreamerStatusManager.js';
@@ -73,7 +73,7 @@ export class DanmakuHoldingRoomCoordinator {
       ));
     }
     this.lastRoomAssigned = initialState?.lastRoomAssigned;
-    this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(initialState?.holdingRoomShortfall);
+    this.holdingRoomShortfall = cloneHoldingRoomShortfall(initialState?.holdingRoomShortfall);
     this.refreshHoldingRoomDisconnectState(Date.now());
   }
 
@@ -91,7 +91,7 @@ export class DanmakuHoldingRoomCoordinator {
 
   getHoldingRoomShortfall(): RuntimeRoomPullShortfallDto | null {
     if (this.holdingRoomShortfall !== null) {
-      return this.cloneHoldingRoomShortfall(this.holdingRoomShortfall);
+      return cloneHoldingRoomShortfall(this.holdingRoomShortfall);
     }
 
     if (!this.context.isRunning() || this.context.isStopping()) {
@@ -497,7 +497,7 @@ export class DanmakuHoldingRoomCoordinator {
     const previous = Array.from(new Set(this.holdingRoomIds.filter(roomId => Number.isFinite(roomId) && roomId > 0)));
     const next = Array.from(new Set(result.holdingRooms.filter(roomId => Number.isFinite(roomId) && roomId > 0)));
     const previousShortfall = this.getHoldingRoomShortfall();
-    const nextExplicitShortfall = this.cloneHoldingRoomShortfall(result.shortfall);
+    const nextExplicitShortfall = cloneHoldingRoomShortfall(result.shortfall);
     const removedRooms = previous.filter(roomId => !next.includes(roomId));
     const addedRooms = next.filter(roomId => !previous.includes(roomId));
     const holdingRoomsChanged = !this.areRoomIdsEqual(previous, next);
@@ -561,19 +561,6 @@ export class DanmakuHoldingRoomCoordinator {
       : undefined;
   }
 
-  private cloneHoldingRoomShortfall(shortfall: RuntimeRoomPullShortfallDto | null | undefined): RuntimeRoomPullShortfallDto | null {
-    return shortfall
-      ? {
-          reason: shortfall.reason ?? null,
-          missingCount: shortfall.missingCount ?? null,
-          candidateCount: shortfall.candidateCount ?? null,
-          assignableCandidateCount: shortfall.assignableCandidateCount ?? null,
-          blockedBySameAccountCount: shortfall.blockedBySameAccountCount ?? null,
-          blockedByOtherAccountsCount: shortfall.blockedByOtherAccountsCount ?? null,
-        }
-      : null;
-  }
-
   private setHoldingRoomIds(roomIds: number[]): void {
     this.holdingRoomIds = roomIds;
     const roomIdSet = new Set(roomIds);
@@ -603,7 +590,7 @@ export class DanmakuHoldingRoomCoordinator {
   }
 
   private setHoldingRoomShortfall(value: RuntimeRoomPullShortfallDto | null): void {
-    this.holdingRoomShortfall = this.cloneHoldingRoomShortfall(value);
+    this.holdingRoomShortfall = cloneHoldingRoomShortfall(value);
   }
 
   private areHoldingRoomShortfallsEqual(

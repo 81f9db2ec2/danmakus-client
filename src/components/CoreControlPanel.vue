@@ -4,7 +4,7 @@ import { toast } from 'vue-sonner';
 import { getDanmakuAreas } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
 import { RUNTIME_URL } from '../services/env';
-import { getAuthToken, setAuthToken, setServerLoggedIn } from '../services/http';
+import { getAuthToken, setAuthToken } from '../services/http';
 import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, isMacosDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
 import { liveSessionOutbox, type LiveSessionOutboxDatabaseInfo } from '../services/liveSessionOutbox';
 import { APP_UPDATE_CHECK_INTERVAL_MS, checkForUpdate, installLatestUpdate, updaterEnabled, type AvailableUpdate } from '../services/updater';
@@ -75,7 +75,6 @@ const savingConfig = ref(false);
 const startingCore = ref(false);
 const stoppingCore = ref(false);
 const refreshingState = ref(false);
-const forcingLock = ref(false);
 const recordings = computed(() => runtimeState.recordings);
 const refreshingRecordings = ref(false);
 const addingRecording = ref(false);
@@ -414,7 +413,6 @@ const loadProfile = async () => {
     setAuthToken(token.value);
     await danmakuService.initialize(localConfig);
     await danmakuService.refreshControlState();
-    setServerLoggedIn(true);
     try {
       availableAreas.value = await getDanmakuAreas();
     } catch (error) {
@@ -426,7 +424,6 @@ const loadProfile = async () => {
   } catch (error) {
     console.error(error);
     availableAreas.value = {};
-    setServerLoggedIn(false);
     try {
       await danmakuService.dispose();
     } catch (disposeError) {
@@ -646,7 +643,6 @@ const handleLogout = async () => {
   setAuthToken('');
   availableAreas.value = {};
   availableUpdateVersion.value = null;
-  setServerLoggedIn(false);
   currentPage.value = 'dashboard';
   toast.success('已登出');
 };
@@ -690,20 +686,6 @@ const handleSyncCookieCloud = async () => {
   } catch (error) {
     console.error(error);
     toast.error(error instanceof Error ? error.message : 'CookieCloud 同步失败');
-  }
-};
-
-const handleForceTakeover = async () => {
-  if (!ensureToken()) return;
-  forcingLock.value = true;
-  try {
-    await danmakuService.forceTakeoverRuntimeState();
-    toast.success('已强制接管核心锁');
-  } catch (error) {
-    console.error(error);
-    toast.error(error instanceof Error ? error.message : '强制接管失败');
-  } finally {
-    forcingLock.value = false;
   }
 };
 
@@ -935,7 +917,7 @@ onBeforeUnmount(() => {
           </div>
 
           <Transition name="page" mode="out-in">
-            <CoreControlDashboardTab v-if="currentPage === 'dashboard'" key="dashboard" :runtime-state="runtimeState" :recording-room-ids="recordingRoomIds" :recording-stats-by-room="recordingStatsByRoom" :remote-clients="remoteClients" :local-client-id="localClientId" :account-name="accountNameForDisplay" :account-id="accountIdForDisplay" :refreshing-state="refreshingState" :forcing-lock="forcingLock" :starting-core="startingCore" :stopping-core="stoppingCore" :app-update-busy="appUpdateBusy" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" @refresh-runtime-state="refreshRuntimeState" @clear-runtime-error="handleClearRuntimeError" @force-takeover="handleForceTakeover" @start-core="handleStartCore" @stop-core="handleStopCore" @install-app-update="handleInstallAppUpdate" />
+            <CoreControlDashboardTab v-if="currentPage === 'dashboard'" key="dashboard" :runtime-state="runtimeState" :recording-room-ids="recordingRoomIds" :recording-stats-by-room="recordingStatsByRoom" :remote-clients="remoteClients" :local-client-id="localClientId" :account-name="accountNameForDisplay" :account-id="accountIdForDisplay" :refreshing-state="refreshingState" :starting-core="startingCore" :stopping-core="stoppingCore" :app-update-busy="appUpdateBusy" :installing-app-update="installingAppUpdate" :available-update-version="availableUpdateVersion" @refresh-runtime-state="refreshRuntimeState" @clear-runtime-error="handleClearRuntimeError" @start-core="handleStartCore" @stop-core="handleStopCore" @install-app-update="handleInstallAppUpdate" />
 
             <CoreControlRecordingsTab
               v-else-if="currentPage === 'recordings'"
