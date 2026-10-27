@@ -1,4 +1,4 @@
-import { getStartupBilibiliUserAgent, populateBilibiliBrowserHeaders } from 'danmakus-core';
+import { populateBilibiliBrowserHeaders } from 'danmakus-core';
 
 const isTauri = () => {
   if (typeof window === 'undefined') return false;
