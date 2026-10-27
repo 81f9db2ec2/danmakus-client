@@ -873,6 +873,22 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       }
       refreshHeartbeatTimeout();
       this.logger.debug(`房间 ${roomId} heartbeat`, data);
+
+      // 给下一次心跳加上随机抖动 (Jitter ±2.5s)，打乱绝对机械的 30.000s 周期
+      const baseLiveWS = liveWS as any;
+      if (baseLiveWS.timeout && typeof baseLiveWS.heartbeat === 'function') {
+        clearTimeout(baseLiveWS.timeout);
+        const jitterMs = Math.floor((Math.random() - 0.5) * 5000); // -2500ms ~ +2500ms
+        const nextInterval = Math.max(25_000, Math.min(35_000, 30_000 + jitterMs));
+        baseLiveWS.timeout = setTimeout(() => {
+          if (!isCurrentConnection()) return;
+          try {
+            baseLiveWS.heartbeat();
+          } catch {
+            // ignore
+          }
+        }, nextInterval);
+      }
     });
 
     liveWS.addEventListener('close', (event: any) => {

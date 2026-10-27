@@ -1,4 +1,4 @@
-import { getStartupBilibiliUserAgent } from 'danmakus-core';
+import { getStartupBilibiliUserAgent, populateBilibiliBrowserHeaders } from 'danmakus-core';
 
 const isTauri = () => {
   if (typeof window === 'undefined') return false;
@@ -61,9 +61,7 @@ export const fetchImpl: FetchImpl = async (input, init) => {
     }
 
     const headers = new Headers(init?.headers ?? {});
-    if (!headers.has('User-Agent')) {
-      headers.set('User-Agent', getStartupBilibiliUserAgent());
-    }
+    populateBilibiliBrowserHeaders(headers);
 
     return {
       ...init,

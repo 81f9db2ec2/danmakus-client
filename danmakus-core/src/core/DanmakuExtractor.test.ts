@@ -182,6 +182,7 @@ describe('DanmakuExtractor', () => {
       expect(event!.danmaku!.userId).toBe(666888);
       expect(event!.danmaku!.userName).toBe('入场大佬');
       expect(event!.danmaku!.sendDate).toBe(1710000000123);
+      expect(event!.danmaku!.ct).toBeUndefined();
     } finally {
       protobuf.Type.prototype.toObject = originalToObject;
     }
@@ -213,6 +214,45 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.userId).toBe(555333);
     expect(event!.danmaku!.userName).toBe('嵌套用户名');
     expect(event!.danmaku!.sendDate).toBe(1710000000000);
+  });
+
+  it('extracts INTERACT_WORD_V2 follow and share sources', () => {
+    const follow = extractor.extract(
+      {
+        cmd: 'INTERACT_WORD_V2',
+        data: {
+          pb: encodePb(interactWordV2Type, {
+            uid: 1,
+            username: '关注',
+            msg_type: 2,
+            timestamp_ms: 1710000000123,
+          }),
+        },
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
+    const share = extractor.extract(
+      {
+        cmd: 'INTERACT_WORD_V2',
+        data: {
+          pb: encodePb(interactWordV2Type, {
+            uid: 2,
+            username: '分享',
+            msg_type: 3,
+            timestamp_ms: 1710000000123,
+          }),
+        },
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(follow!.danmaku!.msgType).toBe(2);
+    expect(follow!.danmaku!.ct).toBeUndefined();
+    expect(share!.danmaku!.msgType).toBe(3);
+    expect(share!.danmaku!.ct).toBeUndefined();
   });
 
   it('extracts USER_TOAST_MSG_V2 correctly', () => {

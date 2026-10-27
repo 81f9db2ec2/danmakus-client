@@ -618,8 +618,8 @@ describe("DanmakuClient room pull flow", () => {
       data: { cmd: "DANMU_MSG" },
     };
 
-    await client.handleMessage(message);
-    await client.handleMessage({ ...message, timestamp: message.timestamp + 1 });
+    client.recordLiveMessage(7788, "DANMU_MSG", { cmd: "DANMU_MSG" });
+    client.recordLiveMessage(7788, "DANMU_MSG", { cmd: "DANMU_MSG" });
 
     expect(client.messageCount).toBe(2);
     expect(client.getStatus().messageCmdCountMap.DANMU_MSG).toBe(2);

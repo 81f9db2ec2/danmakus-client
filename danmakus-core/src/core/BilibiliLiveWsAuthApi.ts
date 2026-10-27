@@ -1,7 +1,7 @@
 import { LiveWsRoomConfig } from '../types/index.js';
 import { mergeCookieJar, readCookieValue } from './BilibiliCookie.js';
 import { BilibiliAuthApi } from './BilibiliAuthApi.js';
-import { getStartupBilibiliUserAgent } from './BilibiliUserAgent.js';
+import { getStartupBilibiliUserAgent, populateBilibiliBrowserHeaders } from './BilibiliUserAgent.js';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -203,7 +203,6 @@ export class BilibiliLiveWsAuthApi {
     await this.warmupBiliSession();
     const query = await this.buildWbiQueryString({
       id: String(roomId),
-      isGaiaAvoided: 'true',
       type: '0',
     });
     const url = `https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?${query}`;
@@ -347,11 +346,7 @@ export class BilibiliLiveWsAuthApi {
 
   private buildBiliHeaders(): Headers {
     const headers = new Headers();
-    headers.set('User-Agent', getStartupBilibiliUserAgent());
-    headers.set('Accept', 'application/json, text/plain, */*');
-    headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8');
-    headers.set('Origin', 'https://www.bilibili.com');
-    headers.set('Referer', 'https://www.bilibili.com/');
+    populateBilibiliBrowserHeaders(headers);
 
     const cookie = this.cookieJar.trim();
     if (cookie) {
