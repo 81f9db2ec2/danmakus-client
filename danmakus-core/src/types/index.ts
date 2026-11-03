@@ -312,6 +312,9 @@ export function cloneHoldingRoomShortfall(
 
 export interface CoreRuntimeStateDto {
   clientId: string;
+  remark?: string;
+  isOnline?: boolean;
+  maxConnections?: number;
   clientVersion?: string | null;
   ip?: string | null;
   isRunning: boolean;
@@ -372,6 +375,7 @@ export type DanmakuEventMap = DanmakuClientEvents & {
 // CLI选项类型
 export interface CliOptions {
   runtimeUrl?: string;
+  clientId?: string;
   maxConnections?: number;
   capacityOverride?: number;
   cookieKey?: string;

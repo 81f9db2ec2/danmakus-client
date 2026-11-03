@@ -10,6 +10,7 @@ import { attachCliEventListeners } from './runtime.js';
 import type { CliOptions } from '../types/index.js';
 import { DEFAULT_CLI_CLIENT_VERSION, CORE_VERSION } from '../version.js';
 import { BACKEND_PRIMARY_ORIGIN } from '../core/BackendApiFallback.js';
+import { resolveClientId } from './clientId.js';
 
 const program = new Command();
 const DEFAULT_RUNTIME_URL = `${BACKEND_PRIMARY_ORIGIN}/api/v2/core-runtime`;
@@ -23,6 +24,7 @@ program
 program
   .option('-r, --runtime-url <url>', 'Runtime服务器地址（例如 https://client.danmakus.com）')
   .option('--capacity-override <number>', '上报给服务端的槽位覆盖数 (1-100)')
+  .option('--client-id <id>', '固定此客户端设备标识')
   .option('-t, --token <token>', '账号 Token（必填，用于加载远端配置）')
   .option('-k, --cookie-key <key>', 'CookieCloud密钥')
   .option('-p, --cookie-password <password>', 'CookieCloud密码')
@@ -51,6 +53,7 @@ program
       const cookieCloudPassword = options.cookiePassword || process.env.DANMAKUS_COOKIECLOUD_PASSWORD;
       const cookieCloudHost = options.cookieHost || process.env.DANMAKUS_COOKIECLOUD_HOST || DEFAULT_COOKIE_CLOUD_HOST;
       const logLevel = options.logLevel || (options.verbose ? 'debug' : 'info');
+      const clientId = await resolveClientId(options.clientId);
 
       if (capacityOverride !== undefined && (isNaN(capacityOverride) || capacityOverride < 1 || capacityOverride > 100)) {
         console.error('错误: 槽位覆盖数必须在1-100之间');
@@ -85,6 +88,7 @@ program
 
       // 创建弹幕客户端
       const client = new DanmakuClient({
+        clientId,
         // maxConnections,
         cookieProvider: () => localCookie,
         interactiveLoginProvider: createCliInteractiveLoginProvider(),

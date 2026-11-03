@@ -10,7 +10,7 @@ import {
 } from './SqliteLiveSessionOutbox.js';
 
 const DEFAULT_BUN_LIVE_SESSION_OUTBOX_PATH = resolve(
-  process.cwd(),
+  process.env.DANMAKUS_DATA_DIR || process.cwd(),
   '.danmakus',
   'danmakus-live-session-outbox-streamer.sqlite3',
 );

@@ -31,7 +31,8 @@ danmakus --token "your-account-token" -k "cookie-key" -p "cookie-password"
 
 | 参数 | 简写 | 说明 | 默认值 |
 | --- | --- | --- | --- |
-| `--max-connections <number>` | `-m` | 最大连接数，范围 `1-100` | `15` |
+| `--capacity-override <number>` | - | 本设备连接上限，范围 `1-100` | 账号配置 |
+| `--client-id <id>` | - | 固定设备标识 | 自动持久化 |
 | `--token <token>` | `-t` | 账号 Token（必填） | - |
 | `--cookie-key <key>` | `-k` | CookieCloud Key | - |
 | `--cookie-password <password>` | `-p` | CookieCloud Password | - |
@@ -44,6 +45,8 @@ danmakus --token "your-account-token" -k "cookie-key" -p "cookie-password"
 | 变量 | 说明 |
 | --- | --- |
 | `DANMAKUS_TOKEN` | 等价于 `--token` |
+| `DANMAKUS_CLIENT_ID` | 等价于 `--client-id` |
+| `DANMAKUS_DATA_DIR` | 设备标识和 SQLite 队列目录 `.danmakus` 的父目录 |
 | `DANMAKUS_COOKIECLOUD_HOST` | 等价于 `--cookie-host` |
 | `DANMAKUS_COOKIECLOUD_KEY` | 等价于 `--cookie-key` |
 | `DANMAKUS_COOKIECLOUD_PASSWORD` | 等价于 `--cookie-password` |
@@ -133,11 +136,13 @@ bun run compile
 ```bash
 # 最小启动
 docker run -d --name danmakus \
+  -v danmakus-data:/app/.danmakus \
   -e DANMAKUS_TOKEN="your-account-token" \
   ghcr.io/81f9db2ec2/danmakus-core
 
 # 使用 CookieCloud
 docker run -d --name danmakus \
+  -v danmakus-data:/app/.danmakus \
   -e DANMAKUS_TOKEN="your-account-token" \
   -e DANMAKUS_COOKIECLOUD_KEY="cookie-key" \
   -e DANMAKUS_COOKIECLOUD_PASSWORD="cookie-password" \
@@ -150,7 +155,7 @@ docker run -d --name danmakus \
 ```bash
 cd danmakus-core
 docker build -t danmakus-core .
-docker run -d --name danmakus -e DANMAKUS_TOKEN="your-token" danmakus-core
+docker run -d --name danmakus   -v danmakus-data:/app/.danmakus -e DANMAKUS_TOKEN="your-token" danmakus-core
 ```
 
 ### Docker Compose（推荐）
@@ -164,6 +169,8 @@ services:
     image: ghcr.io/81f9db2ec2/danmakus-core
     container_name: danmakus
     restart: unless-stopped
+    volumes:
+      - danmakus-data:/app/.danmakus
     environment:
       - DANMAKUS_TOKEN=your-account-token
       # DANMAKUS_COOKIECLOUD_KEY=cookie-key
@@ -176,6 +183,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 3600 danmakus
+
+volumes:
+  danmakus-data:
 ```
 
 ```bash
@@ -208,3 +218,9 @@ pm2 delete danmakus   # 删除
 pm2 save              # 保存进程列表
 pm2 startup           # 设置开机自启
 ```
+
+### 设备身份与容量
+
+CLI 自动将设备 ID 保存到 `.danmakus/client-id`，与本地 SQLite 队列位于同一目录。设置 `DANMAKUS_DATA_DIR` 可指定这两个文件的父目录。Docker 请保留 `/app/.danmakus` 数据卷，重建容器后即可沿用备注与设备身份。每个独立实例应使用不同的数据卷或设备 ID。
+
+`--client-id` 优先于 `DANMAKUS_CLIENT_ID`，未配置时使用持久化 ID。`--capacity-override 50` 可将本机容量设为 50，覆盖账号默认值，允许范围为 1–100。
