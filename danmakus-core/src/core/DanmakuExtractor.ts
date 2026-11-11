@@ -1,168 +1,68 @@
+import jsonata from 'jsonata';
 import protobuf from 'protobufjs';
 import type {
-  DanmakuExtractionRule,
-  DanmakuExtractionRuleSet,
-  DanmakuExtractionTarget,
-  DanmakuFieldSpec,
-  DanmakuFieldValueType,
-  ExtractedPayload,
   ExtractedUploadEvent,
+  JsonataExtractionRuleSetV2,
+  JsonataExtractionRuleV2,
 } from './DanmakuExtractionTypes.js';
-
-type PathKey = string | number;
-type Scalar = string | number | boolean;
-
-interface CompiledField {
-  key: string;
-  paths: PathKey[][];
-  as: DanmakuFieldValueType;
-  mul?: string;
-  div?: number;
-}
 
 interface CompiledRule {
   pattern: RegExp;
   discards: RegExp[];
-  target: DanmakuExtractionTarget;
-  protoType?: protobuf.Type;
-  protoSource: PathKey[];
-  fields: CompiledField[];
-  consts: Record<string, Scalar>;
+  expression: jsonata.Expression;
 }
 
 interface CompiledRuleSet {
   version: number;
-  exact: Map<string, CompiledRule>;
-  regex: CompiledRule[];
+  /** 按 manifest 顺序首次命中，与服务端 JsonataDanmakuExtractor 的匹配语义一致 */
+  rules: CompiledRule[];
 }
 
-function exactCmdFromPattern(pattern: string): string | null {
-  if (pattern.length < 3 || pattern[0] !== '^' || pattern[pattern.length - 1] !== '$') {
-    return null;
-  }
-  const inner = pattern.slice(1, -1);
-  return /^[A-Za-z0-9_]+$/.test(inner) ? inner : null;
+type ProtobufRoot = protobuf.Root;
+
+/** prelude 与各规则表达式拼进同一块作用域，与 C# 端 Compile 的拼装保持一致 */
+function buildExpressionSource(prelude: string | null | undefined, expression: string): string {
+  const head = prelude?.trim();
+  return head ? `(\n${head};\n${expression}\n)` : expression;
 }
 
-function ruleMatchesCmd(rule: CompiledRule, cmd: string): boolean {
-  return rule.pattern.test(cmd) && !rule.discards.some((d) => d.test(cmd));
-}
-
-function matchRule(cmd: string, exact: Map<string, CompiledRule>, regex: CompiledRule[]): CompiledRule | undefined {
-  if (!cmd) {
-    return undefined;
-  }
-  const exactRule = exact.get(cmd);
-  if (exactRule && !exactRule.discards.some((d) => d.test(cmd))) {
-    return exactRule;
-  }
-  return regex.find((rule) => ruleMatchesCmd(rule, cmd));
-}
-
-function parsePath(path: string): PathKey[] {
-  return path.split('.').map((part) => (/^\d+$/.test(part) ? Number(part) : part));
-}
-
-function resolvePath(target: unknown, path: PathKey[]): unknown {
-  let current: any = target;
-  for (const key of path) {
-    if (current == null) {
-      return undefined;
-    }
-    current = current[key];
-  }
-  return current;
-}
-
-function isPresent(value: unknown): boolean {
-  if (value === undefined || value === null || value === '') {
-    return false;
-  }
-  if (typeof value === 'object' && typeof (value as { toNumber?: unknown }).toNumber === 'function') {
-    const num = (value as { toNumber: () => number }).toNumber();
-    return Number.isFinite(num) && num !== 0;
-  }
-  return true;
-}
-
-function resolveFirst(targets: unknown[], paths: PathKey[][]): unknown {
-  for (const path of paths) {
-    for (const target of targets) {
-      const value = resolvePath(target, path);
-      if (isPresent(value)) {
-        return value;
-      }
-    }
-  }
-  return undefined;
-}
-
-function toNumber(raw: unknown): number | undefined {
-  if (typeof raw === 'number') {
-    return Number.isFinite(raw) ? raw : undefined;
-  }
-  if (typeof raw === 'string') {
-    const num = Number(raw);
-    return Number.isFinite(num) ? num : undefined;
-  }
-  if (raw && typeof raw === 'object' && typeof (raw as { toNumber?: unknown }).toNumber === 'function') {
-    const num = (raw as { toNumber: () => number }).toNumber();
-    return Number.isFinite(num) ? num : undefined;
-  }
-  return undefined;
-}
-
-function coerce(raw: unknown, as: DanmakuFieldValueType): Scalar | undefined {
-  switch (as) {
-    case 'string':
-      return typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
-    case 'int': {
-      const num = toNumber(raw);
-      return num === undefined ? undefined : Math.trunc(num);
-    }
-    case 'float':
-      return toNumber(raw);
-    case 'bool':
-      if (raw === true || raw === 1 || raw === '1' || raw === 'true') return true;
-      if (raw === false || raw === 0 || raw === '0' || raw === 'false') return false;
-      return undefined;
-    case 'hex32':
-      return typeof raw === 'string' && /^[0-9a-fA-F]{8}$/.test(raw) ? parseInt(raw, 16) : undefined;
-    case 'timestamp': {
-      const num = toNumber(raw);
-      if (num !== undefined) {
-        return num > 0
-          ? num < 10_000_000_000
-            ? num * 1000
-            : num > 10_000_000_000_000_000
-              ? Math.floor(num / 1_000_000)
-              : num
-          : undefined;
-      }
-      const parsed = typeof raw === 'string' ? Date.parse(raw) : NaN;
-      return Number.isNaN(parsed) ? undefined : parsed;
-    }
-  }
-}
-
-function compileField(key: string, spec: DanmakuFieldSpec): CompiledField {
-  const paths = spec.path.split('|').map((s) => s.trim()).filter(Boolean).map(parsePath);
-  if (paths.length === 0) {
-    throw new Error(`字段 ${key} 未定义取值路径`);
-  }
-  return { key, paths, as: spec.as ?? 'string', mul: spec.mul, div: spec.div };
-}
-
+/** proto3 JSON 常用 snake_case；动态解码产出 snake_case 字段以对齐服务端 DynamicProtobufDecoder */
 function decodeBase64(base64: string): Uint8Array {
   const bytes = new Uint8Array(protobuf.util.base64.length(base64));
   protobuf.util.base64.decode(base64, bytes, 0);
   return bytes;
 }
 
-export class DanmakuExtractor {
-  private ruleSet: CompiledRuleSet = { version: 0, exact: new Map(), regex: [] };
+function createProtobufBinding(root: ProtobufRoot): (name?: unknown, base64?: unknown) => unknown {
+  return (name?: unknown, base64?: unknown) => {
+    if (typeof name !== 'string' || typeof base64 !== 'string' || !name || !base64) {
+      return undefined;
+    }
+    let type: protobuf.Type;
+    try {
+      type = root.lookupType(name);
+    } catch {
+      return undefined;
+    }
+    try {
+      return type.toObject(type.decode(decodeBase64(base64)), {
+        longs: Number,
+        enums: Number,
+        bytes: String,
+        defaults: false,
+        arrays: true,
+        objects: true,
+      });
+    } catch {
+      return undefined;
+    }
+  };
+}
 
-  constructor(ruleSet?: DanmakuExtractionRuleSet) {
+export class DanmakuExtractor {
+  private ruleSet: CompiledRuleSet = { version: 0, rules: [] };
+
+  constructor(ruleSet?: JsonataExtractionRuleSetV2) {
     if (ruleSet) {
       this.setRules(ruleSet);
     }
@@ -173,106 +73,90 @@ export class DanmakuExtractor {
   }
 
   /** 全部编译成功后整体替换；任何一处非法都会抛错并保留旧规则 */
-  public setRules(ruleSet: DanmakuExtractionRuleSet): void {
-    const protoTypes = new Map<string, protobuf.Type>();
+  public setRules(ruleSet: JsonataExtractionRuleSetV2): void {
+    const root = new protobuf.Root();
     for (const schema of ruleSet.protobufs ?? []) {
-      protoTypes.set(schema.name, protobuf.parse(schema.proto, { keepCase: true }).root.lookupType(schema.name));
+      protobuf.parse(schema.proto, root, { keepCase: true });
     }
-    const exact = new Map<string, CompiledRule>();
-    const regex: CompiledRule[] = [];
-    for (const rule of ruleSet.rules) {
-      const compiled = this.compileRule(rule, protoTypes);
-      const cmd = exactCmdFromPattern(rule.pattern);
-      if (cmd) {
-        exact.set(cmd, compiled);
-      } else {
-        regex.push(compiled);
-      }
-    }
-    this.ruleSet = { version: ruleSet.version, exact, regex };
+    const pb = createProtobufBinding(root);
+
+    const rules: CompiledRule[] = (ruleSet.rules ?? []).map((rule) => this.compileRule(rule, ruleSet.prelude, pb));
+    this.ruleSet = { version: ruleSet.version, rules };
   }
 
-  private compileRule(rule: DanmakuExtractionRule, protoTypes: Map<string, protobuf.Type>): CompiledRule {
-    const protoType = rule.proto ? protoTypes.get(rule.proto) : undefined;
-    if (rule.proto && !protoType) {
-      throw new Error(`规则 ${rule.pattern} 引用了未定义的 protobuf: ${rule.proto}`);
-    }
+  private compileRule(
+    rule: JsonataExtractionRuleV2,
+    prelude: string | null | undefined,
+    pb: (name?: unknown, base64?: unknown) => unknown,
+  ): CompiledRule {
+    const expression = jsonata(buildExpressionSource(prelude, rule.expr));
+    expression.registerFunction('pb', pb as (...args: unknown[]) => unknown, '<ss:o>');
     return {
       pattern: new RegExp(rule.pattern),
       discards: (rule.discardPatterns ?? []).map((p) => new RegExp(p)),
-      target: rule.target,
-      protoType,
-      protoSource: parsePath(rule.protoSource ?? 'data.pb'),
-      fields: Object.entries(rule.fields ?? {}).map(([key, spec]) => compileField(key, spec)),
-      consts: rule.consts ?? {},
+      expression,
     };
   }
 
-  public extract(
-    message: any,
+  public async extract(
+    message: unknown,
     roomId: number,
     streamerUid: number,
     eventTsMs: number,
-  ): ExtractedUploadEvent | null {
-    const cmd = String(message?.cmd ?? message?.msg?.cmd ?? '');
-    const { version, exact, regex } = this.ruleSet;
-    const rule = matchRule(cmd, exact, regex);
+  ): Promise<ExtractedUploadEvent | null> {
+    return (await this.extractAll(message, roomId, streamerUid, eventTsMs))[0] ?? null;
+  }
+
+  /** 规则返回数组时每个元素各产出一条事件（如盲盒连送一条消息爆出多档） */
+  public async extractAll(
+    message: unknown,
+    roomId: number,
+    streamerUid: number,
+    eventTsMs: number,
+  ): Promise<ExtractedUploadEvent[]> {
+    const cmd = String((message as any)?.cmd ?? (message as any)?.msg?.cmd ?? '');
+    const rule = this.matchRule(cmd);
     if (!rule) {
-      return null;
+      return [];
     }
 
-    const targets = this.resolveTargets(rule, message);
-    if (!targets) {
-      return null;
+    const evaluated = await rule.expression.evaluate(message);
+    if (evaluated === undefined || evaluated === null) {
+      return [];
     }
 
-    const payload: ExtractedPayload = { ...rule.consts, ...this.extractFields(rule.fields, targets) };
-
-    return { streamerUid, eventTsMs, roomId, rulesVersion: version, [rule.target]: payload };
-  }
-
-  /** proto 规则只从解码结果取值；解码失败返回 null 丢弃事件，避免按 pb 路径读 JSON 产出空壳数据 */
-  private resolveTargets(rule: CompiledRule, message: any): unknown[] | null {
-    if (!rule.protoType) {
-      return [message, message.data];
-    }
-    const raw = resolvePath(message, rule.protoSource);
-    try {
-      const bytes = raw instanceof Uint8Array ? raw : typeof raw === 'string' && raw ? decodeBase64(raw) : null;
-      if (!bytes?.byteLength) {
-        return null;
-      }
-      return [rule.protoType.decode(bytes)];
-    } catch {
-      return null;
-    }
-  }
-
-  private extractFields(fields: CompiledField[], targets: unknown[]): Record<string, Scalar> {
-    const values: Record<string, Scalar> = {};
-    for (const field of fields) {
-      const raw = resolveFirst(targets, field.paths);
-      const value = isPresent(raw) ? coerce(raw, field.as) : undefined;
-      if (value !== undefined) {
-        values[field.key] = value;
-      }
-    }
-    // mul 引用的是其他字段变换前的值，先快照再变换，结果与字段顺序无关
-    const converted = { ...values };
-    for (const field of fields) {
-      let value = converted[field.key];
-      if (typeof value !== 'number') {
+    const items = Array.isArray(evaluated) ? evaluated : [evaluated];
+    const events: ExtractedUploadEvent[] = [];
+    for (const item of items) {
+      if (!item || typeof item !== 'object') {
         continue;
       }
-      const multiplier = field.mul ? converted[field.mul] : undefined;
-      if (typeof multiplier === 'number') {
-        value *= multiplier;
+      const event: ExtractedUploadEvent = {
+        streamerUid,
+        eventTsMs,
+        roomId,
+        rulesVersion: this.ruleSet.version,
+      };
+      if (item.danmaku && typeof item.danmaku === 'object') {
+        event.danmaku = item.danmaku;
+      } else if (item.runtimeDelta && typeof item.runtimeDelta === 'object') {
+        event.runtimeDelta = item.runtimeDelta;
+      } else if (item.lifecycleSignal && typeof item.lifecycleSignal === 'object') {
+        event.lifecycleSignal = item.lifecycleSignal;
       }
-      if (field.div) {
-        value /= field.div;
+      if (event.danmaku || event.runtimeDelta || event.lifecycleSignal) {
+        events.push(event);
       }
-      values[field.key] = value;
     }
-    return values;
+    return events;
+  }
+
+  private matchRule(cmd: string): CompiledRule | undefined {
+    if (!cmd) {
+      return undefined;
+    }
+    return this.ruleSet.rules.find(
+      (rule) => rule.pattern.test(cmd) && !rule.discards.some((d) => d.test(cmd)),
+    );
   }
 }

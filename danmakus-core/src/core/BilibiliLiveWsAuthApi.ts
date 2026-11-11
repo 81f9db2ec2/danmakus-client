@@ -1,4 +1,4 @@
-import { LiveWsRoomConfig } from '../types/index.js';
+import { type LiveWsRoomConfig } from '../types/index.js';
 import { mergeCookieJar, readCookieValue } from './BilibiliCookie.js';
 import { BilibiliAuthApi } from './BilibiliAuthApi.js';
 import { populateBilibiliBrowserHeaders } from './BilibiliUserAgent.js';
@@ -91,7 +91,7 @@ function md5Hex(input: string): string {
       const next = d;
       d = c;
       c = b;
-      const sum = (a + f + k[i] + m[g]) >>> 0;
+      const sum = (a + f + k[i]! + m[g]!) >>> 0;
       b = (b + leftRotate(sum, s[i]!)) >>> 0;
       a = next;
     }

@@ -1,4 +1,5 @@
 export { DanmakuClient } from '../core/DanmakuClient.js';
+export { createInMemoryLiveSessionOutbox } from '../core/InMemoryLiveSessionOutbox.js';
 export { BilibiliAuthApi, BilibiliQrLoginSession } from '../core/BilibiliAuthApi.js';
 export { mergeCookieJar, parseCookieHeader, readCookieValue } from '../core/BilibiliCookie.js';
 export { getStartupBilibiliUserAgent, getStartupBilibiliClientHints, populateBilibiliBrowserHeaders } from '../core/BilibiliUserAgent.js';

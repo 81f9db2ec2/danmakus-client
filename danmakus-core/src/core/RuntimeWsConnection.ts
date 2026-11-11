@@ -1,7 +1,7 @@
 import {
-  ArchiveUploadRejectedItem,
-  ArchiveUploadResponse,
-  LiveSessionOutboxItem,
+  type ArchiveUploadRejectedItem,
+  type ArchiveUploadResponse,
+  type LiveSessionOutboxItem,
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import { encodeArchiveUploadEnvelope } from './DanmakuUploadCodec.js';
@@ -14,9 +14,9 @@ import {
   encodeWsFrame,
 } from './CoreWebSocketCodec.js';
 import type {
-  DanmakuExtractionRuleSet,
   ExtractedUploadBatch,
   ExtractedUploadEvent,
+  JsonataExtractionRuleSetV2,
 } from './DanmakuExtractionTypes.js';
 import { DEFAULT_CORE_CLIENT_VERSION } from '../version.js';
 
@@ -49,7 +49,7 @@ export interface RuntimeWsConnectionOptions {
     liveStartTime?: number;
   }>) => void;
   onRoomAssignPush?: (data: ServerPushRoomAssignPayload) => void;
-  onExtractionRules?: (rules: DanmakuExtractionRuleSet) => void;
+  onExtractionRules?: (rules: JsonataExtractionRuleSetV2) => void;
   getStateReportPayload?: () => {
     holdingRooms: number[];
     connectedRooms: number[];
@@ -76,6 +76,8 @@ export class RuntimeWsConnection {
   private isConnecting = false;
   private hasConnectedOnce = false;
   private isClosedExplicitly = false;
+  /** 最近一次连接失败的原因，供上层在启动失败时报告 */
+  lastConnectError: string | null = null;
   private nextSeq = 1;
   private pingTimer?: ReturnType<typeof setTimeout>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -136,11 +138,12 @@ export class RuntimeWsConnection {
 
       const connected = await new Promise<boolean>((resolve) => {
         let settled = false;
-        const settle = (value: boolean) => {
+        const settle = (value: boolean, reason?: string) => {
           if (settled) {
             return;
           }
           settled = true;
+          this.lastConnectError = value ? null : reason ?? '连接被关闭';
           clearTimeout(timeout);
           resolve(value);
         };
@@ -151,7 +154,7 @@ export class RuntimeWsConnection {
           } catch {
             // ignore
           }
-          settle(false);
+          settle(false, 'WebSocket 连接/鉴权超时');
         }, WS_CONNECT_TIMEOUT_MS);
 
         ws.onopen = async () => {
@@ -160,12 +163,13 @@ export class RuntimeWsConnection {
               token: this.options.token,
               clientId: this.options.clientId,
               version: this.options.version || DEFAULT_CORE_CLIENT_VERSION,
+              rulesFormat: 2,
             });
             const frame = encodeWsFrame(CoreWsOpCode.CLIENT_AUTH, 0, authPayload);
             ws.send(frame as any);
           } catch (err) {
             this.logger.error('发送鉴权帧失败', err);
-            settle(false);
+            settle(false, `发送鉴权帧失败: ${err instanceof Error ? err.message : String(err)}`);
           }
         };
 
@@ -179,17 +183,17 @@ export class RuntimeWsConnection {
                 success: boolean;
                 serverTime: number;
                 error?: string;
-                extractionRules?: DanmakuExtractionRuleSet;
+                extractionRulesV2?: JsonataExtractionRuleSetV2;
               }>(frame.payload);
               if (result.success) {
                 // 规则非法时 setRules 抛错：先应用规则再置连接态，避免半连接（isConnected=true 但从不 settle）
-                if (result.extractionRules) {
+                if (result.extractionRulesV2) {
                   try {
-                    this.options.onExtractionRules?.(result.extractionRules);
+                    this.options.onExtractionRules?.(result.extractionRulesV2);
                   } catch (error) {
                     this.logger.error('服务端解析规则无效，放弃本次连接', error);
                     ws.close();
-                    settle(false);
+                    settle(false, '服务端解析规则无效');
                     return;
                   }
                 }
@@ -208,7 +212,7 @@ export class RuntimeWsConnection {
               } else {
                 this.logger.error(`WebSocket 鉴权拒绝: ${result.error}`);
                 ws.close();
-                settle(false);
+                settle(false, `鉴权被拒绝: ${result.error}`);
               }
               return;
             }

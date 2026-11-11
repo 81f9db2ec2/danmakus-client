@@ -1,8 +1,8 @@
 import {
-  BiliAuthProfile,
-  BiliFollowingUser,
-  BilibiliQrLoginPollResult,
-  BilibiliQrLoginSessionInfo,
+  type BiliAuthProfile,
+  type BiliFollowingUser,
+  type BilibiliQrLoginPollResult,
+  type BilibiliQrLoginSessionInfo,
 } from '../types/index.js';
 import { mergeCookieJar } from './BilibiliCookie.js';
 import { wrapBilibiliFetch } from './BilibiliUserAgent.js';

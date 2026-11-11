@@ -1,4 +1,4 @@
-import { CookieCloudResponse } from '../types/index.js';
+import { type CookieCloudResponse } from '../types/index.js';
 
 export class CookieManager {
   private cookies: string = '';
@@ -120,11 +120,9 @@ export class CookieManager {
     const bilibiliDomains = ['.bilibili.com', 'bilibili.com', '.live.bilibili.com'];
     const cookiePairs: string[] = [];
 
-    for (const domain in data.cookie_data) {
+    for (const [domain, cookies] of Object.entries(data.cookie_data)) {
       if (bilibiliDomains.some(bilibiliDomain => domain.includes(bilibiliDomain))) {
-        for (const cookieName in data.cookie_data[domain]) {
-          const cookie = data.cookie_data[domain][cookieName];
-
+        for (const cookie of Object.values(cookies)) {
           // 检查Cookie是否过期
           if (cookie.expires && cookie.expires < Date.now() / 1000) {
             continue;

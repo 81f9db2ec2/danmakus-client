@@ -1,4 +1,4 @@
-import { LogLevel } from '../types/index.js';
+import { type LogLevel } from '../types/index.js';
 
 const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
   debug: 10,

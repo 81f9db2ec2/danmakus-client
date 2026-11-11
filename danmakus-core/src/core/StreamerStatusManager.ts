@@ -1,18 +1,9 @@
-import { StreamerStatus } from '../types/index.js';
+import { type StreamerStatus } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import { fetchBackendApiWithFallback } from './BackendApiFallback.js';
-import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
+import { resolveStreamerStatusBaseUrl } from './CoreRuntimeUrl.js';
 import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 import { wrapBilibiliFetch } from './BilibiliUserAgent.js';
-
-// streamer-status 与 core-runtime 同源同路径前缀，统一从共享解析的 base 派生，避免 host/版本路径漏改。
-const buildStreamerStatusApiUrl = (runtimeUrl: string): string => {
-  const base = resolveCoreRuntimeBaseUrl(runtimeUrl);
-  if (base.endsWith('/api/v2/core-runtime')) {
-    return base.replace(/\/api\/v2\/core-runtime$/, '/api/v2/streamer-status');
-  }
-  return base.replace(/\/api\/core-runtime$/, '/api/streamer-status');
-};
 
 const normalizeRoomIds = (rooms: number[]): number[] => Array.from(new Set(
   rooms
@@ -42,7 +33,7 @@ export class StreamerStatusManager {
     endpoints?: RuntimeEndpoints
   ) {
     this.fetch = wrapBilibiliFetch(fetchImpl);
-    this.resolvedStatusApiUrl = buildStreamerStatusApiUrl(runtimeUrl);
+    this.resolvedStatusApiUrl = resolveStreamerStatusBaseUrl(runtimeUrl);
     this.endpoints = endpoints;
   }
 

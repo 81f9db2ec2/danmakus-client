@@ -1,14 +1,17 @@
 {
   "name": "danmakus-client",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "sync:version": "bun run scripts/sync-version.ts",
     "build": "bun run sync:version && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "bun run sync:version && tauri"
+    "tauri": "bun run sync:version && tauri",
+    "ext:dev": "bun run --cwd extension dev",
+    "ext:build": "bun run sync:version && bun run --cwd danmakus-core build && bun run --cwd extension build",
+    "ext:zip": "bun run sync:version && bun run --cwd danmakus-core build && bun run --cwd extension zip"
   },
   "dependencies": {
     "@laplace.live/ws": "^8.1.0",

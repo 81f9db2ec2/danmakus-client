@@ -1,4 +1,4 @@
-import { DanmakuConfig, CliOptions, CoreControlConfigDto } from '../types/index.js';
+import { type DanmakuConfig, type CliOptions, type CoreControlConfigDto } from '../types/index.js';
 import { BACKEND_PRIMARY_ORIGIN } from './BackendApiFallback.js';
 
 const DEFAULT_COOKIE_CLOUD_HOST = 'https://cookie.danmakus.com';

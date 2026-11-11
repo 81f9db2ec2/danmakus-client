@@ -28,4 +28,13 @@ tauriConfig.version = version;
 writeFileSync(cargoTomlPath, nextCargoToml);
 writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
 
+const extensionPackageJsonPath = join(rootDir, 'extension', 'package.json');
+const extensionPackageJson = JSON.parse(readFileSync(extensionPackageJsonPath, 'utf8')) as {
+  version?: string;
+};
+if (extensionPackageJson.version !== version) {
+  extensionPackageJson.version = version;
+  writeFileSync(extensionPackageJsonPath, `${JSON.stringify(extensionPackageJson, null, 2)}\n`);
+}
+
 console.log(`Synced client version to ${version}`);

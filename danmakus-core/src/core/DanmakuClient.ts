@@ -13,21 +13,21 @@ import { DanmakuHoldingRoomCoordinator } from './DanmakuHoldingRoomCoordinator.j
 import { DanmakuControlState } from './DanmakuControlState.js';
 import { DanmakuExtractor } from './DanmakuExtractor.js';
 import {
-  DanmakuMessage,
-  DanmakuClientEvents,
-  DanmakuConfig,
-  CliOptions,
-  CoreControlConfigDto,
-  CoreControlStateSnapshot,
-  LiveWsConnection,
-  LiveWsRoomConfig,
-  StreamerStatus,
-  CoreSyncTagSnapshot,
-  CoreRuntimeStateDto,
-  ErrorCategory,
-  ClientErrorRecord,
-  RecordingInfoDto,
-  UserInfo,
+  type DanmakuMessage,
+  type DanmakuClientEvents,
+  type DanmakuConfig,
+  type CliOptions,
+  type CoreControlConfigDto,
+  type CoreControlStateSnapshot,
+  type LiveWsConnection,
+  type LiveWsRoomConfig,
+  type StreamerStatus,
+  type CoreSyncTagSnapshot,
+  type CoreRuntimeStateDto,
+  type ErrorCategory,
+  type ClientErrorRecord,
+  type RecordingInfoDto,
+  type UserInfo,
   cloneHoldingRoomShortfall,
 } from '../types/index.js';
 import { ScopedLogger, normalizeLogLevel } from './Logger.js';
@@ -112,6 +112,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private recordingRoomIds: number[] = [];
   private messageQueue: DanmakuMessageQueue;
   private readonly danmakuExtractor = new DanmakuExtractor();
+  /** JSONata 求值是异步的，串成一条链保证事件按到达顺序入队 */
+  private extractionChain: Promise<void> = Promise.resolve();
   private isStopping = false;
   private messageCount = 0;
   private messageCmdCountMap: Record<string, number> = {};
@@ -385,7 +387,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       const runtimeConnection = this.ensureRuntimeConnection();
       const runtimeConnected = await runtimeConnection.connect();
       if (!runtimeConnected) {
-        throw new Error('无法连接到Runtime服务器');
+        throw new Error(`无法连接到 Runtime 服务器: ${runtimeConnection.getLastConnectError() ?? '未知原因'}`);
       }
 
       this.isRunning = true;
@@ -405,8 +407,9 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
     } catch (error) {
       this.logger.error('启动弹幕客户端失败:', error);
-      this.recordError(error, { category: 'config', code: 'CLIENT_START_FAILED' });
+      // stop() 会清空 activeError，必须在其后记录，否则调用方从 getStatus().lastError 永远看不到失败原因
       await this.stop({ suppressReleaseErrors: true });
+      this.recordError(error, { category: 'config', code: 'CLIENT_START_FAILED' });
       throw error;
     }
   }
@@ -978,19 +981,16 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       return;
     }
 
-    try {
-      const extracted = this.danmakuExtractor.extract(
-        data,
-        roomId,
-        streamerUid,
-        this.getEventTimestamp(),
-      );
-      if (extracted) {
-        this.messageQueue.enqueueExtractedEvent(extracted);
+    const eventTsMs = this.getEventTimestamp();
+    this.extractionChain = this.extractionChain.then(async () => {
+      try {
+        for (const extracted of await this.danmakuExtractor.extractAll(data, roomId, streamerUid, eventTsMs)) {
+          this.messageQueue.enqueueExtractedEvent(extracted);
+        }
+      } catch (extractError) {
+        this.logger.warn(`提取房间 ${roomId} 消息失败:`, extractError);
       }
-    } catch (extractError) {
-      this.logger.warn(`提取房间 ${roomId} 消息失败:`, extractError);
-    }
+    });
   }
 
   private recordLiveMessage(roomId: number, cmd: string, data: unknown): void {
@@ -1621,7 +1621,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
     const connected = await this.runtimeConnection.connect();
     if (!connected) {
-      throw new Error('配置热更新后无法连接Runtime');
+      throw new Error(`配置热更新后无法连接 Runtime: ${this.runtimeConnection.getLastConnectError() ?? '未知原因'}`);
     }
 
     this.reportHoldingRoomState('runtime-rebuild', { force: true });
@@ -1829,12 +1829,12 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     }
   }
 
-  emit<K extends keyof DanmakuClientEvents>(
+  override emit<K extends keyof DanmakuClientEvents>(
     event: K,
     ...args: Parameters<DanmakuClientEvents[K]>
   ): boolean;
-  emit(event: string, message: DanmakuMessage): boolean;
-  emit(event: any, ...args: any[]): boolean {
+  override emit(event: string, message: DanmakuMessage): boolean;
+  override emit(event: any, ...args: any[]): boolean {
     return super.emit(event, ...args);
   }
 }

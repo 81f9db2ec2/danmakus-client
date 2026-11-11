@@ -22,7 +22,7 @@ function encodePb(type: protobuf.Type, obj: any): string {
 describe('DanmakuExtractor', () => {
   const extractor = new DanmakuExtractor(SERVER_EXTRACTION_RULE_SET);
 
-  it('extracts standard DANMU_MSG correctly', () => {
+  it('extracts standard DANMU_MSG correctly', async () => {
     const rawMsg = {
       cmd: 'DANMU_MSG',
       info: [
@@ -45,7 +45,7 @@ describe('DanmakuExtractor', () => {
       ],
     };
 
-    const event = extractor.extract(rawMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(rawMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.roomId).toBe(1001);
     expect(event!.streamerUid).toBe(8888);
@@ -59,7 +59,7 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.userCrc32).toBe(0xa1b2c3d4);
   });
 
-  it('extracts DANMU_MSG with protocol version suffix like DANMU_MSG:4:0:2:2:2:0', () => {
+  it('extracts DANMU_MSG with protocol version suffix like DANMU_MSG:4:0:2:2:2:0', async () => {
     const rawMsg = {
       cmd: 'DANMU_MSG:4:0:2:2:2:0',
       info: [
@@ -69,14 +69,14 @@ describe('DanmakuExtractor', () => {
       ],
     };
 
-    const event = extractor.extract(rawMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(rawMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.danmaku!.type).toBe(0);
     expect(event!.danmaku!.message).toBe('弹幕内容');
     expect(event!.danmaku!.userId).toBe(99999);
   });
 
-  it('discards DANMU_MSG_MIRROR (cross-room relay)', () => {
+  it('discards DANMU_MSG_MIRROR (cross-room relay)', async () => {
     const mirrorMsg = {
       cmd: 'DANMU_MSG_MIRROR',
       info: [
@@ -86,11 +86,11 @@ describe('DanmakuExtractor', () => {
       ],
     };
 
-    const event = extractor.extract(mirrorMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(mirrorMsg, 1001, 8888, 1710000000000);
     expect(event).toBeNull();
   });
 
-  it('extracts SEND_GIFT correctly', () => {
+  it('extracts SEND_GIFT correctly', async () => {
     const giftMsg = {
       cmd: 'SEND_GIFT',
       data: {
@@ -103,7 +103,7 @@ describe('DanmakuExtractor', () => {
       },
     };
 
-    const event = extractor.extract(giftMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(giftMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.danmaku!.type).toBe(1);
     expect(event!.danmaku!.message).toBe('小心心');
@@ -113,7 +113,7 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.userName).toBe('送礼人');
   });
 
-  it('extracts SEND_GIFT_V2 purely from decoded protobuf object', () => {
+  it('extracts SEND_GIFT_V2 purely from decoded protobuf object', async () => {
     const pbBase64 = encodePb(sendGiftV2Type, {
       uid: 998877,
       u_name: 'V2送礼者',
@@ -136,7 +136,7 @@ describe('DanmakuExtractor', () => {
       },
     };
 
-    const event = extractor.extract(giftV2Msg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(giftV2Msg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.danmaku!.type).toBe(1);
     expect(event!.danmaku!.userId).toBe(998877);
@@ -147,48 +147,33 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.sendDate).toBe(1710000000000);
   });
 
-  it('extracts INTERACT_WORD_V2 purely from decoded protobuf object', () => {
-    const originalToObject = protobuf.Type.prototype.toObject;
-    let toObjectCalls = 0;
-    protobuf.Type.prototype.toObject = function toObjectSpy(
-      this: protobuf.Type,
-      ...args: Parameters<typeof originalToObject>
-    ) {
-      toObjectCalls += 1;
-      return originalToObject.apply(this, args);
-    };
+  it('extracts INTERACT_WORD_V2 purely from decoded protobuf object', async () => {
+    const pbBase64 = encodePb(interactWordV2Type, {
+      uid: 666888,
+      username: '入场大佬',
+      timestamp: 1710000000,
+      timestamp_ms: 1710000000123,
+    });
 
-    try {
-      const pbBase64 = encodePb(interactWordV2Type, {
-        uid: 666888,
-        username: '入场大佬',
-        timestamp: 1710000000,
-        timestamp_ms: 1710000000123,
-      });
+    const event = await extractor.extract(
+      {
+        cmd: 'INTERACT_WORD_V2',
+        data: { pb: pbBase64 },
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
 
-      const event = extractor.extract(
-        {
-          cmd: 'INTERACT_WORD_V2',
-          data: { pb: pbBase64 },
-        },
-        1001,
-        8888,
-        1710000000000,
-      );
-
-      expect(toObjectCalls).toBe(0);
-      expect(event).not.toBeNull();
-      expect(event!.danmaku!.type).toBe(4);
-      expect(event!.danmaku!.userId).toBe(666888);
-      expect(event!.danmaku!.userName).toBe('入场大佬');
-      expect(event!.danmaku!.sendDate).toBe(1710000000123);
-      expect(event!.danmaku!.ct).toBeUndefined();
-    } finally {
-      protobuf.Type.prototype.toObject = originalToObject;
-    }
+    expect(event).not.toBeNull();
+    expect(event!.danmaku!.type).toBe(4);
+    expect(event!.danmaku!.userId).toBe(666888);
+    expect(event!.danmaku!.userName).toBe('入场大佬');
+    expect(event!.danmaku!.sendDate).toBe(1710000000123);
+    expect(event!.danmaku!.ct).toBeUndefined();
   });
 
-  it('extracts INTERACT_WORD_V2 with username from nested uinfo.base when top username is empty', () => {
+  it('extracts INTERACT_WORD_V2 with username from nested uinfo.base when top username is empty', async () => {
     const pbBase64 = encodePb(interactWordV2Type, {
       uid: 555333,
       username: '',
@@ -209,15 +194,15 @@ describe('DanmakuExtractor', () => {
       },
     };
 
-    const event = extractor.extract(enterMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(enterMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.danmaku!.userId).toBe(555333);
     expect(event!.danmaku!.userName).toBe('嵌套用户名');
     expect(event!.danmaku!.sendDate).toBe(1710000000000);
   });
 
-  it('extracts INTERACT_WORD_V2 follow and share sources', () => {
-    const follow = extractor.extract(
+  it('extracts INTERACT_WORD_V2 follow and share sources', async () => {
+    const follow = await extractor.extract(
       {
         cmd: 'INTERACT_WORD_V2',
         data: {
@@ -233,7 +218,7 @@ describe('DanmakuExtractor', () => {
       8888,
       1710000000000,
     );
-    const share = extractor.extract(
+    const share = await extractor.extract(
       {
         cmd: 'INTERACT_WORD_V2',
         data: {
@@ -255,7 +240,7 @@ describe('DanmakuExtractor', () => {
     expect(share!.danmaku!.ct).toBeUndefined();
   });
 
-  it('extracts USER_TOAST_MSG_V2 correctly', () => {
+  it('extracts USER_TOAST_MSG_V2 correctly', async () => {
     const toastMsg = {
       cmd: 'USER_TOAST_MSG_V2',
       data: {
@@ -282,7 +267,7 @@ describe('DanmakuExtractor', () => {
       },
     };
 
-    const event = extractor.extract(toastMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(toastMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.danmaku!.type).toBe(2);
     expect(event!.danmaku!.userId).toBe(10001);
@@ -293,8 +278,8 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.sendDate).toBe(1710000000000);
   });
 
-  it('ignores GUARD_BUY', () => {
-    const event = extractor.extract({
+  it('ignores GUARD_BUY', async () => {
+    const event = await extractor.extract({
       cmd: 'GUARD_BUY',
       data: {
         uid: 10001,
@@ -309,8 +294,8 @@ describe('DanmakuExtractor', () => {
     expect(event).toBeNull();
   });
 
-  it('extracts USER_TOAST_MSG as fallback guard', () => {
-    const event = extractor.extract({
+  it('extracts USER_TOAST_MSG as fallback guard', async () => {
+    const event = await extractor.extract({
       cmd: 'USER_TOAST_MSG',
       data: {
         uid: 10001,
@@ -328,8 +313,8 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.price).toBe(1598);
   });
 
-  it('extracts USER_TOAST_MSG_V2 guard level when role name is missing', () => {
-    const event = extractor.extract({
+  it('extracts USER_TOAST_MSG_V2 guard level when role name is missing', async () => {
+    const event = await extractor.extract({
       cmd: 'USER_TOAST_MSG_V2',
       data: {
         sender_uinfo: { uid: 10001, base: { name: 'user-a' } },
@@ -344,7 +329,7 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.price).toBe(1598);
   });
 
-  it('extracts SUPER_CHAT_MESSAGE correctly', () => {
+  it('extracts SUPER_CHAT_MESSAGE correctly', async () => {
     const scMsg = {
       cmd: 'SUPER_CHAT_MESSAGE',
       data: {
@@ -358,7 +343,7 @@ describe('DanmakuExtractor', () => {
       },
     };
 
-    const event = extractor.extract(scMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(scMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
     expect(event!.danmaku!.type).toBe(3);
     expect(event!.danmaku!.message).toBe('老板发财');
@@ -367,14 +352,14 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.userName).toBe('醒目留言者');
   });
 
-  it('extracts WATCHED_CHANGE, LIKE_INFO_V3_UPDATE and ONLINE_RANK_COUNT as RuntimeDelta', () => {
+  it('extracts WATCHED_CHANGE, LIKE_INFO_V3_UPDATE and ONLINE_RANK_COUNT as RuntimeDelta', async () => {
     const watchMsg = {
       cmd: 'WATCHED_CHANGE',
       data: {
         num: 12345,
       },
     };
-    const watchEvent = extractor.extract(watchMsg, 1001, 8888, 1710000000000);
+    const watchEvent = await extractor.extract(watchMsg, 1001, 8888, 1710000000000);
     expect(watchEvent).not.toBeNull();
     expect(watchEvent!.runtimeDelta).toBeDefined();
     expect(watchEvent!.runtimeDelta!.watchCount).toBe(12345);
@@ -385,7 +370,7 @@ describe('DanmakuExtractor', () => {
         click_count: 9999,
       },
     };
-    const likeEvent = extractor.extract(likeMsg, 1001, 8888, 1710000000000);
+    const likeEvent = await extractor.extract(likeMsg, 1001, 8888, 1710000000000);
     expect(likeEvent).not.toBeNull();
     expect(likeEvent!.runtimeDelta).toBeDefined();
     expect(likeEvent!.runtimeDelta!.likeCount).toBe(9999);
@@ -397,7 +382,7 @@ describe('DanmakuExtractor', () => {
         online_count: 1234,
       },
     };
-    const onlineRankEvent = extractor.extract(onlineRankMsg, 1001, 8888, 1710000000000);
+    const onlineRankEvent = await extractor.extract(onlineRankMsg, 1001, 8888, 1710000000000);
     expect(onlineRankEvent).not.toBeNull();
     expect(onlineRankEvent!.runtimeDelta).toBeDefined();
     expect(onlineRankEvent!.runtimeDelta!.onlineRank).toBe(1234);
@@ -407,30 +392,30 @@ describe('DanmakuExtractor', () => {
     [{ count: 7 }, undefined],
     [{ count: 7, online_count: 0 }, 0],
     [{ count: 7, online_count: 234 }, 234],
-  ])('extracts only the current online count from %j', (data, expected) => {
-    const event = extractor.extract({ cmd: 'ONLINE_RANK_COUNT', data }, 1001, 8888, 1710000000000);
+  ])('extracts only the current online count from %j', async (data, expected) => {
+    const event = await extractor.extract({ cmd: 'ONLINE_RANK_COUNT', data }, 1001, 8888, 1710000000000);
     expect(event?.runtimeDelta?.onlineRank).toBe(expected);
   });
 
-  it('extracts PREPARING lifecycle signal', () => {
+  it('extracts PREPARING lifecycle signal', async () => {
     const prepMsg = {
       cmd: 'PREPARING',
       data: {
         live_key: 'live_123',
       },
     };
-    const event = extractor.extract(prepMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(prepMsg, 1001, 8888, 1710000000000);
     expect(event!.lifecycleSignal).toEqual({ stopLive: true, liveId: 'live_123' });
-    expect(extractor.extract({ cmd: 'LIVE', data: { live_key: 'k' } }, 1001, 8888, 1)!.lifecycleSignal).toEqual({ liveId: 'k' });
+    expect((await extractor.extract({ cmd: 'LIVE', data: { live_key: 'k' } }, 1001, 8888, 1))!.lifecycleSignal).toEqual({ liveId: 'k' });
   });
 
-  it('stamps every event with the rule set version', () => {
-    const event = extractor.extract({ cmd: 'WATCHED_CHANGE', data: { num: 1 } }, 1001, 8888, 1);
+  it('stamps every event with the rule set version', async () => {
+    const event = await extractor.extract({ cmd: 'WATCHED_CHANGE', data: { num: 1 } }, 1001, 8888, 1);
     expect(event!.rulesVersion).toBe(SERVER_EXTRACTION_RULE_SET.version);
   });
 
-  it('forwards room emoji parts for the server to compose', () => {
-    const event = extractor.extract(
+  it('forwards room emoji parts for the server to compose', async () => {
+    const event = await extractor.extract(
       {
         cmd: 'DANMU_MSG',
         info: [
@@ -446,31 +431,32 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku).toMatchObject({ isEmoji: true, roomEmojiName: 'room_1_e', roomEmojiUrl: 'https://e.png' });
   });
 
-  it('discards unknown spam packets like HOT_ROOM_NOTIFY and WIDGET_BANNER', () => {
-    expect(extractor.extract({ cmd: 'HOT_ROOM_NOTIFY', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
-    expect(extractor.extract({ cmd: 'WIDGET_BANNER', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
+  it('discards unknown spam packets like HOT_ROOM_NOTIFY and WIDGET_BANNER', async () => {
+    expect(await extractor.extract({ cmd: 'HOT_ROOM_NOTIFY', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
+    expect(await extractor.extract({ cmd: 'WIDGET_BANNER', data: {} }, 1001, 8888, 1710000000000)).toBeNull();
   });
 
-  it('supports dynamically adding a custom type (e.g. type 13) via rules with zero client code change', () => {
+  it('supports dynamically adding a custom type (e.g. type 13) via rules with zero client code change', async () => {
     const customExtractor = new DanmakuExtractor();
     customExtractor.setRules({
       version: 999,
       rules: [
         {
           pattern: '^CUSTOM_CRIT_EVENT$',
-          target: 'danmaku',
-          consts: { type: 13 },
-          fields: {
-            userId: { path: 'data.player_id', as: 'int' },
-            userName: { path: 'data.player_name' },
-            message: { path: 'data.crit_text' },
-            price: { path: 'data.cost', as: 'float' },
-          },
+          expr: `{
+            "danmaku": {
+              "type": 13,
+              "userId": $number(data.player_id),
+              "userName": data.player_name,
+              "message": data.crit_text,
+              "price": $number(data.cost)
+            }
+          }`,
         },
       ],
     });
 
-    const event = customExtractor.extract(
+    const event = await customExtractor.extract(
       {
         cmd: 'CUSTOM_CRIT_EVENT',
         data: {
@@ -493,48 +479,39 @@ describe('DanmakuExtractor', () => {
     expect(event!.danmaku!.price).toBe(5);
   });
 
-  it('coerces values per field spec and falls back to string', () => {
-    const coercer = new DanmakuExtractor({
+  it('evaluates rule output as-is without client-side coercion layers', async () => {
+    const evaluator = new DanmakuExtractor({
       version: 7,
       rules: [
         {
           pattern: '^RAW$',
-          target: 'danmaku',
-          fields: {
-            id: { path: 'data.id', as: 'int' },
-            cost: { path: 'data.cost', as: 'float', mul: 'n', div: 10 },
-            n: { path: 'data.n', as: 'int' },
-            flag: { path: 'data.flag', as: 'bool' },
-            blob: { path: 'data.blob' },
-            bad: { path: 'data.bad', as: 'int' },
-          },
+          expr: `{
+            "danmaku": {
+              "type": 0,
+              "userId": $number(data.id),
+              "message": $string(data.blob.a[0])
+            }
+          }`,
         },
       ],
     });
-    const event = coercer.extract(
-      { cmd: 'RAW', data: { id: '42', cost: '5', n: '3', flag: 1, blob: { a: [1] }, bad: 'x' } },
-      1,
-      1,
-      1,
-    );
-    expect(event!.danmaku!).toEqual({ id: 42, cost: 1.5, n: 3, flag: true, blob: '{"a":[1]}' });
+    const event = await evaluator.extract({ cmd: 'RAW', data: { id: '42', blob: { a: [1] } } }, 1, 1, 1);
+    expect(event!.danmaku!).toEqual({ type: 0, userId: 42, message: '1' });
     expect(event!.rulesVersion).toBe(7);
   });
 
-  it('drops the event when protobuf decoding fails', () => {
-    expect(extractor.extract({ cmd: 'SEND_GIFT_V2', data: { pb: '!!not-pb!!' } }, 1, 1, 1)).toBeNull();
+  it('drops the event when protobuf decoding fails', async () => {
+    expect(await extractor.extract({ cmd: 'SEND_GIFT_V2', data: { pb: '!!not-pb!!' } }, 1, 1, 1)).toBeNull();
   });
 
-  it('rejects invalid rule sets atomically and keeps previous rules', () => {
+  it('rejects invalid rule sets atomically and keeps previous rules', async () => {
     const guarded = new DanmakuExtractor(SERVER_EXTRACTION_RULE_SET);
-    expect(() => guarded.setRules({ version: 99, rules: [{ pattern: '(', target: 'danmaku' }] })).toThrow();
-    expect(() =>
-      guarded.setRules({ version: 99, rules: [{ pattern: '^X$', target: 'danmaku', proto: 'missing.Type', protoSource: 'data.pb' }] }),
-    ).toThrow();
-    expect(guarded.extract({ cmd: 'WATCHED_CHANGE', data: { num: 1 } }, 1, 1, 1)!.rulesVersion).toBe(SERVER_EXTRACTION_RULE_SET.version);
+    expect(() => guarded.setRules({ version: 99, rules: [{ pattern: '(', expr: '{}' }] })).toThrow();
+    expect(() => guarded.setRules({ version: 99, rules: [{ pattern: '^X$', expr: '{"danmaku": {' }] })).toThrow();
+    expect((await guarded.extract({ cmd: 'WATCHED_CHANGE', data: { num: 1 } }, 1, 1, 1))!.rulesVersion).toBe(SERVER_EXTRACTION_RULE_SET.version);
   });
 
-  it('supports dynamically injecting a brand-new protobuf schema from server with zero client code change', () => {
+  it('supports dynamically injecting a brand-new protobuf schema from server with zero client code change', async () => {
     const dynamicExtractor = new DanmakuExtractor();
     const testProto = `
 syntax = "proto3";
@@ -565,21 +542,23 @@ message BossRaidEvent {
       rules: [
         {
           pattern: '^BOSS_RAID_V2$',
-          target: 'danmaku',
-          consts: { type: 20 },
-          proto: 'custom.game.BossRaidEvent',
-          protoSource: 'data.pb',
-          fields: {
-            userId: { path: 'player_uid', as: 'int' },
-            userName: { path: 'player_uname' },
-            message: { path: 'skill_name' },
-            price: { path: 'damage', as: 'float' },
-          },
+          expr: `(
+            $m := $pb("custom.game.BossRaidEvent", data.pb);
+            $m ? {
+              "danmaku": {
+                "type": 20,
+                "userId": $number($m.player_uid),
+                "userName": $m.player_uname,
+                "message": $m.skill_name,
+                "price": $number($m.damage)
+              }
+            }
+          )`,
         },
       ],
     });
 
-    const event = dynamicExtractor.extract(
+    const event = await dynamicExtractor.extract(
       {
         cmd: 'BOSS_RAID_V2',
         data: {
@@ -599,7 +578,7 @@ message BossRaidEvent {
     expect(event!.danmaku!.price).toBe(99999);
   });
 
-  it('extracts INTERACT_WORD_V2 cleanly when Buffer is undefined (browser/Tauri webview environment)', () => {
+  it('extracts INTERACT_WORD_V2 cleanly when Buffer is undefined (browser/Tauri webview environment)', async () => {
     // 提前在有环境时生成 base64 pb 字符串
     const pbBase64 = encodePb(interactWordV2Type, {
       uid: 777666,
@@ -619,7 +598,7 @@ message BossRaidEvent {
         },
       };
 
-      const event = extractor.extract(enterMsg, 1001, 8888, 1710000000000);
+      const event = await extractor.extract(enterMsg, 1001, 8888, 1710000000000);
       expect(event).not.toBeNull();
       expect(event!.danmaku!.userId).toBe(777666);
       expect(event!.danmaku!.userName).toBe('无Buffer环境用户');
@@ -629,7 +608,7 @@ message BossRaidEvent {
     }
   });
 
-  it('serializes and deserializes ExtractedUploadEvent via MessagePack seamlessly', () => {
+  it('serializes and deserializes ExtractedUploadEvent via MessagePack seamlessly', async () => {
     const rawMsg = {
       cmd: 'DANMU_MSG',
       info: [
@@ -639,7 +618,7 @@ message BossRaidEvent {
       ],
     };
 
-    const event = extractor.extract(rawMsg, 1001, 8888, 1710000000000);
+    const event = await extractor.extract(rawMsg, 1001, 8888, 1710000000000);
     expect(event).not.toBeNull();
 
     const encoded = encodeMsgPackPayload(event);
@@ -650,147 +629,174 @@ message BossRaidEvent {
     expect(decoded!.danmaku!.message).toBe('测试MessagePack序列化');
   });
 
-  it('does not extract anything before server rules arrive',
-    () => {
-      const idle = new DanmakuExtractor();
-      expect(idle.extract({ cmd: 'DANMU_MSG', info: [[], 'x', [1, 'a']] }, 1, 1, 1)).toBeNull();
-    },
-  );
+  it('does not extract anything before server rules arrive', async () => {
+    const idle = new DanmakuExtractor();
+    expect(await idle.extract({ cmd: 'DANMU_MSG', info: [[], 'x', [1, 'a']] }, 1, 1, 1)).toBeNull();
+  });
 
-  it('extracts SEND_GIFT mystery box name and price from blind_gift',
-    () => {
-      const event = extractor.extract(
+  it('extracts SEND_GIFT mystery box name and price from blind_gift', async () => {
+    const event = await extractor.extract(
+      {
+        cmd: 'SEND_GIFT',
+        data: {
+          uid: 1,
+          uname: '盲盒用户',
+          giftName: '小花花',
+          num: 1,
+          price: 100,
+          coin_type: 'gold',
+          timestamp: 1710000000,
+          blind_gift: {
+            original_gift_name: '4000点心盒',
+            original_gift_price: 4000000,
+            gift_tip_price: 100,
+          },
+        },
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(event?.danmaku?.message).toBe('小花花');
+    expect(event?.danmaku?.price).toBe(0.1);
+    expect(event?.danmaku?.mysteryBoxName).toBe('4000点心盒');
+    expect(event?.danmaku?.mysteryBoxPrice).toBe(4000);
+  });
+
+  it('forwards SEND_GIFT coinType=silver for the server to zero price', async () => {
+    const event = await extractor.extract(
+      {
+        cmd: 'SEND_GIFT',
+        data: {
+          uid: 2,
+          uname: '银瓜子',
+          giftName: '辣条',
+          num: 10,
+          price: 100,
+          coin_type: 'silver',
+          timestamp: 1710000000,
+        },
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(event?.danmaku?.message).toBe('辣条');
+    expect(event?.danmaku?.coinType).toBe('silver');
+    expect(event?.danmaku?.price).toBe(1);
+  });
+
+  it('extracts SEND_GIFT_V2 mystery box from protobuf', async () => {
+    const pbBase64 = encodePb(sendGiftV2Type, {
+      uid: 3,
+      u_name: 'V2盲盒',
+      mystery_box: {
+        box_name: '百元盲盒',
+        box_price: 100000,
+      },
+      gift_info: [
         {
-          cmd: 'SEND_GIFT',
-          data: {
-            uid: 1,
-            uname: '盲盒用户',
-            giftName: '小花花',
-            num: 1,
-            price: 100,
-            coin_type: 'gold',
-            timestamp: 1710000000,
-            blind_gift: {
-              original_gift_name: '4000点心盒',
-              original_gift_price: 4000000,
-              gift_tip_price: 100,
-            },
-          },
+          gift_id: 1,
+          gift_name: '小花花',
+          num: 1,
+          price: 100,
+          timestamp: 1710000000,
         },
-        1001,
-        8888,
-        1710000000000,
-      );
-      expect(event?.danmaku?.message).toBe('小花花');
-      expect(event?.danmaku?.price).toBe(0.1);
-      expect(event?.danmaku?.mysteryBoxName).toBe('4000点心盒');
-      expect(event?.danmaku?.mysteryBoxPrice).toBe(4000);
-    },
-  );
+      ],
+    });
+    const event = await extractor.extract(
+      { cmd: 'SEND_GIFT_V2', data: { pb: pbBase64 } },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(event?.danmaku?.message).toBe('小花花');
+    expect(event?.danmaku?.price).toBe(0.1);
+    expect(event?.danmaku?.mysteryBoxName).toBe('百元盲盒');
+    expect(event?.danmaku?.mysteryBoxPrice).toBe(100);
+  });
 
-  it('forwards SEND_GIFT coinType=silver for the server to zero price',
-    () => {
-      const event = extractor.extract(
-        {
-          cmd: 'SEND_GIFT',
-          data: {
-            uid: 2,
-            uname: '银瓜子',
-            giftName: '辣条',
-            num: 10,
-            price: 100,
-            coin_type: 'silver',
-            timestamp: 1710000000,
-          },
-        },
-        1001,
-        8888,
-        1710000000000,
-      );
-      expect(event?.danmaku?.message).toBe('辣条');
-      expect(event?.danmaku?.coinType).toBe('silver');
-      expect(event?.danmaku?.price).toBe(1);
-    },
-  );
+  it('splits a SEND_GIFT_V2 blind-box combo into one event per opened tier', async () => {
+    const pbBase64 = encodePb(sendGiftV2Type, {
+      uid: 3,
+      u_name: 'V2盲盒',
+      mystery_box: {
+        box_name: '百元盲盒',
+        box_price: 100000,
+      },
+      gift_info: [
+        { gift_id: 1, gift_name: '小花花', num: 6, price: 100, tid: 'combo-a', timestamp: 1710000000 },
+        { gift_id: 2, gift_name: '摩天大楼', num: 4, price: 50000, tid: 'combo-b', timestamp: 1710000000 },
+      ],
+    });
+    const events = await extractor.extractAll(
+      { cmd: 'SEND_GIFT_V2', data: { pb: pbBase64 } },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(events.map((event) => event.danmaku)).toEqual([
+      expect.objectContaining({
+        message: '小花花',
+        count: 6,
+        price: 0.6,
+        giftTid: 'combo-a',
+        mysteryBoxName: '百元盲盒',
+        mysteryBoxPrice: 600,
+      }),
+      expect.objectContaining({
+        message: '摩天大楼',
+        count: 4,
+        price: 200,
+        giftTid: 'combo-b',
+        mysteryBoxName: '百元盲盒',
+        mysteryBoxPrice: 400,
+      }),
+    ]);
+  });
 
-  it('extracts SEND_GIFT_V2 mystery box from protobuf',
-    () => {
-      const pbBase64 = encodePb(sendGiftV2Type, {
-        uid: 3,
-        u_name: 'V2盲盒',
-        mystery_box: {
-          box_name: '百元盲盒',
-          box_price: 100000,
+  it.each([0, 1, 2, 3])('extracts ENTRY_EFFECT as enter for privilege type %i', async (privilegeType) => {
+    const event = await extractor.extract(
+      {
+        cmd: 'ENTRY_EFFECT',
+        data: {
+          uid: 9,
+          privilege_type: privilegeType,
+          uinfo: { uid: 9, base: { name: 'entry-user' } },
+          trigger_time: 1710000000000000000,
         },
-        gift_info: [
-          {
-            gift_id: 1,
-            gift_name: '小花花',
-            num: 1,
-            price: 100,
-            timestamp: 1710000000,
-          },
-        ],
-      });
-      const event = extractor.extract(
-        { cmd: 'SEND_GIFT_V2', data: { pb: pbBase64 } },
-        1001,
-        8888,
-        1710000000000,
-      );
-      expect(event?.danmaku?.message).toBe('小花花');
-      expect(event?.danmaku?.price).toBe(0.1);
-      expect(event?.danmaku?.mysteryBoxName).toBe('百元盲盒');
-      expect(event?.danmaku?.mysteryBoxPrice).toBe(100);
-    },
-  );
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(event?.danmaku?.type).toBe(4);
+    expect(event?.danmaku?.userId).toBe(9);
+    expect(event?.danmaku?.userName).toBe('entry-user');
+    expect(event?.danmaku?.sendDate).toBe(1710000000000);
+    expect(event?.eventTsMs).toBe(1710000000000);
+  });
 
-  it.each([0, 1, 2, 3])('extracts ENTRY_EFFECT as enter for privilege type %i',
-    (privilegeType) => {
-      const event = extractor.extract(
-        {
-          cmd: 'ENTRY_EFFECT',
-          data: {
-            uid: 9,
-            privilege_type: privilegeType,
-            uinfo: { uid: 9, base: { name: 'entry-user' } },
-            trigger_time: 1710000000000000000,
-          },
+  it('extracts USER_VIRTUAL_MVP as guard', async () => {
+    const event = await extractor.extract(
+      {
+        cmd: 'USER_VIRTUAL_MVP',
+        data: {
+          uid: 4,
+          uname: '大法师',
+          goods_name: '大法师',
+          goods_price: 1998000,
+          goods_num: 1,
+          timestamp: 1710000000,
         },
-        1001,
-        8888,
-        1710000000000,
-      );
-      expect(event?.danmaku?.type).toBe(4);
-      expect(event?.danmaku?.userId).toBe(9);
-      expect(event?.danmaku?.userName).toBe('entry-user');
-      expect(event?.danmaku?.sendDate).toBe(1710000000000);
-      expect(event?.eventTsMs).toBe(1710000000000);
-    },
-  );
-
-  it('extracts USER_VIRTUAL_MVP as guard',
-    () => {
-      const event = extractor.extract(
-        {
-          cmd: 'USER_VIRTUAL_MVP',
-          data: {
-            uid: 4,
-            uname: '大法师',
-            goods_name: '大法师',
-            goods_price: 1998000,
-            goods_num: 1,
-            timestamp: 1710000000,
-          },
-        },
-        1001,
-        8888,
-        1710000000000,
-      );
-      expect(event?.danmaku?.type).toBe(2);
-      expect(event?.danmaku?.userName).toBe('大法师');
-      expect(event?.danmaku?.message).toBe('大法师');
-      expect(event?.danmaku?.price).toBe(1998);
-    },
-  );
+      },
+      1001,
+      8888,
+      1710000000000,
+    );
+    expect(event?.danmaku?.type).toBe(2);
+    expect(event?.danmaku?.userName).toBe('大法师');
+    expect(event?.danmaku?.message).toBe('大法师');
+    expect(event?.danmaku?.price).toBe(1998);
+  });
 });

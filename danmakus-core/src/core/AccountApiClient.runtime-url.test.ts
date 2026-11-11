@@ -18,9 +18,11 @@ describe('resolveCoreRuntimeBaseUrl 统一解析', () => {
       .toBe('https://ukamnads.icu/api/v2/core-runtime');
   });
 
-  test('裸 origin 补全为 v2 路径', () => {
+  test('裸 origin / host 补全为 v2 路径', () => {
     expect(resolveCoreRuntimeBaseUrl('https://client.danmakus.com'))
-      .toBe('https://client.danmakus.com/api/core-runtime');
+      .toBe('https://client.danmakus.com/api/v2/core-runtime');
+    expect(resolveCoreRuntimeBaseUrl('client.danmakus.com'))
+      .toBe('https://client.danmakus.com/api/v2/core-runtime');
   });
 });
 

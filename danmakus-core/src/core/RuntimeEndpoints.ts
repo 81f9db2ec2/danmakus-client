@@ -1,4 +1,4 @@
-import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
+import { resolveCoreRuntimeBaseUrl, resolveStreamerStatusBaseUrl } from './CoreRuntimeUrl.js';
 
 /**
  * core-runtime 地址的唯一持有者。
@@ -29,10 +29,6 @@ export class RuntimeEndpoints {
 
   /** 主播状态接口地址，与 core-runtime 同源同版本前缀。 */
   getStreamerStatusBaseUrl(): string {
-    const base = this.coreRuntimeBaseUrl;
-    if (base.endsWith('/api/v2/core-runtime')) {
-      return base.replace(/\/api\/v2\/core-runtime$/, '/api/v2/streamer-status');
-    }
-    return base.replace(/\/api\/core-runtime$/, '/api/streamer-status');
+    return resolveStreamerStatusBaseUrl(this.coreRuntimeBaseUrl);
   }
 }

@@ -676,19 +676,22 @@ describe("DanmakuClient room pull flow", () => {
       rules: [
         {
           pattern: "^DANMU_MSG(:.*)?$",
-          target: "danmaku",
-          consts: { type: 0 },
-          fields: {
-            userId: { path: "info.2.0", as: "int" },
-            userName: { path: "info.2.1" },
-            message: { path: "info.1" },
-            sendDate: { path: "info.0.4", as: "timestamp" },
-          },
+          expr: `{
+            "danmaku": {
+              "type": 0,
+              "userId": $number(info[2][0]),
+              "userName": info[2][1],
+              "message": info[1],
+              "sendDate": info[0][4] * 1000
+            }
+          }`,
         },
       ],
     });
 
     await client.connectToRoom(4455, "server");
+    // 提取走异步 JSONata 求值，等串行链跑完再断言
+    await client.extractionChain;
 
     expect(archivedEvents).toHaveLength(1);
     expect(archivedEvents[0]?.roomId).toBe(4455);

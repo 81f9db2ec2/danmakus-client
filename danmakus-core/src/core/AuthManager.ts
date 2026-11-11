@@ -1,8 +1,8 @@
 import {
-  AuthSourceKind,
-  AuthSourceStateSnapshot,
-  AuthStateSnapshot,
-  AuthSyncPhase,
+  type AuthSourceKind,
+  type AuthSourceStateSnapshot,
+  type AuthStateSnapshot,
+  type AuthSyncPhase,
 } from '../types/index.js';
 import { BilibiliAuthApi } from './BilibiliAuthApi.js';
 import { CookieManager } from './CookieManager.js';

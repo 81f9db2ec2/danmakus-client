@@ -1,9 +1,9 @@
 import {
-  DanmakuConfig,
-  ErrorCategory,
-  LiveSessionOutboxItem,
-  LiveSessionOutboxRescheduleUpdate,
-  LiveSessionOutboxStore,
+  type DanmakuConfig,
+  type ErrorCategory,
+  type LiveSessionOutboxItem,
+  type LiveSessionOutboxRescheduleUpdate,
+  type LiveSessionOutboxStore,
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import type { RuntimeConnection } from './RuntimeConnection.js';

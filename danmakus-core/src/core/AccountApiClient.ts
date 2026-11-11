@@ -1,12 +1,12 @@
 import {
-  CoreControlConfigDto,
-  CoreRuntimeStateDto,
-  CoreSyncTagSnapshot,
-  CoreTaggedApiResult,
-  RecordingInfoDto,
-  ResponseValue,
-  UpdateRecordingSettingPayload,
-  UserInfo,
+  type CoreControlConfigDto,
+  type CoreRuntimeStateDto,
+  type CoreSyncTagSnapshot,
+  type CoreTaggedApiResult,
+  type RecordingInfoDto,
+  type ResponseValue,
+  type UpdateRecordingSettingPayload,
+  type UserInfo,
 } from '../types/index.js';
 import { BACKEND_PRIMARY_ORIGIN, fetchBackendApiWithFallback } from './BackendApiFallback.js';
 import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';

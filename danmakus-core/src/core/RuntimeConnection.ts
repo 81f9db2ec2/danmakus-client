@@ -1,14 +1,12 @@
 import {
-  ArchiveUploadResponse,
-  LiveSessionOutboxItem,
+  type ArchiveUploadResponse,
+  type LiveSessionOutboxItem,
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
 import { resolveCoreRuntimeBaseUrl } from './CoreRuntimeUrl.js';
 import type { RuntimeEndpoints } from './RuntimeEndpoints.js';
 import { RuntimeWsConnection } from './RuntimeWsConnection.js';
-import type {
-  DanmakuExtractionRuleSet,
-} from './DanmakuExtractionTypes.js';
+import type { JsonataExtractionRuleSetV2 } from './DanmakuExtractionTypes.js';
 
 export class RuntimeConnection {
   private readonly resolvedBaseUrl: string;
@@ -103,7 +101,7 @@ export class RuntimeConnection {
   setCallbacks(callbacks: {
     onStreamerStatusPush?: (updates: any[]) => void;
     onRoomAssignPush?: (data: any) => void;
-    onExtractionRules?: (rules: DanmakuExtractionRuleSet) => void;
+    onExtractionRules?: (rules: JsonataExtractionRuleSetV2) => void;
     getStateReportPayload?: () => {
       holdingRooms: number[];
       connectedRooms: number[];
@@ -117,6 +115,10 @@ export class RuntimeConnection {
       this.getStateReportPayload = callbacks.getStateReportPayload;
     }
     this.wsConnection?.setCallbacks(callbacks);
+  }
+
+  getLastConnectError(): string | null {
+    return this.wsConnection?.lastConnectError ?? null;
   }
 
   getConnectionState(): boolean {

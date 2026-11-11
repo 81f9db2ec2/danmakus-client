@@ -1,4 +1,4 @@
-import { cloneHoldingRoomShortfall, DanmakuConfig, RuntimeRoomPullShortfallDto } from '../types/index.js';
+import { cloneHoldingRoomShortfall, type DanmakuConfig, type RuntimeRoomPullShortfallDto } from '../types/index.js';
 import { RuntimeConnection } from './RuntimeConnection.js';
 import { ScopedLogger } from './Logger.js';
 import { StreamerStatusManager } from './StreamerStatusManager.js';

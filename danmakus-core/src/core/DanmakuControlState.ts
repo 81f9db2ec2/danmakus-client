@@ -1,12 +1,12 @@
 import { AccountApiClient } from './AccountApiClient.js';
 import { ScopedLogger } from './Logger.js';
 import {
-  CoreControlConfigDto,
-  CoreControlStateSnapshot,
-  CoreRuntimeStateDto,
-  CoreSyncTagSnapshot,
-  RecordingInfoDto,
-  UserInfo,
+  type CoreControlConfigDto,
+  type CoreControlStateSnapshot,
+  type CoreRuntimeStateDto,
+  type CoreSyncTagSnapshot,
+  type RecordingInfoDto,
+  type UserInfo,
 } from '../types/index.js';
 
 const CONTROL_SYNC_INTERVAL_MS = 10000;
