@@ -19,7 +19,7 @@ import {
   toRemoteClientSnapshot
 } from './danmakuServiceState';
 import type { ConnectionInfoSnapshot, RemoteClientSnapshot } from './danmakuServiceState';
-import { RUNTIME_URL } from './env';
+import { getRuntimeUrl } from './env';
 import { fetchImpl } from './fetchImpl';
 import { getAuthToken } from './http';
 import type { CoreControlConfigDto, LocalAppConfigDto, RecordingInfoDto, UserInfo } from '../types/api';
@@ -137,7 +137,7 @@ class DanmakuService {
       runtimeHeaders: this.buildRuntimeHeaders(),
       accountToken: token,
       clientVersion: desktopClientVersion,
-      runtimeUrl: RUNTIME_URL,
+      runtimeUrl: getRuntimeUrl(),
       enableClusterPresenceSync: true,
       liveSessionOutbox: outbox as LiveSessionOutboxStore,
     });
@@ -288,7 +288,7 @@ class DanmakuService {
 
   private applyCoreConfigState(config: CoreControlConfigDto): void {
     this.state.coreConfig.maxConnections = config.maxConnections;
-    this.state.coreConfig.runtimeUrl = config.runtimeUrl || RUNTIME_URL;
+    this.state.coreConfig.runtimeUrl = config.runtimeUrl || getRuntimeUrl();
     this.state.coreConfig.autoReconnect = config.autoReconnect;
     this.state.coreConfig.reconnectInterval = config.reconnectInterval;
     this.state.coreConfig.statusCheckInterval = config.statusCheckInterval;

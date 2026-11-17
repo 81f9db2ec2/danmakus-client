@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { toast } from 'vue-sonner';
 import { getDanmakuAreas } from '../services/account';
 import { danmakuService } from '../services/DanmakuService';
-import { RUNTIME_URL } from '../services/env';
+import { getRuntimeUrl } from '../services/env';
 import { getAuthToken, setAuthToken } from '../services/http';
 import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, isMacosDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
 import { liveSessionOutbox, type LiveSessionOutboxDatabaseInfo } from '../services/liveSessionOutbox';
@@ -25,10 +25,10 @@ const currentPage = ref('dashboard');
 const showApiNodeModal = ref(false);
 const isDesktopApp = isDesktopRuntime();
 const isMacosDesktopApp = isMacosDesktopRuntime();
-const runtimeFixedUrl = RUNTIME_URL;
+const runtimeFixedUrl = computed(() => getRuntimeUrl());
 const createCoreConfigDraft = (): CoreControlConfigDto => ({
   maxConnections: 5,
-  runtimeUrl: runtimeFixedUrl,
+  runtimeUrl: runtimeFixedUrl.value,
   autoReconnect: true,
   reconnectInterval: 5000,
   statusCheckInterval: 30,
@@ -40,7 +40,7 @@ const createCoreConfigDraft = (): CoreControlConfigDto => ({
 });
 const cloneCoreConfigDraft = (config: CoreControlConfigDto): CoreControlConfigDto => ({
   ...config,
-  runtimeUrl: config.runtimeUrl || runtimeFixedUrl,
+  runtimeUrl: config.runtimeUrl || runtimeFixedUrl.value,
   allowedAreas: Array.isArray(config.allowedAreas) ? [...config.allowedAreas] : [],
   allowedParentAreas: Array.isArray(config.allowedParentAreas) ? [...config.allowedParentAreas] : [],
   excludedServerRoomUserIds: Array.isArray(config.excludedServerRoomUserIds) ? [...config.excludedServerRoomUserIds] : [],
@@ -49,7 +49,7 @@ const cloneCoreConfigDraft = (config: CoreControlConfigDto): CoreControlConfigDt
 const buildCoreConfigSyncKey = (config: CoreControlConfigDto): string =>
   JSON.stringify({
     maxConnections: config.maxConnections,
-    runtimeUrl: config.runtimeUrl || runtimeFixedUrl,
+    runtimeUrl: config.runtimeUrl || runtimeFixedUrl.value,
     autoReconnect: config.autoReconnect,
     reconnectInterval: config.reconnectInterval,
     statusCheckInterval: config.statusCheckInterval,

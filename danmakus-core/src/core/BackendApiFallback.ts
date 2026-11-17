@@ -54,6 +54,59 @@ const resolveFallbackChain = (origins?: readonly string[]): readonly string[] =>
 const shouldRewriteToPreferredChain = (origin: string, chain: readonly string[]): boolean =>
   configuredOrigins != null && (builtinOriginSet.has(origin) || chain.includes(origin));
 
+const isLoopbackHost = (hostname: string): boolean => {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]';
+};
+
+const toWsRuntimeUrl = (runtimeUrl: string): string => {
+  const parsed = new URL(runtimeUrl);
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (!parsed.pathname.endsWith('/ws')) {
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') + '/ws';
+  }
+  return parsed.toString();
+};
+
+const toHttpUrl = (url: string): string => {
+  const parsed = new URL(url);
+  if (parsed.protocol === 'wss:') {
+    parsed.protocol = 'https:';
+  } else if (parsed.protocol === 'ws:') {
+    parsed.protocol = 'http:';
+  }
+  return parsed.toString();
+};
+
+export const buildBackendWsCandidateUrls = (runtimeUrl: string, origins?: readonly string[]): string[] => {
+  const normalizedUrl = runtimeUrl.trim();
+  if (!normalizedUrl) {
+    return [];
+  }
+
+  try {
+    const primaryWsUrl = toWsRuntimeUrl(normalizedUrl);
+    const parsedPrimary = new URL(primaryWsUrl);
+    if (origins == null && isLoopbackHost(parsedPrimary.hostname)) {
+      return [primaryWsUrl];
+    }
+
+    const httpCandidates = buildBackendApiCandidateUrls(toHttpUrl(primaryWsUrl), origins);
+    const wsCandidates: string[] = [];
+    const seen = new Set<string>();
+    for (const candidate of httpCandidates) {
+      const wsUrl = toWsRuntimeUrl(candidate);
+      if (!seen.has(wsUrl)) {
+        seen.add(wsUrl);
+        wsCandidates.push(wsUrl);
+      }
+    }
+    return wsCandidates.length > 0 ? wsCandidates : [primaryWsUrl];
+  } catch {
+    return [normalizedUrl];
+  }
+};
+
 export const buildBackendApiCandidateUrls = (url: string, origins?: readonly string[]): string[] => {
   const normalizedUrl = url.trim();
   if (!normalizedUrl) {

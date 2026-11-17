@@ -3,7 +3,7 @@ import type {
   AuthStateSnapshot,
   CoreRuntimeStateDto as CoreClientRuntimeStateDto,
 } from 'danmakus-core'
-import { RUNTIME_URL } from './env'
+import { getRuntimeUrl } from './env'
 import type { CoreControlConfigDto, RecordingInfoDto } from '../types/api'
 
 export type ConnectionInfoSnapshot = {
@@ -134,7 +134,7 @@ export const cloneRecordingInfo = (item: RecordingInfoDto): RecordingInfoDto => 
 
 export const createDefaultCoreConfig = (): CoreControlConfigDto => ({
   maxConnections: 5,
-  runtimeUrl: RUNTIME_URL,
+  runtimeUrl: getRuntimeUrl(),
   autoReconnect: true,
   reconnectInterval: 5000,
   statusCheckInterval: 30,

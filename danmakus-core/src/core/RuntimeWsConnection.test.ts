@@ -394,4 +394,121 @@ describe('RuntimeWsConnection', () => {
     expect(conn.connected).toBe(true);
     conn.disconnect();
   });
+
+  it('falls back to secondary WS origin when primary fails', async () => {
+    const deadPort = port;
+    const fallbackPort = port + 1;
+    let fallbackAuthCount = 0;
+
+    server = Bun.serve({
+      port: fallbackPort,
+      fetch(req, server) {
+        if (server.upgrade(req)) {
+          return;
+        }
+        return new Response('Upgrade failed', { status: 500 });
+      },
+      websocket: {
+        message(ws, message) {
+          const frame = decodeWsFrame(new Uint8Array(message as ArrayBuffer));
+          if (frame.opCode === CoreWsOpCode.CLIENT_AUTH) {
+            fallbackAuthCount++;
+            ws.send(encodeWsFrame(
+              CoreWsOpCode.SERVER_AUTH_RESULT,
+              frame.seq,
+              encodeMsgPackPayload({ success: true, serverTime: Date.now() }),
+            ));
+          }
+        },
+      },
+    });
+
+    const conn = new RuntimeWsConnection({
+      runtimeUrl: `http://127.0.0.1:${deadPort}/api/v2/core-runtime`,
+      token: 'test-token',
+      clientId: 'client-1',
+      connectTimeoutMs: 500,
+      fallbackOrigins: [
+        `http://127.0.0.1:${deadPort}`,
+        `http://127.0.0.1:${fallbackPort}`,
+      ],
+    });
+
+    const ok = await conn.connect();
+    expect(ok).toBe(true);
+    expect(conn.connected).toBe(true);
+    expect(fallbackAuthCount).toBe(1);
+    conn.disconnect();
+  });
+
+  it('stops without falling back when primary rejects auth explicitly', async () => {
+    const primaryPort = port;
+    const fallbackPort = port + 1;
+    let fallbackAuthCount = 0;
+
+    const primaryServer = Bun.serve({
+      port: primaryPort,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) {
+          return;
+        }
+        return new Response('Upgrade failed', { status: 500 });
+      },
+      websocket: {
+        message(ws, message) {
+          const frame = decodeWsFrame(new Uint8Array(message as ArrayBuffer));
+          if (frame.opCode === CoreWsOpCode.CLIENT_AUTH) {
+            ws.send(encodeWsFrame(
+              CoreWsOpCode.SERVER_AUTH_RESULT,
+              frame.seq,
+              encodeMsgPackPayload({ success: false, serverTime: Date.now(), error: 'invalid token' }),
+            ));
+          }
+        },
+      },
+    });
+
+    server = Bun.serve({
+      port: fallbackPort,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) {
+          return;
+        }
+        return new Response('Upgrade failed', { status: 500 });
+      },
+      websocket: {
+        message(ws, message) {
+          const frame = decodeWsFrame(new Uint8Array(message as ArrayBuffer));
+          if (frame.opCode === CoreWsOpCode.CLIENT_AUTH) {
+            fallbackAuthCount++;
+            ws.send(encodeWsFrame(
+              CoreWsOpCode.SERVER_AUTH_RESULT,
+              frame.seq,
+              encodeMsgPackPayload({ success: true, serverTime: Date.now() }),
+            ));
+          }
+        },
+      },
+    });
+
+    try {
+      const conn = new RuntimeWsConnection({
+        runtimeUrl: `http://127.0.0.1:${primaryPort}/api/v2/core-runtime`,
+        token: 'bad-token',
+        clientId: 'client-1',
+        connectTimeoutMs: 500,
+        fallbackOrigins: [
+          `http://127.0.0.1:${primaryPort}`,
+          `http://127.0.0.1:${fallbackPort}`,
+        ],
+      });
+
+      const ok = await conn.connect();
+      expect(ok).toBe(false);
+      expect(conn.lastConnectError).toContain('鉴权被拒绝');
+      expect(fallbackAuthCount).toBe(0);
+    } finally {
+      primaryServer.stop(true);
+    }
+  });
 });

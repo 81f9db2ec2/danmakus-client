@@ -3,6 +3,7 @@ import {
   BACKEND_API_ORIGINS,
   BACKEND_PRIMARY_ORIGIN,
   buildBackendApiCandidateUrls,
+  buildBackendWsCandidateUrls,
   fetchBackendApiWithFallback,
   setBackendApiFallbackOrigins,
 } from './BackendApiFallback.js';
@@ -120,6 +121,34 @@ describe('fetchBackendApiWithFallback', () => {
     expect(response.ok).toBe(true);
     expect(requests).toEqual([
       'https://proxy.example.com/api/v2/account/core-config',
+    ]);
+  });
+});
+
+describe('buildBackendWsCandidateUrls', () => {
+  test('primary runtimeUrl falls back across official WS origins', () => {
+    expect(buildBackendWsCandidateUrls('https://ukamnads.icu/api/v2/core-runtime')).toEqual([
+      'wss://ukamnads.icu/api/v2/core-runtime/ws',
+      'wss://api.ukamnads.icu/api/v2/core-runtime/ws',
+      'wss://api.danmakus.com/api/v2/core-runtime/ws',
+    ]);
+  });
+
+  test('loopback runtimeUrl does not leak to public origins by default', () => {
+    expect(buildBackendWsCandidateUrls('http://127.0.0.1:30001/api/v2/core-runtime')).toEqual([
+      'ws://127.0.0.1:30001/api/v2/core-runtime/ws',
+    ]);
+  });
+
+  test('explicit fallbackOrigins overrides candidate list for WS fallback', () => {
+    expect(
+      buildBackendWsCandidateUrls('http://127.0.0.1:30001/api/v2/core-runtime', [
+        'http://127.0.0.1:30001',
+        'http://127.0.0.1:30002',
+      ]),
+    ).toEqual([
+      'ws://127.0.0.1:30001/api/v2/core-runtime/ws',
+      'ws://127.0.0.1:30002/api/v2/core-runtime/ws',
     ]);
   });
 });

@@ -4,6 +4,7 @@ import {
   type LiveSessionOutboxItem,
 } from '../types/index.js';
 import { ScopedLogger } from './Logger.js';
+import { buildBackendWsCandidateUrls } from './BackendApiFallback.js';
 import { encodeArchiveUploadEnvelope } from './DanmakuUploadCodec.js';
 import { normalizeBinaryPayload } from './RawPacketCodec.js';
 import {
@@ -35,6 +36,8 @@ export interface RuntimeWsConnectionOptions {
   clientId?: string;
   version?: string;
   headers?: Record<string, string>;
+  connectTimeoutMs?: number;
+  fallbackOrigins?: readonly string[];
   onConnected?: () => void;
   onDisconnected?: (error?: Error) => void;
   onReconnected?: () => void;
@@ -75,6 +78,7 @@ interface PendingRequest<T> {
 
 export class RuntimeWsConnection {
   private ws?: WebSocket;
+  private activeWsUrl?: string;
   private isConnected = false;
   private isConnecting = false;
   private hasConnectedOnce = false;
@@ -121,131 +125,27 @@ export class RuntimeWsConnection {
     this.isClosedExplicitly = false;
 
     try {
-      const wsUrl = this.resolveWsUrl(this.options.runtimeUrl);
-      this.logger.info(`正在建立 WebSocket 连接: ${wsUrl}`);
+      const candidates = this.buildCandidateWsUrls();
+      let connected = false;
 
-      if (this.ws) {
-        const previous = this.ws;
-        this.ws = undefined;
-        previous.onclose = null;
-        previous.onmessage = null;
-        previous.onerror = null;
-        previous.onopen = null;
-        if (previous.readyState === WebSocket.OPEN || previous.readyState === WebSocket.CONNECTING) {
-          try {
-            previous.close();
-          } catch {
-            // ignore
-          }
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (this.isClosedExplicitly) {
+          break;
+        }
+        const wsUrl = candidates[index]!;
+        const attempt = await this.connectSingleUrl(wsUrl);
+        if (attempt.ok) {
+          this.activeWsUrl = wsUrl;
+          connected = true;
+          break;
+        }
+        if (attempt.authRejected) {
+          break;
+        }
+        if (index < candidates.length - 1) {
+          this.logger.warn(`WebSocket 连接失败 (${wsUrl}: ${attempt.reason ?? '未知错误'})，尝试备用节点: ${candidates[index + 1]}`);
         }
       }
-
-      const ws = this.options.headers && Object.keys(this.options.headers).length > 0
-        ? new (WebSocket as any)(wsUrl, { headers: this.options.headers })
-        : new WebSocket(wsUrl);
-      ws.binaryType = 'arraybuffer';
-
-      const connected = await new Promise<boolean>((resolve) => {
-        let settled = false;
-        const settle = (value: boolean, reason?: string) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          this.lastConnectError = value ? null : reason ?? '连接被关闭';
-          clearTimeout(timeout);
-          resolve(value);
-        };
-        const timeout = setTimeout(() => {
-          this.logger.warn('WebSocket 连接/鉴权超时');
-          try {
-            ws.close();
-          } catch {
-            // ignore
-          }
-          settle(false, 'WebSocket 连接/鉴权超时');
-        }, WS_CONNECT_TIMEOUT_MS);
-
-        ws.onopen = async () => {
-          try {
-            const authPayload = encodeMsgPackPayload({
-              token: this.options.token,
-              clientId: this.options.clientId,
-              version: this.options.version || DEFAULT_CORE_CLIENT_VERSION,
-              rulesFormat: 2,
-            });
-            const frame = encodeWsFrame(CoreWsOpCode.CLIENT_AUTH, 0, authPayload);
-            ws.send(frame as any);
-          } catch (err) {
-            this.logger.error('发送鉴权帧失败', err);
-            settle(false, `发送鉴权帧失败: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        };
-
-        ws.onmessage = (event: any) => {
-          try {
-            const data = new Uint8Array(event.data as ArrayBuffer);
-            const frame = decodeWsFrame(data);
-            this.noteInbound(frame.opCode);
-
-            if (frame.opCode === CoreWsOpCode.SERVER_AUTH_RESULT) {
-              const result = decodeMsgPackPayload<{
-                success: boolean;
-                serverTime: number;
-                error?: string;
-                extractionRulesV2?: JsonataExtractionRuleSetV2;
-              }>(frame.payload);
-              if (result.success) {
-                // 规则非法时 setRules 抛错：先应用规则再置连接态，避免半连接（isConnected=true 但从不 settle）
-                if (result.extractionRulesV2) {
-                  try {
-                    this.options.onExtractionRules?.(result.extractionRulesV2);
-                  } catch (error) {
-                    this.logger.error('服务端解析规则无效，放弃本次连接', error);
-                    ws.close();
-                    settle(false, '服务端解析规则无效');
-                    return;
-                  }
-                }
-                const isReconnect = this.hasConnectedOnce;
-                this.ws = ws;
-                this.isConnected = true;
-                this.hasConnectedOnce = true;
-                this.reconnectAttempts = 0;
-                this.logger.info(`WebSocket 鉴权成功，长连接已${isReconnect ? '重新' : ''}建立`);
-                if (isReconnect) {
-                  this.options.onReconnected?.();
-                } else {
-                  this.options.onConnected?.();
-                }
-                settle(true);
-              } else {
-                this.logger.error(`WebSocket 鉴权拒绝: ${result.error}`);
-                ws.close();
-                settle(false, `鉴权被拒绝: ${result.error}`);
-              }
-              return;
-            }
-
-            this.handleFrame(frame);
-          } catch (error) {
-            this.logger.error('处理 WebSocket 消息帧异常', error);
-          }
-        };
-
-        ws.onerror = (error: any) => {
-          this.logger.warn('WebSocket 错误', error);
-        };
-
-        ws.onclose = () => {
-          if (this.ws !== undefined && this.ws !== ws) {
-            return;
-          }
-          this.ws = undefined;
-          this.handleDisconnect();
-          settle(false);
-        };
-      });
 
       if (connected) {
         this.startPing();
@@ -263,6 +163,153 @@ export class RuntimeWsConnection {
     } finally {
       this.isConnecting = false;
     }
+  }
+
+  private buildCandidateWsUrls(): string[] {
+    const candidates = buildBackendWsCandidateUrls(this.options.runtimeUrl, this.options.fallbackOrigins);
+    if (this.activeWsUrl && candidates.includes(this.activeWsUrl)) {
+      return [this.activeWsUrl, ...candidates.filter((url) => url !== this.activeWsUrl)];
+    }
+    return candidates;
+  }
+
+  private detachSocketHandlers(socket: WebSocket): void {
+    socket.onclose = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onopen = null;
+  }
+
+  private closeSocketQuietly(socket: WebSocket): void {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private async connectSingleUrl(wsUrl: string): Promise<{ ok: boolean; authRejected?: boolean; reason?: string }> {
+    this.logger.info(`正在建立 WebSocket 连接: ${wsUrl}`);
+
+    if (this.ws) {
+      const previous = this.ws;
+      this.ws = undefined;
+      this.detachSocketHandlers(previous);
+      this.closeSocketQuietly(previous);
+    }
+
+    const ws = this.options.headers && Object.keys(this.options.headers).length > 0
+      ? new (WebSocket as any)(wsUrl, { headers: this.options.headers })
+      : new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    const connectTimeoutMs = this.options.connectTimeoutMs ?? WS_CONNECT_TIMEOUT_MS;
+
+    return await new Promise<{ ok: boolean; authRejected?: boolean; reason?: string }>((resolve) => {
+      let settled = false;
+      let authenticated = false;
+      const settle = (ok: boolean, reason?: string, authRejected = false) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.lastConnectError = ok ? null : reason ?? '连接被关闭';
+        clearTimeout(timeout);
+        if (!ok) {
+          this.detachSocketHandlers(ws);
+          this.closeSocketQuietly(ws);
+        }
+        resolve({ ok, authRejected, reason });
+      };
+      const timeout = setTimeout(() => {
+        this.logger.warn(`WebSocket 连接/鉴权超时 (${wsUrl})`);
+        settle(false, 'WebSocket 连接/鉴权超时');
+      }, connectTimeoutMs);
+
+      ws.onopen = async () => {
+        try {
+          const authPayload = encodeMsgPackPayload({
+            token: this.options.token,
+            clientId: this.options.clientId,
+            version: this.options.version || DEFAULT_CORE_CLIENT_VERSION,
+            rulesFormat: 2,
+          });
+          const frame = encodeWsFrame(CoreWsOpCode.CLIENT_AUTH, 0, authPayload);
+          ws.send(frame as any);
+        } catch (err) {
+          this.logger.error('发送鉴权帧失败', err);
+          settle(false, `发送鉴权帧失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      };
+
+      ws.onmessage = (event: any) => {
+        try {
+          const data = new Uint8Array(event.data as ArrayBuffer);
+          const frame = decodeWsFrame(data);
+          this.noteInbound(frame.opCode);
+
+          if (frame.opCode === CoreWsOpCode.SERVER_AUTH_RESULT) {
+            const result = decodeMsgPackPayload<{
+              success: boolean;
+              serverTime: number;
+              error?: string;
+              extractionRulesV2?: JsonataExtractionRuleSetV2;
+            }>(frame.payload);
+            if (result.success) {
+              // 规则非法时 setRules 抛错：先应用规则再置连接态，避免半连接（isConnected=true 但从不 settle）
+              if (result.extractionRulesV2) {
+                try {
+                  this.options.onExtractionRules?.(result.extractionRulesV2);
+                } catch (error) {
+                  this.logger.error('服务端解析规则无效，放弃本次连接', error);
+                  settle(false, '服务端解析规则无效', true);
+                  return;
+                }
+              }
+              authenticated = true;
+              const isReconnect = this.hasConnectedOnce;
+              this.ws = ws;
+              this.isConnected = true;
+              this.hasConnectedOnce = true;
+              this.reconnectAttempts = 0;
+              this.logger.info(`WebSocket 鉴权成功，长连接已${isReconnect ? '重新' : ''}建立`);
+              if (isReconnect) {
+                this.options.onReconnected?.();
+              } else {
+                this.options.onConnected?.();
+              }
+              settle(true);
+            } else {
+              this.logger.error(`WebSocket 鉴权拒绝: ${result.error}`);
+              settle(false, `鉴权被拒绝: ${result.error}`, true);
+            }
+            return;
+          }
+
+          this.handleFrame(frame);
+        } catch (error) {
+          this.logger.error('处理 WebSocket 消息帧异常', error);
+        }
+      };
+
+      ws.onerror = (error: any) => {
+        this.logger.warn('WebSocket 错误', error);
+      };
+
+      ws.onclose = () => {
+        if (!authenticated) {
+          settle(false, '连接在鉴权完成前关闭');
+          return;
+        }
+        if (this.ws !== undefined && this.ws !== ws) {
+          return;
+        }
+        this.ws = undefined;
+        this.handleDisconnect();
+      };
+    });
   }
 
   disconnect(): void {
@@ -556,14 +603,5 @@ export class RuntimeWsConnection {
       pending.reject(error);
     }
     this.pendingUploads.clear();
-  }
-
-  private resolveWsUrl(runtimeUrl: string): string {
-    const url = new URL(runtimeUrl);
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    if (!url.pathname.endsWith('/ws')) {
-      url.pathname = url.pathname.replace(/\/+$/, '') + '/ws';
-    }
-    return url.toString();
   }
 }

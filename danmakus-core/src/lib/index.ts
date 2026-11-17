@@ -7,6 +7,7 @@ export {
   BACKEND_API_ORIGINS,
   BACKEND_PRIMARY_ORIGIN,
   buildBackendApiCandidateUrls,
+  buildBackendWsCandidateUrls,
   fetchBackendApiWithFallback,
   getBackendApiFallbackOrigins,
   setBackendApiFallbackOrigins,
