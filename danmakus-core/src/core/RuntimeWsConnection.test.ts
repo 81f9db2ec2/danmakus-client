@@ -330,4 +330,68 @@ describe('RuntimeWsConnection', () => {
 
     conn.disconnect();
   });
+
+  it('reconnects when heartbeat acks stop without a close frame', async () => {
+    let allowAck = true;
+    let authCount = 0;
+    let reconnectedCalled = false;
+
+    server = Bun.serve({
+      port,
+      fetch(req, server) {
+        if (server.upgrade(req)) {
+          return;
+        }
+        return new Response('Upgrade failed', { status: 500 });
+      },
+      websocket: {
+        message(ws, message) {
+          const frame = decodeWsFrame(new Uint8Array(message as ArrayBuffer));
+          if (frame.opCode === CoreWsOpCode.CLIENT_AUTH) {
+            authCount++;
+            ws.send(encodeWsFrame(
+              CoreWsOpCode.SERVER_AUTH_RESULT,
+              frame.seq,
+              encodeMsgPackPayload({ success: true, serverTime: Date.now() }),
+            ));
+            return;
+          }
+
+          if (frame.opCode === CoreWsOpCode.CLIENT_STATE_REPORT && allowAck) {
+            ws.send(encodeWsFrame(CoreWsOpCode.SERVER_HEARTBEAT_ACK, frame.seq));
+          }
+        },
+      },
+    });
+
+    const conn = new RuntimeWsConnection({
+      runtimeUrl: `http://127.0.0.1:${port}/api/v2/core-runtime`,
+      token: 'test-token',
+      clientId: 'client-1',
+      pingIntervalMs: 40,
+      livenessTimeoutMs: 120,
+      onReconnected() {
+        reconnectedCalled = true;
+      },
+    });
+
+    expect(await conn.connect()).toBe(true);
+
+    const armedAt = Date.now();
+    while (!(conn as any).heartbeatAckSeen && Date.now() - armedAt < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect((conn as any).heartbeatAckSeen).toBe(true);
+
+    allowAck = false;
+    const start = Date.now();
+    while (!reconnectedCalled && Date.now() - start < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    expect(reconnectedCalled).toBe(true);
+    expect(authCount).toBeGreaterThanOrEqual(2);
+    expect(conn.connected).toBe(true);
+    conn.disconnect();
+  });
 });

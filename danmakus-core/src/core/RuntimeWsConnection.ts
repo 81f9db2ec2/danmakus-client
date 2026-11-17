@@ -58,11 +58,14 @@ export interface RuntimeWsConnectionOptions {
     capacityOverride?: number;
     reason?: string;
   } | null;
+  pingIntervalMs?: number;
+  livenessTimeoutMs?: number;
 }
 
 const WS_CONNECT_TIMEOUT_MS = 10_000;
 const WS_REQUEST_TIMEOUT_MS = 30_000;
 const WS_PING_INTERVAL_MS = 15_000;
+const WS_LIVENESS_TIMEOUT_MS = 45_000;
 
 interface PendingRequest<T> {
   resolve: (value: T) => void;
@@ -82,6 +85,10 @@ export class RuntimeWsConnection {
   private pingTimer?: ReturnType<typeof setTimeout>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempts = 0;
+  private lastInboundAt = 0;
+  private heartbeatAckSeen = false;
+  private readonly pingIntervalMs: number;
+  private readonly livenessTimeoutMs: number;
   private pendingUploads = new Map<number, PendingRequest<ArchiveUploadResponse>>();
   private logger: ScopedLogger;
 
@@ -90,6 +97,8 @@ export class RuntimeWsConnection {
     logger?: ScopedLogger,
   ) {
     this.logger = logger ?? new ScopedLogger('RuntimeWsConnection');
+    this.pingIntervalMs = options.pingIntervalMs ?? WS_PING_INTERVAL_MS;
+    this.livenessTimeoutMs = options.livenessTimeoutMs ?? WS_LIVENESS_TIMEOUT_MS;
   }
 
   get connected(): boolean {
@@ -177,6 +186,7 @@ export class RuntimeWsConnection {
           try {
             const data = new Uint8Array(event.data as ArrayBuffer);
             const frame = decodeWsFrame(data);
+            this.noteInbound(frame.opCode);
 
             if (frame.opCode === CoreWsOpCode.SERVER_AUTH_RESULT) {
               const result = decodeMsgPackPayload<{
@@ -341,6 +351,7 @@ export class RuntimeWsConnection {
       return true;
     } catch (err) {
       this.logger.warn('发送状态汇报失败', err);
+      this.markDead('心跳发送失败');
       return false;
     }
   }
@@ -426,6 +437,8 @@ export class RuntimeWsConnection {
     const wasConnected = this.isConnected;
     this.isConnected = false;
     this.ws = undefined;
+    this.heartbeatAckSeen = false;
+    this.lastInboundAt = 0;
     this.stopPing();
     this.rejectAllPending(new Error('WebSocket 连接已关闭'));
 
@@ -469,24 +482,65 @@ export class RuntimeWsConnection {
   private startPing(): void {
     this.stopPing();
     this.pingTimer = setInterval(() => {
-      if (this.connected && this.ws) {
-        try {
-          const reportPayload = this.options.getStateReportPayload?.();
-          if (reportPayload) {
-            this.sendStateReport({
-              ...reportPayload,
-              reason: reportPayload.reason || 'heartbeat-sync',
-            });
-          } else {
-            // 发送轻量状态上报或空帧保持活跃
-            const pingFrame = encodeWsFrame(CoreWsOpCode.CLIENT_STATE_REPORT, 0);
-            this.ws.send(pingFrame as any);
-          }
-        } catch {
-          // 忽略 ping 发送错误
-        }
+      this.sendHeartbeat();
+    }, this.pingIntervalMs);
+  }
+
+  private sendHeartbeat(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (this.isConnected) {
+        this.markDead('WebSocket 已不在打开状态');
       }
-    }, WS_PING_INTERVAL_MS);
+      return;
+    }
+
+    if (this.heartbeatAckSeen && Date.now() - this.lastInboundAt > this.livenessTimeoutMs) {
+      this.markDead('心跳应答超时，连接已失效');
+      return;
+    }
+
+    try {
+      const reportPayload = this.options.getStateReportPayload?.();
+      if (reportPayload) {
+        this.sendStateReport({
+          ...reportPayload,
+          reason: reportPayload.reason || 'heartbeat-sync',
+        });
+        return;
+      }
+
+      this.ws.send(encodeWsFrame(CoreWsOpCode.CLIENT_STATE_REPORT, 0) as any);
+    } catch (err) {
+      this.logger.warn('心跳发送失败', err);
+      this.markDead('心跳发送失败');
+    }
+  }
+
+  private noteInbound(opCode: number): void {
+    this.lastInboundAt = Date.now();
+    if (opCode === CoreWsOpCode.SERVER_HEARTBEAT_ACK) {
+      this.heartbeatAckSeen = true;
+    }
+  }
+
+  private markDead(reason: string): void {
+    if (this.isClosedExplicitly || (!this.isConnected && !this.ws)) {
+      return;
+    }
+
+    const ws = this.ws;
+    this.logger.warn(reason);
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      try {
+        ws.close();
+      } catch {
+        // 半开连接关闭可能失败，仍按断开处理
+      }
+    }
+
+    if (this.isConnected || this.ws === ws) {
+      this.handleDisconnect(new Error(reason));
+    }
   }
 
   private stopPing(): void {
