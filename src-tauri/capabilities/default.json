@@ -23,10 +23,10 @@
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "https://*.bilibili.com/*" },
-        { "url": "https://bilibili.com/*" },
-        { "url": "https://*.hdslb.com/*" },
-        { "url": "https://hdslb.com/*" }
+        { "url": "http://*/*" },
+        { "url": "https://*/*" },
+        { "url": "http://*:*/*" },
+        { "url": "https://*:*/*" }
       ],
       "deny": []
     }

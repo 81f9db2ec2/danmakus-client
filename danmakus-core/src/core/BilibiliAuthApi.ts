@@ -3,12 +3,76 @@ import {
   type BiliFollowingUser,
   type BilibiliQrLoginPollResult,
   type BilibiliQrLoginSessionInfo,
+  type LocalAuthCredentials,
 } from '../types/index.js';
-import { mergeCookieJar } from './BilibiliCookie.js';
+import { mergeCookieJar, readCookieValue } from './BilibiliCookie.js';
 import { wrapBilibiliFetch } from './BilibiliUserAgent.js';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 const DEFAULT_BILIBILI_REQUEST_TIMEOUT_MS = 15000;
+const BILIBILI_COOKIE_REFRESH_SPKI_BASE64 =
+  'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDLgd2OAkcGVtoE3ThUREbio0Eg'
+  + 'Uc/prcajMKXvkCKFCWhJYJcLkcM2DKKcSeFpD/j6Boy538YXnR6VhcuUJOhH2x71'
+  + 'nzPjfdTcqMz7djHum0qSZA0AyCBDABUqCrfNgCiJ00Ra7GmRj+YCK1NJEuewlb40'
+  + 'JNrRuoEUXpabUzGB8QIDAQAB';
+
+let refreshPublicKeyPromise: Promise<CryptoKey> | null = null;
+
+function decodeBase64Bytes(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function getBilibiliRefreshPublicKey(): Promise<CryptoKey> {
+  if (!refreshPublicKeyPromise) {
+    refreshPublicKeyPromise = crypto.subtle.importKey(
+      'spki',
+      decodeBase64Bytes(BILIBILI_COOKIE_REFRESH_SPKI_BASE64),
+      { name: 'RSA-OAEP', hash: 'SHA-256' },
+      false,
+      ['encrypt'],
+    ).catch((error) => {
+      refreshPublicKeyPromise = null;
+      throw error;
+    });
+  }
+  return refreshPublicKeyPromise;
+}
+
+export async function generateBilibiliCorrespondPath(timestamp: number): Promise<string> {
+  const normalizedTimestamp = Math.floor(timestamp);
+  if (!Number.isFinite(normalizedTimestamp) || normalizedTimestamp <= 0) {
+    throw new Error(`生成 correspondPath 失败: 无效时间戳 ${String(timestamp)}`);
+  }
+
+  const publicKey = await getBilibiliRefreshPublicKey();
+  const plaintext = new TextEncoder().encode(`refresh_${normalizedTimestamp}`);
+  const encrypted = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, publicKey, plaintext);
+  return Array.from(new Uint8Array(encrypted), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export class BilibiliCookieRefreshError extends Error {
+  readonly code?: number;
+  readonly isFatalAuthError: boolean;
+
+  constructor(message: string, options: { code?: number; isFatalAuthError?: boolean } = {}) {
+    super(message);
+    this.name = 'BilibiliCookieRefreshError';
+    this.code = options.code;
+    this.isFatalAuthError = options.isFatalAuthError === true;
+  }
+}
+
+export type BilibiliCookieRefreshInfo = {
+  loggedIn: boolean;
+  refresh: boolean;
+  timestamp: number;
+};
 
 type BiliNavResponse = {
   code?: unknown;
@@ -238,9 +302,236 @@ export class BilibiliAuthApi {
     };
   }
 
+  async getCookieRefreshInfo(cookie: string): Promise<BilibiliCookieRefreshInfo> {
+    const normalizedCookie = cookie.trim();
+    if (!normalizedCookie) {
+      return { loggedIn: false, refresh: false, timestamp: 0 };
+    }
+
+    const biliJct = readCookieValue(normalizedCookie, 'bili_jct')?.trim() || '';
+    const query = biliJct ? `?csrf=${encodeURIComponent(biliJct)}` : '';
+    const response = await this.request(
+      `https://passport.bilibili.com/x/passport-login/web/cookie/info${query}`,
+      { method: 'GET' },
+      normalizedCookie,
+    );
+    if (!response.ok) {
+      throw new Error(`检查 Cookie 续期状态失败: HTTP ${response.status}`);
+    }
+
+    const payload = await response.json() as {
+      code?: unknown;
+      message?: unknown;
+      data?: { refresh?: unknown; timestamp?: unknown };
+    };
+    const code = typeof payload.code === 'number' ? payload.code : Number(payload.code);
+    if (!Number.isFinite(code)) {
+      throw new Error('检查 Cookie 续期状态失败: 返回无效 code');
+    }
+
+    if (code === -101) {
+      return { loggedIn: false, refresh: false, timestamp: 0 };
+    }
+    if (code !== 0) {
+      throw new BilibiliCookieRefreshError(
+        `检查 Cookie 续期状态失败: ${String(payload.message ?? code)}`,
+        { code, isFatalAuthError: false },
+      );
+    }
+
+    const rawRefresh = payload.data?.refresh;
+    const refresh = rawRefresh === true || rawRefresh === 1 || rawRefresh === '1';
+    const rawTimestamp = typeof payload.data?.timestamp === 'number'
+      ? payload.data.timestamp
+      : Number(payload.data?.timestamp);
+    const timestamp = Number.isFinite(rawTimestamp) && rawTimestamp > 0 ? Math.floor(rawTimestamp) : 0;
+
+    if (refresh && timestamp <= 0) {
+      throw new Error('检查 Cookie 续期状态失败: 返回无效 timestamp');
+    }
+
+    return { loggedIn: true, refresh, timestamp };
+  }
+
+  async getRefreshCsrf(correspondPath: string, cookie: string): Promise<string> {
+    const normalizedCookie = cookie.trim();
+    const normalizedPath = correspondPath.trim();
+    if (!normalizedCookie || !normalizedPath) {
+      throw new Error('获取 refresh_csrf 失败: 参数不完整');
+    }
+
+    const response = await this.request(
+      `https://www.bilibili.com/correspond/1/${encodeURIComponent(normalizedPath)}`,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      },
+      normalizedCookie,
+    );
+    if (!response.ok) {
+      throw new Error(`获取 refresh_csrf 失败: HTTP ${response.status}`);
+    }
+
+    const html = await response.text();
+    const match = html.match(/<div\b[^>]*\bid=["']1-name["'][^>]*>([^<]+)<\/div>/i);
+    const refreshCsrf = match?.[1]?.trim() || '';
+    if (!refreshCsrf) {
+      throw new Error('获取 refresh_csrf 失败: 页面未返回 1-name');
+    }
+    return refreshCsrf;
+  }
+
+  async refreshCookie(
+    cookie: string,
+    refreshToken: string,
+    options?: {
+      timestamp?: number;
+      onBeforeConfirm?: (credentials: LocalAuthCredentials) => Promise<void> | void;
+    },
+  ): Promise<LocalAuthCredentials> {
+    const normalizedCookie = cookie.trim();
+    const normalizedRefreshToken = refreshToken.trim();
+    if (!normalizedCookie) {
+      throw new BilibiliCookieRefreshError('刷新 Cookie 失败: Cookie 为空', { isFatalAuthError: true });
+    }
+    if (!normalizedRefreshToken) {
+      throw new BilibiliCookieRefreshError('刷新 Cookie 失败: refresh_token 为空', { isFatalAuthError: true });
+    }
+
+    const biliJct = readCookieValue(normalizedCookie, 'bili_jct')?.trim() || '';
+    if (!biliJct) {
+      throw new BilibiliCookieRefreshError('刷新 Cookie 失败: Cookie 缺少 bili_jct', { isFatalAuthError: true });
+    }
+
+    let timestamp = options?.timestamp && options.timestamp > 0 ? Math.floor(options.timestamp) : 0;
+    if (timestamp <= 0) {
+      const info = await this.getCookieRefreshInfo(normalizedCookie);
+      if (!info.loggedIn) {
+        throw new BilibiliCookieRefreshError('刷新 Cookie 失败: 登录状态已失效', {
+          code: -101,
+          isFatalAuthError: true,
+        });
+      }
+      timestamp = info.timestamp > 0 ? info.timestamp : Date.now();
+    }
+    const correspondPath = await generateBilibiliCorrespondPath(timestamp);
+    const refreshCsrf = await this.getRefreshCsrf(correspondPath, normalizedCookie);
+
+    const body = new URLSearchParams({
+      csrf: biliJct,
+      refresh_csrf: refreshCsrf,
+      source: 'main_web',
+      refresh_token: normalizedRefreshToken,
+    }).toString();
+
+    const response = await this.request(
+      'https://passport.bilibili.com/x/passport-login/web/cookie/refresh',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      },
+      normalizedCookie,
+    );
+    if (!response.ok) {
+      throw new Error(`刷新 Cookie 失败: HTTP ${response.status}`);
+    }
+
+    const payload = await response.json() as {
+      code?: unknown;
+      message?: unknown;
+      data?: {
+        status?: unknown;
+        message?: unknown;
+        refresh_token?: unknown;
+      };
+    };
+    const code = typeof payload.code === 'number' ? payload.code : Number(payload.code);
+    if (!Number.isFinite(code)) {
+      throw new Error('刷新 Cookie 失败: 返回无效 code');
+    }
+    if (code !== 0) {
+      const isFatalAuthError = code === -101 || code === 86095;
+      throw new BilibiliCookieRefreshError(
+        `刷新 Cookie 失败: ${String(payload.message ?? payload.data?.message ?? code)}`,
+        { code, isFatalAuthError },
+      );
+    }
+
+    const nextRefreshToken = typeof payload.data?.refresh_token === 'string'
+      ? payload.data.refresh_token.trim()
+      : '';
+    if (!nextRefreshToken) {
+      throw new Error('刷新 Cookie 失败: 响应未返回新的 refresh_token');
+    }
+
+    const setCookies = this.readSetCookieHeaders(response);
+    if (setCookies.length === 0) {
+      throw new Error('刷新 Cookie 失败: 响应未包含 Set-Cookie');
+    }
+
+    const nextCookie = this.readMergedCookie(normalizedCookie, response);
+    const nextCredentials: LocalAuthCredentials = {
+      cookie: nextCookie,
+      refreshToken: nextRefreshToken,
+    };
+
+    // 先落盘新凭证再确认旧 token 失效，避免 confirm 成功后本地仍残留旧凭据。
+    await options?.onBeforeConfirm?.(nextCredentials);
+
+    try {
+      await this.confirmCookieRefresh(nextCookie, normalizedRefreshToken);
+    } catch {
+      // 新 Cookie 与新 refresh_token 已生效，confirm 失败不回滚已更新的本地凭据。
+    }
+
+    return nextCredentials;
+  }
+
+  async confirmCookieRefresh(cookie: string, oldRefreshToken: string): Promise<void> {
+    const normalizedCookie = cookie.trim();
+    const normalizedOldToken = oldRefreshToken.trim();
+    const csrf = readCookieValue(normalizedCookie, 'bili_jct')?.trim() || '';
+    if (!normalizedCookie || !normalizedOldToken || !csrf) {
+      throw new Error('确认 Cookie 刷新失败: 参数不完整');
+    }
+
+    const body = new URLSearchParams({
+      csrf,
+      refresh_token: normalizedOldToken,
+    }).toString();
+
+    const response = await this.request(
+      'https://passport.bilibili.com/x/passport-login/web/confirm/refresh',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      },
+      normalizedCookie,
+    );
+    if (!response.ok) {
+      throw new Error(`确认 Cookie 刷新失败: HTTP ${response.status}`);
+    }
+
+    const payload = await response.json() as { code?: unknown; message?: unknown };
+    const code = typeof payload.code === 'number' ? payload.code : Number(payload.code);
+    if (code !== 0) {
+      throw new Error(`确认 Cookie 刷新失败: ${String(payload.message ?? code)}`);
+    }
+  }
+
   private async request(url: string, init?: RequestInit, cookie?: string): Promise<Response> {
     const headers = new Headers(init?.headers ?? {});
-    headers.set('Accept', 'application/json, text/plain, */*');
+    if (!headers.has('Accept')) {
+      headers.set('Accept', 'application/json, text/plain, */*');
+    }
     headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8');
     headers.set('Origin', 'https://www.bilibili.com');
     headers.set('Referer', 'https://www.bilibili.com/');
@@ -282,11 +573,29 @@ export class BilibiliAuthApi {
     }
   }
 
+  private readSetCookieHeaders(response: Response): string[] {
+    const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+    if (typeof headers.getSetCookie === 'function') {
+      const list = headers.getSetCookie().filter((item) => typeof item === 'string' && item.trim().length > 0);
+      if (list.length > 0) {
+        return list;
+      }
+    }
+
+    const single = response.headers.get('set-cookie');
+    return single && single.trim() ? [single] : [];
+  }
+
   private readMergedCookie(currentCookie: string, response: Response): string {
-    const setCookie = response.headers.get('set-cookie');
-    if (!setCookie) {
+    const setCookies = this.readSetCookieHeaders(response);
+    if (setCookies.length === 0) {
       return currentCookie;
     }
-    return mergeCookieJar(currentCookie, setCookie);
+
+    let merged = currentCookie;
+    for (const setCookie of setCookies) {
+      merged = mergeCookieJar(merged, setCookie);
+    }
+    return merged;
   }
 }

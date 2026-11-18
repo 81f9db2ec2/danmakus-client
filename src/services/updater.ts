@@ -1,5 +1,6 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { check } from '@tauri-apps/plugin-updater';
+import { getActiveProxyUrl } from './proxyConfig';
 
 export const APP_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -22,7 +23,8 @@ export const checkForUpdate = async (): Promise<AvailableUpdate | null> => {
     return null;
   }
 
-  const update = await check();
+  const proxy = getActiveProxyUrl() ?? undefined;
+  const update = await check(proxy ? { proxy } : undefined);
   if (!update) {
     return null;
   }
@@ -35,7 +37,8 @@ export const installLatestUpdate = async (options?: { relaunchAfterInstall?: boo
     throw new Error('当前环境不是 Tauri 桌面端，无法安装更新');
   }
 
-  const update = await check();
+  const proxy = getActiveProxyUrl() ?? undefined;
+  const update = await check(proxy ? { proxy } : undefined);
   if (!update) {
     return null;
   }

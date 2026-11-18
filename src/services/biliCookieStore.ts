@@ -36,7 +36,12 @@ export const biliCookie = {
   },
   setBiliCookie(cookie: string, refreshToken: string) {
     setStoredCookieJar(cookie)
-    localStorage.setItem(biliRefreshTokenKey, refreshToken)
+    const normalizedRefreshToken = refreshToken.trim()
+    if (normalizedRefreshToken) {
+      localStorage.setItem(biliRefreshTokenKey, normalizedRefreshToken)
+    } else {
+      clearStoredRefreshToken()
+    }
   },
   clear() {
     setStoredCookieJar('')

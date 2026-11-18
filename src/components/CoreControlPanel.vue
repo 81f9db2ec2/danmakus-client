@@ -6,6 +6,7 @@ import { danmakuService } from '../services/DanmakuService';
 import { getRuntimeUrl } from '../services/env';
 import { getAuthToken, setAuthToken } from '../services/http';
 import { applyAutoStartEnabled, hideMainWindow, isDesktopRuntime, isMacosDesktopRuntime, loadLocalAppConfig, readAutoStartEnabled, registerCloseToTrayHandler, saveLocalAppConfig, sendSystemNotification, syncTrayHealthFromRuntime, setupTrayInTs } from '../services/localApp';
+import { buildManualProxyUrl, getDesktopProxyStatus, syncDesktopProxyConfig, type DesktopProxyStatus } from '../services/proxyConfig';
 import { liveSessionOutbox, type LiveSessionOutboxDatabaseInfo } from '../services/liveSessionOutbox';
 import { APP_UPDATE_CHECK_INTERVAL_MS, checkForUpdate, installLatestUpdate, updaterEnabled, type AvailableUpdate } from '../services/updater';
 import { activeFallbackAlert, dismissFallbackAlert } from '../services/apiNodes';
@@ -91,6 +92,7 @@ const availableUpdateVersion = ref<string | null>(null);
 const databaseInfo = ref<LiveSessionOutboxDatabaseInfo | null>(null);
 const loadingDatabaseInfo = ref(false);
 const rebuildingDatabase = ref(false);
+const proxyStatus = ref<DesktopProxyStatus | null>(null);
 let autoAppUpdateTimer: number | undefined;
 let announcedAppUpdateVersion: string | null = null;
 const coreConfigAutoSaveThrottleMs = 1_200;
@@ -689,6 +691,22 @@ const handleSyncCookieCloud = async () => {
   }
 };
 
+const handleRelaunchApp = async () => {
+  if (!isDesktopApp) {
+    return;
+  }
+  try {
+    saveLocalAppConfig(localConfig);
+    await syncDesktopProxyConfig(localConfig.proxy);
+    await stopCoreForAppUpdate();
+    const { relaunch } = await import('@tauri-apps/plugin-process');
+    await relaunch();
+  } catch (error) {
+    console.error(error);
+    toast.error(error instanceof Error ? error.message : '重启应用失败');
+  }
+};
+
 const syncDesktopLocalConfig = async () => {
   if (!isDesktopApp) {
     return;
@@ -729,6 +747,15 @@ watch(
     }
     localConfigApplyTimer = window.setTimeout(() => {
       danmakuService.applyLocalConfig(localConfig);
+      if (isDesktopApp && (!localConfig.proxy.enabled || buildManualProxyUrl(localConfig.proxy) !== null)) {
+        void syncDesktopProxyConfig(localConfig.proxy)
+          .then((status) => {
+            if (status) proxyStatus.value = status;
+          })
+          .catch((error) => {
+            console.error(error);
+          });
+      }
     }, 400);
   },
   { deep: true }
@@ -822,6 +849,11 @@ onMounted(async () => {
       () => localConfig.hideDockIconWhenWindowHidden
     );
     await syncDesktopLocalConfig();
+    if (!localConfig.proxy.enabled || buildManualProxyUrl(localConfig.proxy) !== null) {
+      proxyStatus.value = await syncDesktopProxyConfig(localConfig.proxy).catch(() => null);
+    } else {
+      proxyStatus.value = await getDesktopProxyStatus().catch(() => null);
+    }
     if (localConfig.startMinimized) {
       try {
         await hideMainWindow({
@@ -961,6 +993,8 @@ onBeforeUnmount(() => {
               :database-info="databaseInfo"
               :loading-database-info="loadingDatabaseInfo"
               :rebuilding-database="rebuildingDatabase"
+              :proxy-status="proxyStatus"
+              @relaunch-app="handleRelaunchApp"
               @check-app-update="handleCheckAppUpdate"
               @install-app-update="handleInstallAppUpdate"
               @refresh-database-info="refreshDatabaseInfo(false)"

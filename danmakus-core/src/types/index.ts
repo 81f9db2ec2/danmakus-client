@@ -59,6 +59,11 @@ export interface LiveWsConnection {
 }
 
 // 配置类型
+export interface LocalAuthCredentials {
+  cookie: string;
+  refreshToken: string;
+}
+
 export interface DanmakuConfig {
   maxConnections: number;
   capacityOverride?: number;
@@ -67,7 +72,10 @@ export interface DanmakuConfig {
   cookieCloudPassword?: string;
   cookieCloudHost?: string;
   cookieProvider?: () => string | null | undefined;
-  interactiveLoginProvider?: () => Promise<string | null | undefined>;
+  refreshTokenProvider?: () => string | null | undefined;
+  onLocalAuthUpdated?: (credentials: LocalAuthCredentials) => void | Promise<void>;
+  localCookieRefreshCheckInterval?: number; // 秒
+  interactiveLoginProvider?: () => Promise<string | LocalAuthCredentials | null | undefined>;
   runtimeUrl: string;
   runtimeHeaders?: Record<string, string>;
   cookieRefreshInterval: number; // 秒

@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { LocalAppConfigDto, ThemeMode } from '../types/api';
+import { DEFAULT_MANUAL_PROXY_CONFIG, normalizeManualProxyConfig, setCachedProxyConfig } from './proxyConfig';
 
 type TrayHealthState = 'healthy' | 'error' | 'disconnected';
 type TrayRuntimeSnapshot = {
@@ -39,7 +40,8 @@ const DEFAULT_LOCAL_APP_CONFIG: LocalAppConfigDto = {
   cookieCloudPassword: '',
   cookieCloudHost: '',
   cookieRefreshInterval: 3600,
-  capacityOverride: null
+  capacityOverride: null,
+  proxy: { ...DEFAULT_MANUAL_PROXY_CONFIG }
 };
 
 const normalizeCookieText = (value: unknown): string => {
@@ -109,7 +111,8 @@ const normalizeConfig = (value: unknown): LocalAppConfigDto => {
     cookieCloudPassword: normalizeCookieText(raw.cookieCloudPassword),
     cookieCloudHost: normalizeCookieHost(raw.cookieCloudHost),
     cookieRefreshInterval: normalizeCookieRefreshInterval(raw.cookieRefreshInterval),
-    capacityOverride: normalizeCapacityOverride(raw.capacityOverride)
+    capacityOverride: normalizeCapacityOverride(raw.capacityOverride),
+    proxy: normalizeManualProxyConfig(raw.proxy)
   };
 };
 
@@ -139,9 +142,11 @@ export const loadLocalAppConfig = (): LocalAppConfigDto => {
 };
 
 export const saveLocalAppConfig = (config: LocalAppConfigDto): void => {
+  const normalized = normalizeConfig(config);
+  setCachedProxyConfig(normalized.proxy);
   localStorage.setItem(
     LOCAL_APP_CONFIG_STORAGE_KEY,
-    JSON.stringify(normalizeConfig(config))
+    JSON.stringify(normalized)
   );
 };
 

@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'node:readline';
 import { DanmakuClient } from '../core/DanmakuClient.js';
 import { createBunSqliteLiveSessionOutbox } from '../core/BunSqliteLiveSessionOutbox.js';
-import { createCliInteractiveLoginProvider } from './auth.js';
+import { createCliAuthStore, createCliInteractiveLoginProvider } from './auth.js';
 import { createCliLiveWsConnection } from './liveWsConnectionFactory.js';
 import { attachCliEventListeners } from './runtime.js';
 import type { CliOptions } from '../types/index.js';
@@ -84,14 +84,19 @@ program
 
       console.log('================\n');
 
-      let localCookie = '';
+      const cliAuthStore = createCliAuthStore();
+      await cliAuthStore.load();
 
       // 创建弹幕客户端
       const client = new DanmakuClient({
         clientId,
         // maxConnections,
-        cookieProvider: () => localCookie,
+        cookieProvider: () => cliAuthStore.getCookie(),
+        refreshTokenProvider: () => cliAuthStore.getRefreshToken(),
+        onLocalAuthUpdated: (credentials) => cliAuthStore.save(credentials),
         interactiveLoginProvider: createCliInteractiveLoginProvider(),
+
+
         cookieCloudKey,
         cookieCloudPassword,
         cookieCloudHost,

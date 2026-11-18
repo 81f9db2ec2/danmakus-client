@@ -28,6 +28,7 @@ import {
   type ClientErrorRecord,
   type RecordingInfoDto,
   type UserInfo,
+  type LocalAuthCredentials,
   cloneHoldingRoomShortfall,
 } from '../types/index.js';
 import { ScopedLogger, normalizeLogLevel } from './Logger.js';
@@ -88,8 +89,11 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   private authManager!: AuthManager;
   private bilibiliLiveWsAuthApi!: BilibiliLiveWsAuthApi;
   private baseLocalCookieProvider?: () => string | null | undefined;
-  private interactiveLoginProvider?: () => Promise<string | null | undefined>;
+  private baseLocalRefreshTokenProvider?: () => string | null | undefined;
+  private onLocalAuthUpdated?: (credentials: LocalAuthCredentials) => void | Promise<void>;
+  private interactiveLoginProvider?: () => Promise<string | LocalAuthCredentials | null | undefined>;
   private ephemeralLocalCookie = '';
+  private ephemeralLocalRefreshToken = '';
   private liveWsConfigProvider?: (roomId: number) => Promise<LiveWsRoomConfig | null | undefined>;
   private liveWsConnectionFactory?: (roomId: number, options: LiveWsRoomConfig) => Promise<LiveWsConnection>;
   private runtimeConnection?: RuntimeConnection;
@@ -147,6 +151,8 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
     this.logger = new ScopedLogger('DanmakuClient', normalizeLogLevel(config.logLevel, 'info'));
     this.clientId = config.clientId || generateClientId();
     this.baseLocalCookieProvider = config.cookieProvider;
+    this.baseLocalRefreshTokenProvider = config.refreshTokenProvider;
+    this.onLocalAuthUpdated = config.onLocalAuthUpdated;
     this.interactiveLoginProvider = config.interactiveLoginProvider;
     this.liveWsConfigProvider = config.liveWsConfigProvider;
     this.liveWsConnectionFactory = config.liveWsConnectionFactory;
@@ -1315,15 +1321,56 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
     if (!cookieCloudConfigured && !this.authManager.hasAvailableCookie() && this.interactiveLoginProvider) {
       this.logger.info('未提供可用 Cookie，准备进入交互式扫码登录...');
-      const cookie = (await this.interactiveLoginProvider())?.trim() || '';
-      if (cookie) {
-        this.ephemeralLocalCookie = cookie;
-        await this.authManager.refreshState({ validateProfile: true, force: true });
-      }
+      await this.runInteractiveLogin();
     }
 
-    await this.authManager.ensureReadyForStartup();
+    try {
+      await this.authManager.ensureReadyForStartup();
+    } catch (error) {
+      if (!cookieCloudConfigured && this.interactiveLoginProvider) {
+        this.logger.warn('本地 Cookie 已失效且无法续期，准备重新进入交互式扫码登录...');
+        const loggedIn = await this.runInteractiveLogin();
+        if (loggedIn) {
+          await this.authManager.ensureReadyForStartup();
+          this.emit('authStateChanged', this.authManager.getState());
+          return;
+        }
+      }
+      throw error;
+    }
+
     this.emit('authStateChanged', this.authManager.getState());
+  }
+
+  private async runInteractiveLogin(): Promise<boolean> {
+    if (!this.interactiveLoginProvider) {
+      return false;
+    }
+
+    const raw = await this.interactiveLoginProvider();
+    const credentials = this.normalizeInteractiveLoginResult(raw);
+    if (!credentials) {
+      return false;
+    }
+
+    await this.handleLocalAuthUpdated(credentials, { fromInteractiveLogin: true });
+    await this.authManager.refreshState({ validateProfile: true, force: true, skipLocalRefresh: true });
+    return true;
+  }
+
+  private normalizeInteractiveLoginResult(
+    raw: string | LocalAuthCredentials | null | undefined,
+  ): LocalAuthCredentials | null {
+    if (typeof raw === 'string') {
+      const cookie = raw.trim();
+      return cookie ? { cookie, refreshToken: '' } : null;
+    }
+    if (raw && typeof raw === 'object') {
+      const cookie = typeof raw.cookie === 'string' ? raw.cookie.trim() : '';
+      const refreshToken = typeof raw.refreshToken === 'string' ? raw.refreshToken.trim() : '';
+      return cookie ? { cookie, refreshToken } : null;
+    }
+    return null;
   }
 
   private isHoldingRoomRequestEnabled(config: DanmakuConfig = this.configManager.getConfig()): boolean {
@@ -1541,10 +1588,17 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
 
   private rebuildAuthManager(config: DanmakuConfig): void {
     this.baseLocalCookieProvider = config.cookieProvider;
+    this.baseLocalRefreshTokenProvider = config.refreshTokenProvider;
+    this.onLocalAuthUpdated = config.onLocalAuthUpdated;
     this.interactiveLoginProvider = config.interactiveLoginProvider;
     this.authManager?.dispose();
     this.authManager = new AuthManager({
       localCookieProvider: () => this.readLocalCookie(),
+      localRefreshTokenProvider: () => this.readLocalRefreshToken(),
+      onLocalCredentialsRefreshed: async (credentials) => {
+        await this.handleLocalAuthUpdated(credentials, { fromInteractiveLogin: false });
+      },
+      localRefreshCheckInterval: config.localCookieRefreshCheckInterval,
       cookieCloudKey: config.cookieCloudKey,
       cookieCloudPassword: config.cookieCloudPassword,
       cookieCloudHost: config.cookieCloudHost,
@@ -1575,6 +1629,38 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
       return ephemeralCookie;
     }
     return this.baseLocalCookieProvider?.()?.trim() || '';
+  }
+
+  private readLocalRefreshToken(): string {
+    if (this.ephemeralLocalCookie.trim()) {
+      return this.ephemeralLocalRefreshToken.trim();
+    }
+    return this.baseLocalRefreshTokenProvider?.()?.trim() || '';
+  }
+
+  private async handleLocalAuthUpdated(
+    credentials: LocalAuthCredentials,
+    options: { fromInteractiveLogin: boolean },
+  ): Promise<void> {
+    const normalized: LocalAuthCredentials = {
+      cookie: credentials.cookie.trim(),
+      refreshToken: credentials.refreshToken.trim(),
+    };
+
+    if (options.fromInteractiveLogin || this.ephemeralLocalCookie.trim() || !this.baseLocalCookieProvider) {
+      this.ephemeralLocalCookie = normalized.cookie;
+      this.ephemeralLocalRefreshToken = normalized.refreshToken;
+    }
+
+    await this.onLocalAuthUpdated?.(normalized);
+
+    if (!options.fromInteractiveLogin) {
+      if (normalized.refreshToken) {
+        this.logger.info('本地扫码登录 Cookie 已自动续期');
+      } else {
+        this.logger.warn('本地扫码登录 refresh_token 已失效，请重新扫码登录');
+      }
+    }
   }
 
   private rebuildStatusManager(config: DanmakuConfig): void {

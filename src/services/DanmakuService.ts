@@ -129,6 +129,10 @@ class DanmakuService {
       clientId: this.localClientId,
       fetchImpl,
       cookieProvider: () => biliCookie.getBiliCookie(),
+      refreshTokenProvider: () => biliCookie.getRefreshToken(),
+      onLocalAuthUpdated: ({ cookie, refreshToken }) => {
+        biliCookie.setBiliCookie(cookie, refreshToken);
+      },
       cookieCloudKey: localConfig?.cookieCloudKey?.trim() || undefined,
       cookieCloudPassword: localConfig?.cookieCloudPassword?.trim() || undefined,
       cookieCloudHost: localConfig?.cookieCloudHost?.trim() || undefined,

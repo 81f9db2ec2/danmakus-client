@@ -1,4 +1,5 @@
 import { populateBilibiliBrowserHeaders } from 'danmakus-core';
+import { getActiveHttpPluginProxyOption } from './proxyConfig';
 
 const isTauri = () => {
   if (typeof window === 'undefined') return false;
@@ -6,7 +7,16 @@ const isTauri = () => {
   return !!(w.__TAURI_INTERNALS__ || w.__TAURI__);
 };
 
-const shouldUseHttpPlugin = (url: string): boolean => {
+const isHttpOrHttpsUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+const isBilibiliHost = (url: string): boolean => {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -55,8 +65,12 @@ export type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promis
 
 export const fetchImpl: FetchImpl = async (input, init) => {
   const url = toUrlString(input);
+  const bilibiliHost = isBilibiliHost(url);
+  const proxyOption = getActiveHttpPluginProxyOption();
+  const useHttpPlugin = isTauri() && (bilibiliHost || (proxyOption !== undefined && isHttpOrHttpsUrl(url)));
+
   const nextInit = (() => {
-    if (!shouldUseHttpPlugin(url)) {
+    if (!bilibiliHost) {
       return init;
     }
 
@@ -69,9 +83,12 @@ export const fetchImpl: FetchImpl = async (input, init) => {
     } satisfies RequestInit;
   })();
 
-  if (isTauri() && shouldUseHttpPlugin(url)) {
+  if (useHttpPlugin) {
     const { fetch } = await import('@tauri-apps/plugin-http');
-    return await fetch(url, normalizeTauriInit(nextInit));
+    return await fetch(url, {
+      ...normalizeTauriInit(nextInit),
+      ...(proxyOption ? { proxy: proxyOption } : {})
+    });
   }
   return fetch(input, nextInit);
 };

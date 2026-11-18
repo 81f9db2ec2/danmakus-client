@@ -11,6 +11,17 @@ export type {
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
+export type ManualProxyProtocol = 'http' | 'socks5';
+
+export interface ManualProxyConfigDto {
+  enabled: boolean;
+  protocol: ManualProxyProtocol;
+  host: string;
+  port: number | null;
+  username: string;
+  password: string;
+}
+
 export interface LocalAppConfigDto {
   themeMode: ThemeMode;
   autoStart: boolean;
@@ -24,4 +35,5 @@ export interface LocalAppConfigDto {
   cookieCloudHost: string;
   cookieRefreshInterval: number;
   capacityOverride: number | null;
+  proxy: ManualProxyConfigDto;
 }

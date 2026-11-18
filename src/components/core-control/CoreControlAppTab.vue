@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import {
+  AlertTriangle,
   AppWindow,
+  CheckCircle2,
   Database,
   Download,
+  Globe,
   Laptop,
   Loader2,
   Moon,
@@ -12,6 +15,7 @@ import {
   RotateCcw,
   Sun
 } from 'lucide-vue-next';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,10 +26,17 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import type { LiveSessionOutboxDatabaseInfo } from '../../services/liveSessionOutbox';
 import { applyThemeMode } from '../../services/localApp';
-import type { LocalAppConfigDto, ThemeMode } from '../../types/api';
+import {
+  buildManualProxyUrl,
+  parseProxyAddressInput,
+  testManualProxyConnection,
+  type DesktopProxyStatus
+} from '../../services/proxyConfig';
+import type { LocalAppConfigDto, ManualProxyProtocol, ThemeMode } from '../../types/api';
 
 const props = defineProps<{
   localConfig: LocalAppConfigDto;
@@ -39,6 +50,7 @@ const props = defineProps<{
   databaseInfo: LiveSessionOutboxDatabaseInfo | null;
   loadingDatabaseInfo: boolean;
   rebuildingDatabase: boolean;
+  proxyStatus: DesktopProxyStatus | null;
 }>();
 
 const emit = defineEmits<{
@@ -46,6 +58,7 @@ const emit = defineEmits<{
   (e: 'install-app-update'): void;
   (e: 'refresh-database-info'): void;
   (e: 'rebuild-database'): void;
+  (e: 'relaunch-app'): void;
 }>();
 
 const showRebuildDialog = ref(false);
@@ -91,6 +104,93 @@ const setThemeMode = (mode: ThemeMode) => {
 const confirmRebuildDatabase = () => {
   showRebuildDialog.value = false;
   emit('rebuild-database');
+};
+
+const testingProxy = ref(false);
+const proxyTestResult = ref<{ ok: boolean; message: string } | null>(null);
+
+const configuredProxyUrl = computed(() => buildManualProxyUrl(props.localConfig.proxy));
+
+const proxyBadge = computed(() => {
+  if (!props.localConfig.proxy.enabled) {
+    return { text: '未启用', class: 'border-muted-foreground/20 bg-muted/40 text-muted-foreground' };
+  }
+  if (configuredProxyUrl.value) {
+    return {
+      text: configuredProxyUrl.value,
+      class: 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    };
+  }
+  return {
+    text: '待完善配置',
+    class: 'border-amber-300 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+  };
+});
+
+const requiresWebViewRestart = computed(() => {
+  if (!props.isDesktopRuntime || !props.proxyStatus) {
+    return false;
+  }
+  const startup = props.proxyStatus.startupProxyUrl ?? null;
+  const current = configuredProxyUrl.value ?? null;
+  if (props.localConfig.proxy.enabled && !current) {
+    return false;
+  }
+  return startup !== current;
+});
+
+const setProxyProtocol = (protocol: ManualProxyProtocol) => {
+  props.localConfig.proxy.protocol = protocol;
+  proxyTestResult.value = null;
+};
+
+const handleProxyHostInput = (raw: string | number) => {
+  const text = String(raw);
+  const parsed = parseProxyAddressInput(text, props.localConfig.proxy.protocol);
+  if (parsed) {
+    props.localConfig.proxy.protocol = parsed.protocol;
+    props.localConfig.proxy.host = parsed.host;
+    if (parsed.port !== null) {
+      props.localConfig.proxy.port = parsed.port;
+    }
+  } else {
+    props.localConfig.proxy.host = text.trim();
+  }
+  proxyTestResult.value = null;
+};
+
+const handleProxyPortInput = (raw: string | number) => {
+  const text = String(raw).trim();
+  if (!text) {
+    props.localConfig.proxy.port = null;
+    proxyTestResult.value = null;
+    return;
+  }
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) {
+    return;
+  }
+  props.localConfig.proxy.port = Math.min(65535, Math.max(1, Math.floor(parsed)));
+  proxyTestResult.value = null;
+};
+
+const handleTestProxy = async () => {
+  testingProxy.value = true;
+  proxyTestResult.value = null;
+  try {
+    const result = await testManualProxyConnection(props.localConfig.proxy);
+    proxyTestResult.value = {
+      ok: true,
+      message: `代理连通正常 (${result.latencyMs} ms, HTTP ${result.status})`
+    };
+  } catch (error) {
+    proxyTestResult.value = {
+      ok: false,
+      message: error instanceof Error ? error.message : '代理测试失败'
+    };
+  } finally {
+    testingProxy.value = false;
+  }
 };
 </script>
 
@@ -195,6 +295,149 @@ const confirmRebuildDatabase = () => {
           <Download v-else class="h-4 w-4" />
           立即更新到 v{{ availableUpdateVersion }}
         </Button>
+      </CardContent>
+    </Card>
+
+    <!-- Network Proxy -->
+    <Card class="bg-card/60">
+      <CardHeader class="pb-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <Globe class="h-4 w-4 text-primary" />
+            <CardTitle class="text-sm">网络代理</CardTitle>
+          </div>
+          <Badge variant="outline" :class="proxyBadge.class">
+            {{ proxyBadge.text }}
+          </Badge>
+        </div>
+        <CardDescription>
+          手动配置 HTTP / SOCKS5 代理，用于 Bilibili 接口、账号中心、应用更新与弹幕连接
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-4">
+        <div class="flex items-center justify-between gap-3 rounded-lg border bg-background/40 px-3.5 py-3">
+          <div>
+            <p class="text-xs font-medium">启用手动代理</p>
+            <p class="text-[11px] text-muted-foreground">
+              {{ isDesktopRuntime ? '关闭时直连或遵循系统环境设置' : '仅 Tauri 桌面端支持应用级代理' }}
+            </p>
+          </div>
+          <Switch v-model:model-value="props.localConfig.proxy.enabled" :disabled="!isDesktopRuntime" />
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-12">
+          <div class="space-y-1.5 sm:col-span-4">
+            <label class="text-xs font-medium text-muted-foreground">代理协议</label>
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                :disabled="!isDesktopRuntime"
+                :class="[
+                  'rounded-md border px-3 py-2 text-xs font-medium transition-all',
+                  props.localConfig.proxy.protocol === 'http'
+                    ? 'border-primary bg-primary/10 text-primary ring-1 ring-primary'
+                    : 'bg-background/40 text-muted-foreground hover:bg-background/80 hover:text-foreground'
+                ]"
+                @click="setProxyProtocol('http')"
+              >
+                HTTP
+              </button>
+              <button
+                type="button"
+                :disabled="!isDesktopRuntime"
+                :class="[
+                  'rounded-md border px-3 py-2 text-xs font-medium transition-all',
+                  props.localConfig.proxy.protocol === 'socks5'
+                    ? 'border-primary bg-primary/10 text-primary ring-1 ring-primary'
+                    : 'bg-background/40 text-muted-foreground hover:bg-background/80 hover:text-foreground'
+                ]"
+                @click="setProxyProtocol('socks5')"
+              >
+                SOCKS5
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-1.5 sm:col-span-5">
+            <label class="text-xs font-medium text-muted-foreground">代理主机</label>
+            <Input
+              :model-value="props.localConfig.proxy.host"
+              :disabled="!isDesktopRuntime"
+              placeholder="127.0.0.1 或 http://127.0.0.1:7890"
+              @update:model-value="handleProxyHostInput"
+            />
+          </div>
+
+          <div class="space-y-1.5 sm:col-span-3">
+            <label class="text-xs font-medium text-muted-foreground">端口</label>
+            <Input
+              type="number"
+              min="1"
+              max="65535"
+              :model-value="props.localConfig.proxy.port ?? ''"
+              :disabled="!isDesktopRuntime"
+              placeholder="7890"
+              @update:model-value="handleProxyPortInput"
+            />
+          </div>
+        </div>
+
+        <div v-if="props.localConfig.proxy.protocol === 'http'" class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-muted-foreground">用户名（可选）</label>
+            <Input
+              :model-value="props.localConfig.proxy.username"
+              :disabled="!isDesktopRuntime"
+              placeholder="留空表示无需认证"
+              @update:model-value="props.localConfig.proxy.username = String($event).trim()"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-muted-foreground">密码（可选）</label>
+            <Input
+              type="password"
+              :model-value="props.localConfig.proxy.password"
+              :disabled="!isDesktopRuntime"
+              placeholder="留空表示无需认证"
+              @update:model-value="props.localConfig.proxy.password = String($event)"
+            />
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="!isDesktopRuntime || testingProxy"
+            @click="handleTestProxy"
+          >
+            <Loader2 v-if="testingProxy" class="h-3.5 w-3.5 animate-spin" />
+            <Globe v-else class="h-3.5 w-3.5" />
+            测试代理连通性
+          </Button>
+          <p
+            v-if="proxyTestResult"
+            :class="[
+              'flex items-center gap-1.5 text-xs',
+              proxyTestResult.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'
+            ]"
+          >
+            <CheckCircle2 v-if="proxyTestResult.ok" class="h-3.5 w-3.5 shrink-0" />
+            <AlertTriangle v-else class="h-3.5 w-3.5 shrink-0" />
+            <span>{{ proxyTestResult.message }}</span>
+          </p>
+        </div>
+
+        <Alert v-if="requiresWebViewRestart" class="border-amber-300/70 bg-amber-500/10">
+          <AlertTriangle class="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <AlertTitle class="text-xs">需要重启应用以同步 WebSocket 代理</AlertTitle>
+          <AlertDescription class="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span>HTTP 接口与更新检查已立即生效；弹幕长连接与调度 WebSocket 需重启后生效。</span>
+            <Button variant="secondary" size="sm" @click="emit('relaunch-app')">
+              立即重启应用
+            </Button>
+          </AlertDescription>
+        </Alert>
       </CardContent>
     </Card>
 
