@@ -12,7 +12,16 @@ const toggles: Array<{ key: ToggleKey; label: string }> = [
   { key: 'hideOnlyEnter', label: '隐藏仅进场的场次' },
 ];
 
-const update = (patch: Partial<CardSettings>) => cardSettings.setValue({ ...settings.value!, ...patch });
+let updateChain: Promise<void> = Promise.resolve();
+
+const update = (patch: Partial<CardSettings>) => {
+  if (!settings.value) return;
+  settings.value = { ...settings.value, ...patch };
+  updateChain = updateChain.then(async () => {
+    const latest = await cardSettings.getValue();
+    await cardSettings.setValue({ ...latest, ...patch });
+  });
+};
 </script>
 
 <template>

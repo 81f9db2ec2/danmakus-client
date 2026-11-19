@@ -1,26 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import {
-  Activity,
-  CheckCircle2,
   ExternalLink,
   KeyRound,
   Power,
   Radio,
   Search,
-  Server,
   ShieldCheck,
-  Tv,
   User,
 } from 'lucide-vue-next';
 import CardSettingsPanel from './CardSettingsPanel.vue';
-import { getChannelPageUrl, getUserPageUrl } from '../../utils/api';
+import {
+  getChannelPageUrl,
+  getRecorderStateFromBackground,
+  getUserPageUrl,
+  updateRecorderConfigInBackground,
+} from '../../utils/api';
 import { formatCompactNumber } from '../../utils/decoder';
 import { clampMaxRooms, onStorageStateChanged } from '../../utils/storage';
 import {
   DANMAKUS_SITE_ORIGIN,
-  MAX_EXTENSION_ROOMS,
-  type ExtensionMessage,
   type ExtensionRecorderConfig,
   type ExtensionRecorderState,
 } from '../../utils/types';
@@ -31,6 +30,8 @@ const state = ref<ExtensionRecorderState | null>(null);
 const showTokenEditor = ref(false);
 const tokenDraft = ref('');
 const quickSearchUid = ref('');
+const quickSearchError = ref<string | null>(null);
+const actionError = ref<string | null>(null);
 const saving = ref(false);
 
 const roomCapacityOptions = [1, 2, 3, 4, 5];
@@ -39,17 +40,13 @@ const hasToken = computed(() => Boolean(config.value?.accountToken?.trim()));
 
 const updateConfig = async (patch: Partial<ExtensionRecorderConfig>) => {
   saving.value = true;
+  actionError.value = null;
   try {
-    const res = (await chrome.runtime.sendMessage({
-      type: 'UPDATE_RECORDER_CONFIG',
-      patch,
-    } satisfies ExtensionMessage)) as {
-      ok: boolean;
-      config?: ExtensionRecorderConfig;
-      state?: ExtensionRecorderState;
-    };
-    if (res?.config) config.value = res.config;
-    if (res?.state) state.value = res.state;
+    const res = await updateRecorderConfigInBackground(patch);
+    config.value = res.config;
+    state.value = res.state;
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : '保存设置失败';
   } finally {
     saving.value = false;
   }
@@ -70,41 +67,45 @@ const handleSelectMaxRooms = async (count: number) => {
 
 const handleSaveManualToken = async () => {
   await updateConfig({ accountToken: tokenDraft.value.trim() });
-  showTokenEditor.value = false;
+  if (!actionError.value) {
+    showTokenEditor.value = false;
+  }
+};
+
+const parseQuickUid = (): number | null => {
+  const uid = Number(quickSearchUid.value.trim().replace(/^UID[:：\s]*/i, ''));
+  if (!Number.isSafeInteger(uid) || uid <= 0) {
+    quickSearchError.value = '请输入有效的正整数 UID';
+    return null;
+  }
+  quickSearchError.value = null;
+  return uid;
 };
 
 const handleQuickJumpUser = () => {
-  const uid = Number(quickSearchUid.value.trim().replace(/^UID[:：\s]*/i, ''));
-  if (Number.isFinite(uid) && uid > 0) {
-    window.open(getUserPageUrl(Math.floor(uid)), '_blank', 'noopener,noreferrer');
-    quickSearchUid.value = '';
-  }
+  const uid = parseQuickUid();
+  if (!uid) return;
+  window.open(getUserPageUrl(uid), '_blank', 'noopener,noreferrer');
+  quickSearchUid.value = '';
 };
 
 const handleQuickJumpChannel = () => {
-  const uid = Number(quickSearchUid.value.trim().replace(/^UID[:：\s]*/i, ''));
-  if (Number.isFinite(uid) && uid > 0) {
-    window.open(getChannelPageUrl(Math.floor(uid)), '_blank', 'noopener,noreferrer');
-    quickSearchUid.value = '';
-  }
+  const uid = parseQuickUid();
+  if (!uid) return;
+  window.open(getChannelPageUrl(uid), '_blank', 'noopener,noreferrer');
+  quickSearchUid.value = '';
 };
 
 let stopWatch: (() => void) | null = null;
 
 onMounted(async () => {
-  const res = (await chrome.runtime.sendMessage({
-    type: 'GET_RECORDER_STATE',
-  } satisfies ExtensionMessage)) as {
-    ok: boolean;
-    config?: ExtensionRecorderConfig;
-    state?: ExtensionRecorderState;
-  };
-  if (res?.config) {
+  try {
+    const res = await getRecorderStateFromBackground();
     config.value = res.config;
     tokenDraft.value = res.config.accountToken;
-  }
-  if (res?.state) {
     state.value = res.state;
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : '读取扩展状态失败';
   }
 
   stopWatch = onStorageStateChanged((nextState, nextConfig) => {
@@ -141,33 +142,44 @@ onUnmounted(() => {
     </header>
 
     <!-- 快捷 UID 直达查询 -->
-    <form
-      class="flex items-center gap-1.5 rounded-lg border border-border bg-card p-1.5"
-      @submit.prevent="handleQuickJumpUser"
+    <div class="space-y-1">
+      <form
+        class="flex items-center gap-1.5 rounded-lg border border-border bg-card p-1.5"
+        @submit.prevent="handleQuickJumpUser"
+      >
+        <div class="relative flex-1">
+          <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            v-model="quickSearchUid"
+            type="text"
+            placeholder="输入 B站 UID 查发言或主播..."
+            class="h-7 w-full bg-transparent pl-7 pr-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+            @input="quickSearchError = null"
+          />
+        </div>
+        <button
+          type="submit"
+          class="rounded-md bg-primary/15 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/25 transition"
+        >
+          查观众
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-accent transition"
+          @click="handleQuickJumpChannel"
+        >
+          看主播
+        </button>
+      </form>
+      <p v-if="quickSearchError" class="px-1 text-[11px] text-destructive">{{ quickSearchError }}</p>
+    </div>
+
+    <div
+      v-if="actionError"
+      class="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive break-all"
     >
-      <div class="relative flex-1">
-        <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <input
-          v-model="quickSearchUid"
-          type="text"
-          placeholder="输入 B站 UID 查发言或主播..."
-          class="h-7 w-full bg-transparent pl-7 pr-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
-        />
-      </div>
-      <button
-        type="submit"
-        class="rounded-md bg-primary/15 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/25 transition"
-      >
-        查观众
-      </button>
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-accent transition"
-        @click="handleQuickJumpChannel"
-      >
-        看主播
-      </button>
-    </form>
+      {{ actionError }}
+    </div>
 
     <!-- 账号与 B站 Cookie 自动状态卡 -->
     <section class="rounded-xl border border-border bg-card p-3 space-y-2.5">

@@ -32,6 +32,7 @@ export interface RecorderRoomItem {
 export interface ExtensionRecorderState {
   isRunning: boolean;
   runtimeConnected: boolean;
+  hasToken: boolean;
   cookieValid: boolean;
   biliUid: number | null;
   biliUname: string | null;

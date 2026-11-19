@@ -1,6 +1,7 @@
 import { createApp } from 'vue';
 import '../../assets/tailwind.css';
 import BiliEnhancerRoot from '../../components/BiliEnhancerRoot.vue';
+import { watchBiliDarkTheme } from '../../utils/bili-dom';
 
 export default defineContentScript({
   matches: [
@@ -14,29 +15,13 @@ export default defineContentScript({
       position: 'inline',
       anchor: 'body',
       onMount(container, shadow) {
-        const syncDarkTheme = () => {
-          const isBiliDark =
-            document.documentElement.classList.contains('dark') ||
-            document.documentElement.getAttribute('data-dark') === 'true' ||
-            document.body?.classList.contains('dark') ||
-            window.matchMedia('(prefers-color-scheme: dark)').matches;
-          container.classList.toggle('dark', isBiliDark);
-          shadow.host.classList.toggle('dark', isBiliDark);
-        };
-        syncDarkTheme();
-
-        const observer = new MutationObserver(syncDarkTheme);
-        observer.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ['class', 'data-dark', 'theme'],
-        });
-
+        const stopTheme = watchBiliDarkTheme(container, shadow.host as HTMLElement);
         const app = createApp(BiliEnhancerRoot);
         app.mount(container);
-        return { app, observer };
+        return { app, stopTheme };
       },
       onRemove(mounted) {
-        mounted?.observer.disconnect();
+        mounted?.stopTheme();
         mounted?.app.unmount();
       },
     });

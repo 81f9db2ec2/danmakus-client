@@ -21,6 +21,7 @@ import {
 import {
   formatDateTime,
   formatTimeOnly,
+  normalizeBiliImageUrl,
 } from '../utils/decoder';
 import {
   type DecodedDanmakuItem,
@@ -69,6 +70,7 @@ const contextModal = ref<{
   liveTitle: string;
   targetTs: number;
   loading: boolean;
+  error: string | null;
   items: DecodedDanmakuItem[];
 }>({
   open: false,
@@ -76,6 +78,7 @@ const contextModal = ref<{
   liveTitle: '',
   targetTs: 0,
   loading: false,
+  error: null,
   items: [],
 });
 
@@ -94,44 +97,70 @@ function newestFirst(groups: DecodedUserLiveGroup[]) {
   return [...groups].sort((a, b) => b.live.startDate - a.live.startDate);
 }
 
+let loadSeq = 0;
+let pageSeq = 0;
+let contextSeq = 0;
+
 const loadUserData = async (targetUid: number, filterChannelUid?: number) => {
   if (!targetUid || targetUid <= 0) return;
+  const seq = ++loadSeq;
+  pageSeq += 1;
   loading.value = true;
+  loadingPage.value = false;
   errorMsg.value = null;
   pageError.value = null;
   currentPage.value = 1;
 
   try {
-    const boot = await fetchUserBootstrap(targetUid, PAGE_SIZE, filterChannelUid);
-    if (!filterChannelUid) {
-      historyUserNames.value = boot.historyUserNames;
-      watchedChannels.value = boot.watchedChannels;
-      blocks.value = boot.blocks;
+    if (filterChannelUid) {
+      const res = await fetchUserHistoryPage(targetUid, 1, PAGE_SIZE, filterChannelUid);
+      if (seq !== loadSeq) return;
+      totalLives.value = res.total;
+      liveGroups.value = newestFirst(res.groups);
+      return;
     }
+
+    const boot = await fetchUserBootstrap(targetUid, PAGE_SIZE);
+    if (seq !== loadSeq) return;
+    historyUserNames.value = boot.historyUserNames;
+    watchedChannels.value = boot.watchedChannels;
+    blocks.value = boot.blocks;
     totalLives.value = boot.history.total;
     liveGroups.value = newestFirst(boot.history.groups);
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : '加载用户数据失败';
+    if (seq === loadSeq) {
+      errorMsg.value = err instanceof Error ? err.message : '加载用户数据失败';
+    }
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) {
+      loading.value = false;
+    }
   }
 };
 
 const goToPage = async (page: number) => {
-  if (!props.uid || loadingPage.value) return;
+  if (!props.uid) return;
+  const seq = ++pageSeq;
+  const targetUid = props.uid;
+  const filterChannel = selectedChannelUid.value;
   loadingPage.value = true;
   pageError.value = null;
   try {
-    const res = await fetchUserHistoryPage(props.uid, page, PAGE_SIZE, selectedChannelUid.value);
+    const res = await fetchUserHistoryPage(targetUid, page, PAGE_SIZE, filterChannel);
+    if (seq !== pageSeq || targetUid !== props.uid || filterChannel !== selectedChannelUid.value) return;
     liveGroups.value = newestFirst(res.groups);
     totalLives.value = res.total;
     currentPage.value = res.page;
     await nextTick();
     listScroller.value?.scrollTo({ top: 0 });
   } catch (err) {
-    pageError.value = err instanceof Error ? err.message : '翻页失败';
+    if (seq === pageSeq) {
+      pageError.value = err instanceof Error ? err.message : '翻页失败';
+    }
   } finally {
-    loadingPage.value = false;
+    if (seq === pageSeq) {
+      loadingPage.value = false;
+    }
   }
 };
 
@@ -157,21 +186,30 @@ const handleManualSearch = () => {
 };
 
 const openDanmakuContext = async (liveId: string, liveTitle: string, sendDate: number) => {
+  const seq = ++contextSeq;
   contextModal.value = {
     open: true,
     liveId,
     liveTitle,
     targetTs: sendDate,
     loading: true,
+    error: null,
     items: [],
   };
   try {
     const items = await fetchLiveContextDanmakus(liveId, sendDate, 45);
-    contextModal.value.items = items;
-  } catch {
-    contextModal.value.items = [];
+    if (seq === contextSeq) {
+      contextModal.value.items = items;
+    }
+  } catch (err) {
+    if (seq === contextSeq) {
+      contextModal.value.items = [];
+      contextModal.value.error = err instanceof Error ? err.message : '加载上下文弹幕失败';
+    }
   } finally {
-    contextModal.value.loading = false;
+    if (seq === contextSeq) {
+      contextModal.value.loading = false;
+    }
   }
 };
 
@@ -347,7 +385,7 @@ watch(
               <div class="flex items-center gap-2.5 min-w-0">
                 <img
                   v-if="ch.faceUrl"
-                  :src="ch.faceUrl"
+                  :src="normalizeBiliImageUrl(ch.faceUrl, '@64w_64h.webp')"
                   referrerpolicy="no-referrer"
                   class="h-8 w-8 rounded-full object-cover border border-border"
                 />
@@ -421,7 +459,7 @@ watch(
             >
               <img
                 v-if="ch.faceUrl"
-                :src="ch.faceUrl"
+                :src="normalizeBiliImageUrl(ch.faceUrl, '@32w_32h.webp')"
                 referrerpolicy="no-referrer"
                 class="h-4 w-4 rounded-full object-cover"
               />
@@ -453,7 +491,7 @@ watch(
               <div class="flex items-center gap-2 min-w-0">
                 <img
                   v-if="group.channel.faceUrl"
-                  :src="group.channel.faceUrl"
+                  :src="normalizeBiliImageUrl(group.channel.faceUrl, '@48w_48h.webp')"
                   referrerpolicy="no-referrer"
                   class="h-6 w-6 rounded-full object-cover shrink-0"
                 />
@@ -555,6 +593,12 @@ watch(
             正在加载该时间点附近的全场弹幕...
           </div>
           <div
+            v-else-if="contextModal.error"
+            class="py-12 text-center text-xs text-destructive"
+          >
+            {{ contextModal.error }}
+          </div>
+          <div
             v-else-if="contextModal.items.length === 0"
             class="py-12 text-center text-xs text-muted-foreground"
           >
@@ -566,10 +610,11 @@ watch(
             class="flex items-start gap-2 py-1.5 text-xs"
             :class="item.uId === uid ? 'bg-primary/10 -mx-2 px-2 rounded' : ''"
           >
-            <span class="shrink-0 font-mono text-[11px] text-muted-foreground">
+            <span class="shrink-0 pt-0.5 font-mono text-[11px] text-muted-foreground">
               {{ formatTimeOnly(item.sendDate) }}
             </span>
             <button
+              v-if="item.uId > 0"
               type="button"
               class="shrink-0 font-medium text-primary hover:underline"
               @click="
@@ -579,7 +624,10 @@ watch(
             >
               {{ item.uName || `UID:${item.uId}` }}:
             </button>
-            <span class="break-all">{{ item.message }}</span>
+            <span v-else class="shrink-0 font-medium text-muted-foreground">
+              {{ item.uName || '系统' }}:
+            </span>
+            <DanmakuContent :item="item" />
           </div>
         </div>
       </div>

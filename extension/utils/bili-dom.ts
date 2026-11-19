@@ -25,18 +25,59 @@ export interface BiliUserClickDetail {
   altKey?: boolean;
 }
 
+const isPositiveSafeInt = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+
+/** 同步 B 站页面亮/暗色主题到扩展 ShadowRoot */
+export function watchBiliDarkTheme(container: HTMLElement, host?: HTMLElement): () => void {
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  const sync = () => {
+    const isBiliDark =
+      document.documentElement.classList.contains('dark') ||
+      document.documentElement.getAttribute('data-dark') === 'true' ||
+      document.body?.classList.contains('dark') ||
+      media.matches;
+    container.classList.toggle('dark', isBiliDark);
+    host?.classList.toggle('dark', isBiliDark);
+  };
+  sync();
+
+  const observer = new MutationObserver(sync);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class', 'data-dark', 'theme'],
+  });
+  media.addEventListener('change', sync);
+
+  return () => {
+    observer.disconnect();
+    media.removeEventListener('change', sync);
+  };
+}
+
 export function attachBiliMainWorldBridge(options: {
   onPageContext?: (ctx: BiliMainWorldPageContext) => void;
   onUserClick?: (user: BiliUserClickDetail) => void;
 }): () => void {
   const handlePageContext = (e: Event) => {
-    const detail = (e as CustomEvent<BiliMainWorldPageContext>).detail;
-    if (!detail) return;
+    const raw = (e as CustomEvent<BiliMainWorldPageContext>).detail;
+    if (!raw || typeof raw !== 'object') return;
+    const roomId = isPositiveSafeInt(raw.roomId) ? raw.roomId : null;
+    const streamerUid = isPositiveSafeInt(raw.streamerUid) ? raw.streamerUid : null;
+    const loginUid = isPositiveSafeInt(raw.loginUid) ? raw.loginUid : null;
+    const detail: BiliMainWorldPageContext = {
+      href: typeof raw.href === 'string' ? raw.href : window.location.href,
+      roomId,
+      streamerUid,
+      streamerUname: typeof raw.streamerUname === 'string' ? raw.streamerUname : null,
+      loginUid,
+      loginUname: typeof raw.loginUname === 'string' ? raw.loginUname : null,
+    };
     latestMainWorldContext = detail;
-    if (detail.roomId && detail.streamerUid) {
-      roomInitCache.set(detail.roomId, {
-        uid: detail.streamerUid,
-        realRoomId: detail.roomId,
+    if (roomId && streamerUid) {
+      roomInitCache.set(roomId, {
+        uid: streamerUid,
+        realRoomId: roomId,
       });
     }
     options.onPageContext?.(detail);
@@ -44,7 +85,7 @@ export function attachBiliMainWorldBridge(options: {
 
   const handleUserClick = (e: Event) => {
     const detail = (e as CustomEvent<BiliUserClickDetail>).detail;
-    if (detail && detail.uid > 0) {
+    if (detail && isPositiveSafeInt(detail.uid)) {
       options.onUserClick?.(detail);
     }
   };

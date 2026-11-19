@@ -64,7 +64,12 @@ export const LIVE_MENU_ADAPTER: BiliCardAdapter = {
     requestAnimationFrame(() => {
       const rect = root.getBoundingClientRect();
       const overflow = rect.bottom - (window.innerHeight - 12);
-      if (overflow > 0) root.style.top = `${Math.max(12 - rect.top, -overflow) + root.offsetTop}px`;
+      if (overflow > 1) {
+        const nextTop = Math.round(Math.max(12 - rect.top, -overflow) + root.offsetTop);
+        if (Math.abs(nextTop - root.offsetTop) > 1) {
+          root.style.top = `${nextTop}px`;
+        }
+      }
     });
   },
 };

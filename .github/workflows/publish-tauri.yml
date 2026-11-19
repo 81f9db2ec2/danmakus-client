@@ -105,10 +105,20 @@ jobs:
           retryAttempts: 3
           args: ${{ matrix.args }}
 
+  publish-extension:
+    needs: create-release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-extension.yml
+    with:
+      release_id: ${{ needs.create-release.outputs.release_id }}
+      upload_to_release: true
+    secrets: inherit
+
   publish-release:
     permissions:
       contents: write
-    needs: [create-release, publish-tauri]
+    needs: [create-release, publish-tauri, publish-extension]
     runs-on: ubuntu-latest
     steps:
       - name: Publish release

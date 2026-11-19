@@ -148,6 +148,9 @@ export const buildBackendApiCandidateUrls = (url: string, origins?: readonly str
   }
 };
 
+const isRetryableHttpStatus = (status: number): boolean =>
+  status === 408 || status === 429 || status >= 500;
+
 export async function fetchBackendApiWithFallback(
   fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   url: string,
@@ -202,7 +205,7 @@ export async function fetchBackendApiWithFallback(
         sourceSignal?.removeEventListener('abort', handleAbort);
       }
 
-      if (response.ok || index === candidates.length - 1) {
+      if (response.ok || !isRetryableHttpStatus(response.status) || index === candidates.length - 1) {
         return response;
       }
       lastError = new Error(`HTTP ${response.status}`);

@@ -1,0 +1,176 @@
+name: publish-extension
+
+on:
+  workflow_call:
+    inputs:
+      release_id:
+        description: 'Existing GitHub Release ID to attach the extension archive to'
+        required: false
+        type: string
+      upload_to_release:
+        description: 'Whether to upload built archive to GitHub Release'
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Extension version without prefix (defaults to extension/package.json version)'
+        required: false
+        type: string
+      publish_release:
+        description: 'Create/update GitHub Release ext-v<version>'
+        required: false
+        default: true
+        type: boolean
+      prerelease:
+        description: 'Mark GitHub Release as prerelease'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'ext-v*'
+  pull_request:
+    paths:
+      - 'extension/**'
+      - 'danmakus-core/**'
+      - '.github/workflows/publish-extension.yml'
+
+jobs:
+  build-extension:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install dependencies
+        run: |
+          bun install --cwd danmakus-core --frozen-lockfile
+          bun install --cwd extension
+
+      - name: resolve and sync version
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_call" ]]; then
+            bun run sync:version
+            VERSION="$(node -p "require('./extension/package.json').version")"
+            TAG="v${VERSION}"
+            SHOULD_UPLOAD="${{ inputs.upload_to_release }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#ext-v}"
+            TAG="${GITHUB_REF_NAME}"
+            SHOULD_UPLOAD="true"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            INPUT_VERSION="${{ inputs.version }}"
+            if [[ -n "$INPUT_VERSION" ]]; then
+              VERSION="$INPUT_VERSION"
+            else
+              VERSION="$(node -p "require('./extension/package.json').version")"
+            fi
+            TAG="ext-v${VERSION}"
+            SHOULD_UPLOAD="${{ inputs.publish_release }}"
+          else
+            VERSION="$(node -p "require('./extension/package.json').version")"
+            TAG="ext-v${VERSION}"
+            SHOULD_UPLOAD="false"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid extension version: $VERSION" >&2
+            exit 1
+          fi
+
+          node -e "
+            const fs = require('node:fs');
+            const p = 'extension/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+            if (pkg.version !== '$VERSION') {
+              pkg.version = '$VERSION';
+              fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+            }
+          "
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "should_upload=$SHOULD_UPLOAD" >> "$GITHUB_OUTPUT"
+
+      - name: test danmakus-core
+        run: bun run --cwd danmakus-core test
+
+      - name: typecheck extension
+        run: bun run --cwd extension typecheck
+
+      - name: build and zip extension
+        id: build
+        shell: bash
+        run: |
+          bun run --cwd danmakus-core build
+          bun run --cwd extension zip
+          ZIP_PATH="$(find extension/.output -maxdepth 1 -type f -name '*-chrome.zip' | head -n 1)"
+          if [[ -z "$ZIP_PATH" || ! -f "$ZIP_PATH" ]]; then
+            echo "Expected chrome extension zip in extension/.output" >&2
+            exit 1
+          fi
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$(basename "$ZIP_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: danmakus-extension-${{ steps.meta.outputs.version }}-chrome
+          path: ${{ steps.build.outputs.zip_path }}
+          if-no-files-found: error
+
+      - name: upload archive to github release
+        if: steps.meta.outputs.should_upload == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          ZIP_PATH="${{ steps.build.outputs.zip_path }}"
+          ZIP_NAME="${{ steps.build.outputs.zip_name }}"
+          RELEASE_ID="${{ inputs.release_id }}"
+
+          if [[ -z "$RELEASE_ID" ]]; then
+            RELEASE_ID="$(gh api "repos/${REPO}/releases" --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1)"
+          fi
+
+          if [[ -z "$RELEASE_ID" ]]; then
+            IS_PRERELEASE="false"
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.prerelease }}" == "true" ]]; then
+              IS_PRERELEASE="true"
+            elif [[ "${{ steps.meta.outputs.version }}" == *-* ]]; then
+              IS_PRERELEASE="true"
+            fi
+            RELEASE_ID="$(gh api "repos/${REPO}/releases" \
+              -f tag_name="$TAG" \
+              -f target_commitish="${{ github.sha }}" \
+              -f name="danmakus-extension ${TAG}" \
+              -f body="Automated release for Danmakus Chrome Extension (${TAG})." \
+              -F draft=false \
+              -F prerelease="$IS_PRERELEASE" \
+              --jq '.id')"
+          fi
+
+          EXISTING_ASSET_ID="$(gh api "repos/${REPO}/releases/${RELEASE_ID}/assets" --jq ".[] | select(.name == \"${ZIP_NAME}\") | .id" | head -n 1)"
+          if [[ -n "$EXISTING_ASSET_ID" ]]; then
+            gh api -X DELETE "repos/${REPO}/releases/assets/${EXISTING_ASSET_ID}"
+          fi
+
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/zip" \
+            --data-binary "@${ZIP_PATH}" \
+            "https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${ZIP_NAME}" >/dev/null

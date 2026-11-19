@@ -287,27 +287,29 @@ export default defineContentScript({
       }
     }
 
-    function tryInjectLookupItem() {
+    function tryInjectLookupItem(): boolean {
       const menu = findNativeUserMenu();
-      if (!menu) return;
+      if (!menu) return false;
       const user = extractUserFromVueNode(menu) ?? pendingUser;
-      if (!user || user.uid <= 0) return;
+      if (!user || user.uid <= 0) return false;
       injectLookupItem(menu, user);
+      return true;
     }
 
     function scheduleMenuInject() {
-      if (injectTimer !== null) window.clearInterval(injectTimer);
+      if (injectTimer !== null) {
+        window.clearInterval(injectTimer);
+        injectTimer = null;
+      }
+      if (tryInjectLookupItem()) return;
       let attempts = 0;
-      const tick = () => {
+      injectTimer = window.setInterval(() => {
         attempts += 1;
-        tryInjectLookupItem();
-        if (attempts >= 24) {
+        if (tryInjectLookupItem() || attempts >= 24) {
           if (injectTimer !== null) window.clearInterval(injectTimer);
           injectTimer = null;
         }
-      };
-      tick();
-      injectTimer = window.setInterval(tick, 50);
+      }, 50);
     }
 
     function broadcastPageContext() {
@@ -319,7 +321,7 @@ export default defineContentScript({
       broadcastPageContext();
     });
 
-    // 不拦截点击：仅记录被点用户，等 B 站原生菜单出来后嵌入一项
+    // 不拦截点击（使用捕获阶段防止 B 站组件 stopPropagation 漏掉）：仅记录被点用户，等原生菜单出来后嵌入一项
     document.addEventListener('click', (event) => {
       if (location.hostname !== 'live.bilibili.com') return;
       const target = event.target as HTMLElement | null;
@@ -336,7 +338,7 @@ export default defineContentScript({
       const user = extractUserFromVueNode(target);
       if (user && user.uid > 0) pendingUser = user;
       scheduleMenuInject();
-    });
+    }, { capture: true });
 
     broadcastPageContext();
     setTimeout(broadcastPageContext, 1200);

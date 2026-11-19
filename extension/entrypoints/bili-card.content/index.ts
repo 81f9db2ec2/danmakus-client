@@ -3,6 +3,7 @@ import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import '../../assets/tailwind.css';
 import CardDanmakuHistory from '../../components/CardDanmakuHistory.vue';
 import { BILI_CARD_ADAPTERS, LIVE_MENU_ADAPTER, LIVE_MENU_EVENT, type BiliCardAdapter } from '../../utils/bili-cards';
+import { watchBiliDarkTheme } from '../../utils/bili-dom';
 import { useCardSettings } from '../../utils/card-settings';
 
 const OBSERVE_OPTIONS: MutationObserverInit = {
@@ -22,18 +23,22 @@ async function bindCard(ctx: ContentScriptContext, root: Element, adapter: BiliC
         ? h(CardDanmakuHistory, { uid: uid.value, settings: settings.value })
         : null;
   });
+  let stopTheme: (() => void) | null = null;
   const ui = await createShadowRootUi(ctx, {
     name: 'danmakus-card-history',
     position: 'inline',
     anchor: root,
     // 挂载位置由 sync 决定
     append: () => {},
-    onMount(container) {
+    onMount(container, shadow) {
+      stopTheme = watchBiliDarkTheme(container, shadow.host as HTMLElement);
       const app = createApp(CardRoot);
       app.mount(container);
       return app;
     },
     onRemove(app) {
+      stopTheme?.();
+      stopTheme = null;
       app?.unmount();
     },
   });
@@ -44,6 +49,7 @@ async function bindCard(ctx: ContentScriptContext, root: Element, adapter: BiliC
   const observer = new MutationObserver(() => schedule());
   let observedShadow: ShadowRoot | null = null;
   let scheduled = false;
+  let lastAfterSyncUid: number | null = null;
 
   const sync = () => {
     scheduled = false;
@@ -54,11 +60,17 @@ async function bindCard(ctx: ContentScriptContext, root: Element, adapter: BiliC
     }
     const scope = adapter.scope(root);
     const parent = scope && adapter.mountParent(scope);
-    uid.value = parent && getComputedStyle(root).display !== 'none' ? adapter.readUid(scope) : null;
+    const nextUid = parent && getComputedStyle(root).display !== 'none' ? adapter.readUid(scope) : null;
+    uid.value = nextUid;
     if (parent && parent.lastChild !== ui.shadowHost) {
       parent.append(ui.shadowHost);
     }
-    if (uid.value) adapter.afterSync?.(root as HTMLElement);
+    if (nextUid && nextUid !== lastAfterSyncUid) {
+      lastAfterSyncUid = nextUid;
+      adapter.afterSync?.(root as HTMLElement);
+    } else if (!nextUid) {
+      lastAfterSyncUid = null;
+    }
   };
   const schedule = () => {
     if (scheduled) return;

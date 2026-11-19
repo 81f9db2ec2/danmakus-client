@@ -120,9 +120,20 @@ export function filterInteractiveDanmakus(items: DecodedDanmakuItem[]): DecodedD
   );
 }
 
+export function normalizeTimestampMs(ts: number): number {
+  return ts < 10_000_000_000 ? ts * 1000 : ts;
+}
+
+export function normalizeBiliImageUrl(url: string | null | undefined, suffix = ''): string {
+  const clean = url?.trim().replace(/^http:/i, 'https:');
+  if (!clean) return '';
+  if (!suffix || /@[^/]+$/.test(clean)) return clean;
+  return `${clean}${suffix}`;
+}
+
 export function formatRelativeTime(tsMs: number): string {
   if (!tsMs || tsMs <= 0) return '';
-  const normalized = tsMs < 10_000_000_000 ? tsMs * 1000 : tsMs;
+  const normalized = normalizeTimestampMs(tsMs);
   const diffSec = Math.floor((Date.now() - normalized) / 1000);
   if (diffSec < 60) return '刚刚';
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}分钟前`;
@@ -134,7 +145,7 @@ export function formatRelativeTime(tsMs: number): string {
 
 export function formatDateTime(tsMs: number): string {
   if (!tsMs || tsMs <= 0) return '-';
-  const normalized = tsMs < 10_000_000_000 ? tsMs * 1000 : tsMs;
+  const normalized = normalizeTimestampMs(tsMs);
   const d = new Date(normalized);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -142,7 +153,7 @@ export function formatDateTime(tsMs: number): string {
 
 export function formatTimeOnly(tsMs: number): string {
   if (!tsMs || tsMs <= 0) return '';
-  const normalized = tsMs < 10_000_000_000 ? tsMs * 1000 : tsMs;
+  const normalized = normalizeTimestampMs(tsMs);
   const d = new Date(normalized);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;

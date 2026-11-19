@@ -1150,6 +1150,7 @@ export class DanmakuClient extends EventEmitter<DanmakuClientEvents> {
   }
 
   dispose(): void {
+    this.controlState.stopControlSync();
     this.authManager.dispose();
   }
 

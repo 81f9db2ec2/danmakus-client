@@ -18,16 +18,31 @@ const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
 const KEEPALIVE_ALARM_NAME = 'danmakus_recorder_keepalive';
 const BILI_HEADER_RULE_ID = 1001;
 const BILI_PROFILE_CACHE_MS = 60_000;
+const ACCOUNT_INFO_CACHE_MS = 60_000;
 const ACCOUNT_INFO_RETRY_MS = 60_000;
+const BACKEND_REQUEST_TIMEOUT_MS = 8_000;
 const ALLOWED_API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const BILI_AUTH_COOKIE_NAMES = new Set(['SESSDATA', 'DedeUserID', 'bili_jct', 'DedeUserID__ckMd5']);
+const CONTENT_SCRIPT_API_PREFIXES = ['/api/v2/channel', '/api/v3/users/', '/api/v3/lives/'];
 /** content script 只允许修改的配置项；token、clientId 等只能由 popup 或 danmakus.com 同步修改 */
 const CONTENT_SCRIPT_CONFIG_KEYS = new Set<keyof ExtensionRecorderConfig>(['enabled']);
 const POPUP_CONFIG_KEYS = new Set<keyof ExtensionRecorderConfig>(['enabled', 'maxRooms', 'accountToken']);
 
 let creatingOffscreen: Promise<void> | null = null;
 let appliedCookieHeader: string | null = null;
+let cookieRuleChain: Promise<string> = Promise.resolve('');
+let legacyRuleCleanupPromise: Promise<void> | null = null;
 let lastSavedStateKey: string | null = null;
 let accountInfoFailure: { token: string; at: number } | null = null;
+let cachedAccountProfile: {
+  token: string;
+  id: number;
+  name: string;
+  avatar: string | null;
+  todayProvidedCount: number;
+  totalProvidedCount: number;
+  fetchedAt: number;
+} | null = null;
 let reconcileChain: Promise<unknown> = Promise.resolve();
 let cachedBiliProfile: {
   cookieValid: boolean;
@@ -41,12 +56,33 @@ let cachedBiliProfile: {
   checkedAt: 0,
 };
 
+function cleanupLegacyDynamicRules(): Promise<void> {
+  if (!legacyRuleCleanupPromise) {
+    legacyRuleCleanupPromise = chrome.declarativeNetRequest
+      .getDynamicRules()
+      .then((rules) =>
+        rules.length > 0
+          ? chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: rules.map((r) => r.id) })
+          : undefined,
+      )
+      .catch(() => undefined);
+  }
+  return legacyRuleCleanupPromise;
+}
+
 /**
  * 改写扩展自己发出的 B 站请求头。不限 initiator 会把空间页 Origin 改成 live.bilibili.com，触发 CORS。
  * Cookie 必须显式写入：Chrome 会把扩展发起的请求视为跨站，第三方 Cookie 受限时不会原生附带登录态（nav 返回 -101）。
- * Cookie 按 api.bilibili.com 的 host/path 作用域读取，避免把子域上残留的过期 SESSDATA 混进来覆盖有效值。
+ * 串行更新避免登录瞬间多条 Cookie 写入竞态覆盖 appliedCookieHeader。
  */
-async function syncBilibiliHeaderRule(): Promise<string> {
+function syncBilibiliHeaderRule(): Promise<string> {
+  const run = cookieRuleChain.then(doSyncBilibiliHeaderRule, doSyncBilibiliHeaderRule);
+  cookieRuleChain = run.catch(() => '');
+  return run;
+}
+
+async function doSyncBilibiliHeaderRule(): Promise<string> {
+  await cleanupLegacyDynamicRules();
   const cookieHeader = await readBilibiliCookieHeader();
   if (cookieHeader === appliedCookieHeader) return cookieHeader;
 
@@ -82,9 +118,24 @@ async function syncBilibiliHeaderRule(): Promise<string> {
   return cookieHeader;
 }
 
+/** 优先按 api.bilibili.com 作用域读取，再补充仅在 live.bilibili.com 作用域下的 Cookie，避免子域残留过期 SESSDATA 覆盖有效值 */
 async function readBilibiliCookieHeader(): Promise<string> {
-  const cookies = await chrome.cookies.getAll({ url: 'https://api.bilibili.com/' });
-  return cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  const [apiCookies, liveCookies] = await Promise.all([
+    chrome.cookies.getAll({ url: 'https://api.bilibili.com/' }),
+    chrome.cookies.getAll({ url: 'https://live.bilibili.com/' }),
+  ]);
+  const merged = new Map<string, string>();
+  for (const c of apiCookies) {
+    merged.set(c.name, c.value);
+  }
+  for (const c of liveCookies) {
+    if (!merged.has(c.name)) {
+      merged.set(c.name, c.value);
+    }
+  }
+  return Array.from(merged.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
 }
 
 async function probeBilibiliAuthProfile(force = false): Promise<{
@@ -143,12 +194,18 @@ async function probeBilibiliAuthProfile(force = false): Promise<{
 }
 
 async function hasOffscreenDocument(): Promise<boolean> {
+  const targetUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
   if ('getContexts' in chrome.runtime) {
     const contexts = await chrome.runtime.getContexts({
       contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
-      documentUrls: [chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)],
+      documentUrls: [targetUrl],
     });
     return contexts.length > 0;
+  }
+  const swClients = (globalThis as { clients?: { matchAll?: (opts: { includeUncontrolled?: boolean; type?: string }) => Promise<Array<{ url: string }>> } }).clients;
+  if (swClients?.matchAll) {
+    const matched = await swClients.matchAll({ includeUncontrolled: true, type: 'window' });
+    return matched.some((c) => c.url === targetUrl);
   }
   return false;
 }
@@ -162,7 +219,7 @@ async function ensureOffscreenDocument(): Promise<void> {
   creatingOffscreen = chrome.offscreen
     .createDocument({
       url: OFFSCREEN_DOCUMENT_PATH,
-      reasons: [chrome.offscreen.Reason.WEB_RTC, chrome.offscreen.Reason.BLOBS],
+      reasons: [chrome.offscreen.Reason.BLOBS],
       justification: 'Maintain Bilibili live WebSocket connections and upload danmaku packets',
     })
     .finally(() => {
@@ -201,34 +258,58 @@ async function syncAccountProfileIfNeeded(
   state: ExtensionRecorderState,
 ): Promise<ExtensionRecorderState> {
   const bili = await probeBilibiliAuthProfile(false);
+  const token = config.accountToken.trim();
+  const hasToken = Boolean(token);
+
+  // 以实时探测结果为准，B 站退出登录时必须同步清零
   const withBili: ExtensionRecorderState = {
     ...state,
-    // 以实时探测结果为准，避免 B 站换号后仍沿用存储中的旧账号
-    cookieValid: bili.cookieValid || state.cookieValid,
-    biliUid: bili.biliUid ?? state.biliUid,
-    biliUname: bili.biliUname ?? state.biliUname,
+    hasToken,
+    cookieValid: bili.cookieValid,
+    biliUid: bili.biliUid,
+    biliUname: bili.biliUname,
   };
 
-  const token = config.accountToken.trim();
-  if (!token) {
+  if (!hasToken) {
+    cachedAccountProfile = null;
     return {
       ...withBili,
       accountId: null,
       accountName: null,
       accountAvatar: null,
+      todayProvidedCount: 0,
+      totalProvidedCount: 0,
     };
   }
-  if (withBili.accountId && withBili.accountName) {
-    return withBili;
+
+  const now = Date.now();
+  const tokenChanged = cachedAccountProfile !== null && cachedAccountProfile.token !== token;
+  if (tokenChanged) {
+    cachedAccountProfile = null;
   }
+
+  if (cachedAccountProfile && now - cachedAccountProfile.fetchedAt < ACCOUNT_INFO_CACHE_MS) {
+    return {
+      ...withBili,
+      accountId: cachedAccountProfile.id,
+      accountName: cachedAccountProfile.name,
+      accountAvatar: cachedAccountProfile.avatar,
+      todayProvidedCount: Math.max(cachedAccountProfile.todayProvidedCount, withBili.todayProvidedCount),
+      totalProvidedCount: Math.max(cachedAccountProfile.totalProvidedCount, withBili.totalProvidedCount),
+    };
+  }
+
   // 账号信息接口失败后退避，避免每次状态推送都请求后端
   if (
     accountInfoFailure &&
     accountInfoFailure.token === token &&
-    Date.now() - accountInfoFailure.at < ACCOUNT_INFO_RETRY_MS
+    now - accountInfoFailure.at < ACCOUNT_INFO_RETRY_MS
   ) {
-    return withBili;
+    return tokenChanged
+      ? { ...withBili, accountId: null, accountName: null, accountAvatar: null }
+      : withBili;
   }
+
   try {
     const info = await performBackendApiRequest<{
       id: number;
@@ -238,17 +319,32 @@ async function syncAccountProfileIfNeeded(
       totalProvidedDanmakuDataCount?: number;
     }>('/api/v2/account/info', { useToken: true });
     accountInfoFailure = null;
+    const accountName = info.name ?? `UID ${info.id}`;
+    const accountAvatar = info.avatar ?? null;
+    const todayCount = Number(info.todayProvidedDanmakuDataCount ?? withBili.todayProvidedCount);
+    const totalCount = Number(info.totalProvidedDanmakuDataCount ?? withBili.totalProvidedCount);
+    cachedAccountProfile = {
+      token,
+      id: info.id,
+      name: accountName,
+      avatar: accountAvatar,
+      todayProvidedCount: todayCount,
+      totalProvidedCount: totalCount,
+      fetchedAt: Date.now(),
+    };
     return {
       ...withBili,
       accountId: info.id,
-      accountName: info.name ?? `UID ${info.id}`,
-      accountAvatar: info.avatar ?? null,
-      todayProvidedCount: Number(info.todayProvidedDanmakuDataCount ?? withBili.todayProvidedCount),
-      totalProvidedCount: Number(info.totalProvidedDanmakuDataCount ?? withBili.totalProvidedCount),
+      accountName,
+      accountAvatar,
+      todayProvidedCount: Math.max(todayCount, withBili.todayProvidedCount),
+      totalProvidedCount: Math.max(totalCount, withBili.totalProvidedCount),
     };
   } catch {
     accountInfoFailure = { token, at: Date.now() };
-    return withBili;
+    return tokenChanged
+      ? { ...withBili, accountId: null, accountName: null, accountAvatar: null }
+      : withBili;
   }
 }
 
@@ -292,8 +388,11 @@ async function doReconcileRecorderRuntime(): Promise<ExtensionRecorderState> {
       type: 'OFFSCREEN_START_OR_UPDATE',
       config,
       biliCookie,
-    } satisfies ExtensionMessage)) as { ok: boolean; state?: ExtensionRecorderState } | undefined;
+    } satisfies ExtensionMessage)) as { ok: boolean; error?: string; state?: ExtensionRecorderState } | undefined;
     const baseState = res?.state ?? (await loadRecorderState());
+    if (res && !res.ok && res.error && !baseState.lastError) {
+      baseState.lastError = res.error;
+    }
     const nextState = await syncAccountProfileIfNeeded(config, baseState);
     await saveRecorderStateIfChanged(nextState);
     await updateBadge(nextState, config);
@@ -340,11 +439,16 @@ async function performBackendApiRequest<T>(
     headers.set('Token', config.accountToken.trim());
   }
 
-  const response = await fetchBackendApiWithFallback(globalThis.fetch.bind(globalThis), url, {
-    method,
-    headers,
-    body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
+  const response = await fetchBackendApiWithFallback(
+    globalThis.fetch.bind(globalThis),
+    url,
+    {
+      method,
+      headers,
+      body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
+    },
+    { timeoutMs: BACKEND_REQUEST_TIMEOUT_MS },
+  );
 
   const text = await response.text();
   let parsed: any = null;
@@ -359,11 +463,11 @@ async function performBackendApiRequest<T>(
     throw new Error(msg);
   }
 
-  if (parsed && typeof parsed === 'object' && 'code' in parsed && 'data' in parsed) {
+  if (parsed && typeof parsed === 'object' && 'code' in parsed) {
     if (parsed.code !== 200) {
       throw new Error(parsed.message || `业务错误 (${parsed.code})`);
     }
-    return parsed.data as T;
+    return ('data' in parsed ? parsed.data : parsed) as T;
   }
 
   return parsed as T;
@@ -412,12 +516,22 @@ function isDanmakusSiteSender(sender: chrome.runtime.MessageSender): boolean {
   }
 }
 
+const redactConfigForSender = (
+  config: ExtensionRecorderConfig,
+  senderKind: SenderKind,
+): ExtensionRecorderConfig => (senderKind === 'extensionPage' ? config : { ...config, accountToken: '' });
+
+const isAllowedContentScriptApiPath = (path: unknown, method: string): boolean => {
+  if (method.toUpperCase() !== 'GET' || typeof path !== 'string') return false;
+  return CONTENT_SCRIPT_API_PREFIXES.some((prefix) => path.startsWith(prefix));
+};
+
 export default defineBackground(() => {
   // 旧版本曾用持久化的 dynamic rules 写死 Cookie（同 id 1001），实测会盖过 session rules，导致请求一直带作废的 SESSDATA；
-  // 本扩展已不使用 dynamic rules，安装/更新时整体清除
-  chrome.runtime.onInstalled.addListener(async () => {
-    const rules = await chrome.declarativeNetRequest.getDynamicRules();
-    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: rules.map((r) => r.id) });
+  // 本扩展已不使用 dynamic rules，安装/更新及启动时整体清除
+  chrome.runtime.onInstalled.addListener(() => {
+    legacyRuleCleanupPromise = null;
+    void cleanupLegacyDynamicRules();
   });
 
   void reconcileRecorderRuntime();
@@ -435,7 +549,11 @@ export default defineBackground(() => {
 
   // B 站会轮换 SESSDATA，DNR 规则里写死的 Cookie 必须随之立即更新，否则请求带的是已作废的旧值（nav -101）
   chrome.cookies.onChanged.addListener(({ cookie }) => {
-    if (cookie.domain.endsWith('bilibili.com')) void syncBilibiliHeaderRule();
+    if (!cookie.domain.endsWith('bilibili.com')) return;
+    if (BILI_AUTH_COOKIE_NAMES.has(cookie.name)) {
+      cachedBiliProfile.checkedAt = 0;
+    }
+    void syncBilibiliHeaderRule();
   });
 
   chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
@@ -452,20 +570,26 @@ export default defineBackground(() => {
 
     if (message.type === 'OFFSCREEN_STATE_PUSH') {
       if (senderKind !== 'offscreen') return false;
-      void loadRecorderConfig().then(async (config) => {
-        const enrichedState = await syncAccountProfileIfNeeded(config, message.state);
-        await saveRecorderStateIfChanged(enrichedState);
-        await updateBadge(enrichedState, config);
-      });
-      sendResponse({ ok: true });
-      return false;
+      void loadRecorderConfig()
+        .then(async (config) => {
+          const enrichedState = await syncAccountProfileIfNeeded(config, message.state);
+          await saveRecorderStateIfChanged(enrichedState);
+          await updateBadge(enrichedState, config);
+          sendResponse({ ok: true });
+        })
+        .catch((err) => sendResponse({ ok: false, error: errorMessage(err) }));
+      return true;
     }
 
     if (message.type === 'GET_RECORDER_STATE') {
       void Promise.all([loadRecorderConfig(), loadRecorderState()])
         .then(async ([config, state]) => {
           const enriched = await syncAccountProfileIfNeeded(config, state);
-          sendResponse({ ok: true, config, state: enriched });
+          sendResponse({
+            ok: true,
+            config: redactConfigForSender(config, senderKind),
+            state: enriched,
+          });
         })
         .catch((err) => sendResponse({ ok: false, error: errorMessage(err) }));
       return true;
@@ -477,7 +601,11 @@ export default defineBackground(() => {
       void saveRecorderConfig(patch)
         .then(async (config) => {
           const state = await reconcileRecorderRuntime();
-          sendResponse({ ok: true, config, state });
+          sendResponse({
+            ok: true,
+            config: redactConfigForSender(config, senderKind),
+            state,
+          });
         })
         .catch((err) => sendResponse({ ok: false, error: errorMessage(err) }));
       return true;
@@ -503,7 +631,12 @@ export default defineBackground(() => {
           }
           const config = await saveRecorderConfig({ accountToken: nextToken });
           const state = await reconcileRecorderRuntime();
-          sendResponse({ ok: true, synced: true, config, state });
+          sendResponse({
+            ok: true,
+            synced: true,
+            config: redactConfigForSender(config, senderKind),
+            state,
+          });
         })
         .catch((err) => sendResponse({ ok: false, error: errorMessage(err) }));
       return true;
@@ -524,8 +657,13 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'API_REQUEST') {
+      const method = String(message.method ?? 'GET').toUpperCase();
+      if (senderKind === 'contentScript' && !isAllowedContentScriptApiPath(message.path, method)) {
+        sendResponse({ ok: false, error: '无权调用该接口' });
+        return false;
+      }
       void performBackendApiRequest(message.path, {
-        method: message.method,
+        method,
         body: message.body,
         useToken: message.useToken,
       })

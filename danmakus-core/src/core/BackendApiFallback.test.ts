@@ -123,6 +123,43 @@ describe('fetchBackendApiWithFallback', () => {
       'https://proxy.example.com/api/v2/account/core-config',
     ]);
   });
+
+  test('does not fall back on non-retryable 4xx client errors', async () => {
+    const requests: string[] = [];
+    const response = await fetchBackendApiWithFallback(
+      async (input) => {
+        requests.push(String(input));
+        return new Response('unauthorized', { status: 401 });
+      },
+      'https://ukamnads.icu/api/v2/account/info',
+    );
+
+    expect(response.status).toBe(401);
+    expect(requests).toEqual([
+      'https://ukamnads.icu/api/v2/account/info',
+    ]);
+  });
+
+  test('falls back on 429 rate-limit responses', async () => {
+    const requests: string[] = [];
+    const response = await fetchBackendApiWithFallback(
+      async (input) => {
+        const url = String(input);
+        requests.push(url);
+        if (url === 'https://api.ukamnads.icu/api/v2/account/info') {
+          return new Response('ok', { status: 200 });
+        }
+        return new Response('too many requests', { status: 429 });
+      },
+      'https://ukamnads.icu/api/v2/account/info',
+    );
+
+    expect(response.ok).toBe(true);
+    expect(requests).toEqual([
+      'https://ukamnads.icu/api/v2/account/info',
+      'https://api.ukamnads.icu/api/v2/account/info',
+    ]);
+  });
 });
 
 describe('buildBackendWsCandidateUrls', () => {

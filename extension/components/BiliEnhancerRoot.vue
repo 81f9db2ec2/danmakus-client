@@ -1,29 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import {
-  Activity,
   ExternalLink,
   Loader2,
   PlusCircle,
-  Radio,
   Search,
-  Sparkles,
-  Tv,
-  Users,
 } from 'lucide-vue-next';
 import {
   addChannelToAccountRecording,
   fetchChannelOverview,
   getChannelPageUrl,
   getLivePageUrl,
+  getRecorderStateFromBackground,
+  updateRecorderConfigInBackground,
 } from '../utils/api';
 import { attachBiliMainWorldBridge, detectCurrentBiliPage, type BiliPageTarget } from '../utils/bili-dom';
 import { formatCompactNumber, formatCurrency } from '../utils/decoder';
 import { onStorageStateChanged } from '../utils/storage';
 import {
-  MAX_EXTENSION_ROOMS,
   type ChannelDetailResponse,
-  type ExtensionMessage,
   type ExtensionRecorderConfig,
   type ExtensionRecorderState,
 } from '../utils/types';
@@ -47,7 +42,10 @@ const recorderConfig = ref<ExtensionRecorderConfig | null>(null);
 const drawerOpen = ref(false);
 const lookupUid = ref<number | null>(null);
 const lookupName = ref<string | undefined>(undefined);
-const hoverPillExpanded = ref(false);
+const togglingRecorder = ref(false);
+const hasRecorderToken = computed(() =>
+  Boolean(recorderState.value?.hasToken || recorderConfig.value?.accountToken),
+);
 
 const activeLive = computed(() => {
   const ch = channelOverview.value?.channel;
@@ -75,8 +73,12 @@ const openUserDrawer = (uid: number, name?: string) => {
   drawerOpen.value = true;
 };
 
+let overviewSeq = 0;
+
 const loadTargetOverview = async () => {
+  const seq = ++overviewSeq;
   const target = await detectCurrentBiliPage();
+  if (seq !== overviewSeq) return;
   pageTarget.value = target;
   submitFeedback.value = null;
 
@@ -88,9 +90,14 @@ const loadTargetOverview = async () => {
 
   loadingChannel.value = true;
   try {
-    channelOverview.value = await fetchChannelOverview(uid);
+    const overview = await fetchChannelOverview(uid);
+    if (seq === overviewSeq) {
+      channelOverview.value = overview;
+    }
   } finally {
-    loadingChannel.value = false;
+    if (seq === overviewSeq) {
+      loadingChannel.value = false;
+    }
   }
 };
 
@@ -98,7 +105,7 @@ const handleAddChannel = async () => {
   const uid = currentTargetUid.value;
   if (!uid || submittingChannel.value) return;
 
-  if (!recorderConfig.value?.accountToken) {
+  if (!hasRecorderToken.value) {
     window.open(`${getChannelPageUrl(uid)}`, '_blank', 'noopener,noreferrer');
     return;
   }
@@ -117,30 +124,48 @@ const handleAddChannel = async () => {
 };
 
 const toggleQuickRecorder = async () => {
-  if (!recorderConfig.value) return;
+  if (!recorderConfig.value || togglingRecorder.value) return;
   const nextEnabled = !recorderConfig.value.enabled;
-  const res = (await chrome.runtime.sendMessage({
-    type: 'UPDATE_RECORDER_CONFIG',
-    patch: { enabled: nextEnabled },
-  } satisfies ExtensionMessage)) as {
-    ok: boolean;
-    config?: ExtensionRecorderConfig;
-    state?: ExtensionRecorderState;
-  };
-  if (res?.config) recorderConfig.value = res.config;
-  if (res?.state) recorderState.value = res.state;
+  togglingRecorder.value = true;
+  try {
+    const res = await updateRecorderConfigInBackground({ enabled: nextEnabled });
+    recorderConfig.value = res.config;
+    recorderState.value = res.state;
+  } catch (err) {
+    submitFeedback.value = err instanceof Error ? err.message : '切换录制状态失败';
+  } finally {
+    togglingRecorder.value = false;
+  }
 };
 
 let stopStorageWatch: (() => void) | null = null;
 let stopMainWorldBridge: (() => void) | null = null;
-let routePollTimer: ReturnType<typeof setInterval> | null = null;
+let routeCheckTimer: ReturnType<typeof setInterval> | null = null;
 let liveRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let removeRouteListeners: (() => void) | null = null;
 /** 只比较 host + path：query、hash 变化不影响页面目标，无需重新拉取 */
 const currentRouteKey = () => `${window.location.host}${window.location.pathname}`;
 let lastRouteKey = '';
 
+const checkRouteChange = () => {
+  const routeKey = currentRouteKey();
+  if (routeKey !== lastRouteKey) {
+    lastRouteKey = routeKey;
+    void loadTargetOverview();
+  }
+};
+
+const refreshLiveOverviewIfVisible = () => {
+  if (document.hidden || pageTarget.value.mode !== 'live' || !currentTargetUid.value) return;
+  const uid = currentTargetUid.value;
+  void fetchChannelOverview(uid).then((res) => {
+    if (res && currentTargetUid.value === uid) channelOverview.value = res;
+  });
+};
+
 onMounted(async () => {
   lastRouteKey = currentRouteKey();
+  let bridgeReady = false;
 
   stopMainWorldBridge = attachBiliMainWorldBridge({
     onPageContext: (ctx) => {
@@ -150,52 +175,68 @@ onMounted(async () => {
           roomId: ctx.roomId ?? pageTarget.value.roomId,
           streamerUid: ctx.streamerUid,
         };
-        void loadTargetOverview();
+        if (bridgeReady) {
+          void loadTargetOverview();
+        }
       }
     },
     onUserClick: (user) => {
       openUserDrawer(user.uid, user.uname);
     },
   });
+  bridgeReady = true;
 
   await loadTargetOverview();
 
-  const initRes = (await chrome.runtime.sendMessage({
-    type: 'GET_RECORDER_STATE',
-  } satisfies ExtensionMessage)) as {
-    ok: boolean;
-    config?: ExtensionRecorderConfig;
-    state?: ExtensionRecorderState;
+  try {
+    const initRes = await getRecorderStateFromBackground();
+    recorderConfig.value = initRes.config;
+    recorderState.value = initRes.state;
+  } catch {
+    // 后台尚未就绪时由后续 storage 变更补齐
+  }
+
+  stopStorageWatch = onStorageStateChanged(
+    (state, config) => {
+      recorderState.value = state;
+      recorderConfig.value = config;
+    },
+    { redactToken: true },
+  );
+
+  const onVisibility = () => {
+    if (!document.hidden) {
+      checkRouteChange();
+      refreshLiveOverviewIfVisible();
+    }
   };
-  if (initRes?.config) recorderConfig.value = initRes.config;
-  if (initRes?.state) recorderState.value = initRes.state;
+  window.addEventListener('popstate', checkRouteChange);
+  document.addEventListener('visibilitychange', onVisibility);
 
-  stopStorageWatch = onStorageStateChanged((state, config) => {
-    recorderState.value = state;
-    recorderConfig.value = config;
-  });
+  const nav = (window as { navigation?: EventTarget }).navigation;
+  if (nav) {
+    nav.addEventListener('navigatesuccess', checkRouteChange);
+  } else {
+    // 缺少 Navigation API 时保留低频兜底，仅在标签页可见时检查 SPA pushState
+    routeCheckTimer = setInterval(() => {
+      if (!document.hidden) checkRouteChange();
+    }, 2000);
+  }
 
-  routePollTimer = setInterval(() => {
-    const routeKey = currentRouteKey();
-    if (routeKey !== lastRouteKey) {
-      lastRouteKey = routeKey;
-      void loadTargetOverview();
-    }
-  }, 1500);
+  removeRouteListeners = () => {
+    window.removeEventListener('popstate', checkRouteChange);
+    document.removeEventListener('visibilitychange', onVisibility);
+    nav?.removeEventListener('navigatesuccess', checkRouteChange);
+  };
 
-  liveRefreshTimer = setInterval(() => {
-    if (pageTarget.value.mode === 'live' && currentTargetUid.value) {
-      void fetchChannelOverview(currentTargetUid.value).then((res) => {
-        if (res) channelOverview.value = res;
-      });
-    }
-  }, 20_000);
+  liveRefreshTimer = setInterval(refreshLiveOverviewIfVisible, 20_000);
 });
 
 onUnmounted(() => {
   stopStorageWatch?.();
   stopMainWorldBridge?.();
-  if (routePollTimer) clearInterval(routePollTimer);
+  removeRouteListeners?.();
+  if (routeCheckTimer) clearInterval(routeCheckTimer);
   if (liveRefreshTimer) clearInterval(liveRefreshTimer);
 });
 </script>
@@ -205,8 +246,6 @@ onUnmounted(() => {
     <!-- 顶部/右下角悬浮增强胶囊（根据直播间或个人空间自适应显示） -->
     <div
       class="fixed bottom-5 right-5 z-[2147483640] flex flex-col items-end gap-2"
-      @mouseenter="hoverPillExpanded = true"
-      @mouseleave="hoverPillExpanded = false"
     >
       <!-- 主播空间 / 直播间实时流水增强条 -->
       <div
@@ -325,13 +364,14 @@ onUnmounted(() => {
           · 已传 {{ formatCompactNumber(recorderState.messageCount) }}
         </span>
         <span v-else class="text-muted-foreground">
-          {{ recorderConfig?.accountToken ? '兼职录制已暂停' : '未绑定录制账号' }}
+          {{ hasRecorderToken ? '兼职录制已暂停' : '未绑定录制账号' }}
         </span>
 
         <button
-          v-if="recorderConfig?.accountToken"
+          v-if="hasRecorderToken && recorderConfig"
           type="button"
-          class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium hover:bg-accent transition"
+          :disabled="togglingRecorder"
+          class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium hover:bg-accent transition disabled:opacity-50"
           @click="toggleQuickRecorder"
         >
           {{ recorderConfig.enabled ? '暂停' : '开启录制' }}

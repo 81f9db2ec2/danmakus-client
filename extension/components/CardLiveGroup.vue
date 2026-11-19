@@ -2,15 +2,15 @@
 import { computed } from 'vue';
 import DanmakuContent from './DanmakuContent.vue';
 import { getChannelPageUrl, getLivePageUrl } from '../utils/api';
-import { formatCompactNumber, formatDateTime, formatTimeOnly } from '../utils/decoder';
+import { formatCompactNumber, formatDateTime, formatTimeOnly, normalizeBiliImageUrl } from '../utils/decoder';
 import type { DecodedUserLiveGroup } from '../utils/types';
 
 const props = defineProps<{ group: DecodedUserLiveGroup; showCover: boolean }>();
 
 // B 站图床支持 @宽w 裁剪，缩略图只需 2x 尺寸
 const coverUrl = computed(() => {
-  const url = props.group.live.coverUrl;
-  return url ? `${url.replace(/^http:/, 'https:')}@160w_90h_1c.webp` : null;
+  const normalized = normalizeBiliImageUrl(props.group.live.coverUrl, '@160w_90h_1c.webp');
+  return normalized || null;
 });
 
 const duration = computed(() => {
@@ -22,7 +22,7 @@ const duration = computed(() => {
 </script>
 
 <template>
-  <article class="rounded-md bg-[var(--graph_bg_thin,rgba(0,0,0,0.03))] p-2">
+  <article class="rounded-md bg-[var(--graph_bg_thin,var(--muted))] p-2">
     <header class="flex gap-2">
       <a
         v-if="showCover && coverUrl"

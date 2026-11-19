@@ -33,6 +33,7 @@ export const createDefaultRecorderConfig = (): ExtensionRecorderConfig => ({
 export const createEmptyRecorderState = (): ExtensionRecorderState => ({
   isRunning: false,
   runtimeConnected: false,
+  hasToken: false,
   cookieValid: false,
   biliUid: null,
   biliUname: null,
@@ -110,12 +111,16 @@ export async function saveRecorderState(state: ExtensionRecorderState): Promise<
 
 export function onStorageStateChanged(
   callback: (state: ExtensionRecorderState, config: ExtensionRecorderConfig) => void,
+  options?: { redactToken?: boolean },
 ): () => void {
   const listener = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
     if (areaName !== 'local') return;
     if (changes[STATE_STORAGE_KEY] || changes[CONFIG_STORAGE_KEY]) {
       void Promise.all([loadRecorderState(), loadRecorderConfig()]).then(([state, config]) => {
-        callback(state, config);
+        const hasToken = Boolean(config.accountToken.trim());
+        const safeState = { ...state, hasToken };
+        const safeConfig = options?.redactToken ? { ...config, accountToken: '' } : config;
+        callback(safeState, safeConfig);
       });
     }
   };

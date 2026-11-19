@@ -1,6 +1,5 @@
 import {
   DanmakuClient,
-  createInMemoryLiveSessionOutbox,
   type StreamerStatus,
 } from 'danmakus-core';
 import {
@@ -13,6 +12,7 @@ import {
 } from '../../utils/types';
 import { clampMaxRooms, createEmptyRecorderState } from '../../utils/storage';
 import { version } from '../../package.json';
+import { createPersistentLiveSessionOutbox } from './indexeddb-outbox';
 
 // offscreen 文档的 chrome.runtime 只暴露消息 API，没有 getManifest；manifest 版本同样取自 package.json
 const EXTENSION_VERSION = `extension@${version}`;
@@ -92,6 +92,7 @@ const buildStateSnapshot = (): ExtensionRecorderState => {
   return {
     isRunning: Boolean(rawStatus.isRunning),
     runtimeConnected: Boolean(rawStatus.runtimeConnected),
+    hasToken: Boolean(currentConfig?.accountToken.trim()),
     cookieValid: Boolean(rawStatus.cookieValid),
     biliUid: profile?.uid && profile.uid > 0 ? profile.uid : null,
     biliUname: profile?.uname || null,
@@ -175,6 +176,25 @@ const stopClient = async () => {
   pushStateNow();
 };
 
+const ensureTimers = () => {
+  if (!cookiePollTimer) {
+    cookiePollTimer = setInterval(() => void refreshCookieFromBackground(), COOKIE_POLL_INTERVAL_MS);
+  }
+  if (!fallbackPushTimer) {
+    fallbackPushTimer = setInterval(schedulePushState, STATE_PUSH_FALLBACK_INTERVAL_MS);
+  }
+};
+
+const isBilibiliUrl = (input: RequestInfo | URL): boolean => {
+  try {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const host = new URL(raw).hostname.toLowerCase();
+    return host === 'bilibili.com' || host.endsWith('.bilibili.com');
+  } catch {
+    return false;
+  }
+};
+
 const startOrUpdateClient = async (config: ExtensionRecorderConfig, biliCookie: string) => {
   latestBiliCookie = biliCookie || latestBiliCookie;
 
@@ -187,7 +207,7 @@ const startOrUpdateClient = async (config: ExtensionRecorderConfig, biliCookie: 
     return;
   }
 
-  // 只有身份变化才重建：stop() 会清空待上传队列，内存 outbox 也会随实例丢弃
+  // 只有身份变化才重建：stop() 会清空待上传队列，未完成数据依赖持久化 outbox
   const needRecreate =
     !client ||
     currentConfig?.accountToken !== normalizedConfig.accountToken ||
@@ -204,12 +224,14 @@ const startOrUpdateClient = async (config: ExtensionRecorderConfig, biliCookie: 
     if (!client.getStatus().isRunning) {
       await client.start();
     }
+    ensureTimers();
     schedulePushState();
     return;
   }
 
   await stopClient();
 
+  const outbox = await createPersistentLiveSessionOutbox();
   const next = new DanmakuClient({
     clientId: normalizedConfig.clientId,
     accountToken: normalizedConfig.accountToken,
@@ -220,11 +242,11 @@ const startOrUpdateClient = async (config: ExtensionRecorderConfig, biliCookie: 
     cookieRefreshInterval: COOKIE_REFRESH_INTERVAL_SECONDS,
     requestServerRooms: true,
     enableClusterPresenceSync: true,
-    liveSessionOutbox: createInMemoryLiveSessionOutbox(),
+    liveSessionOutbox: outbox,
     cookieProvider: () => latestBiliCookie,
-    // 浏览器里 fetch 的 Cookie 是禁止头，core 手动设置的会被静默丢弃；
-    // 改由浏览器按 host_permissions 附带 B 站登录态（与后台 nav 探测同一条已验证路径）
-    fetchImpl: (input, init) => fetch(input, { ...init, credentials: 'include' }),
+    // 浏览器里 fetch 的 Cookie 是禁止头，仅对 B 站请求附加 credentials: 'include'，避免影响后端 CORS
+    fetchImpl: (input, init) =>
+      fetch(input, isBilibiliUrl(input) ? { ...init, credentials: 'include' } : init),
   });
   client = next;
 
@@ -234,13 +256,16 @@ const startOrUpdateClient = async (config: ExtensionRecorderConfig, biliCookie: 
   next.on('queueChanged', schedulePushState);
   next.on('error', schedulePushState);
 
-  await next.refreshAuthState({ force: true });
-  next.startControlSync();
-  await next.start();
-  pushStateNow();
+  try {
+    await next.refreshAuthState({ force: true });
+    await next.start();
+  } catch (error) {
+    await stopClient();
+    throw error;
+  }
 
-  cookiePollTimer = setInterval(() => void refreshCookieFromBackground(), COOKIE_POLL_INTERVAL_MS);
-  fallbackPushTimer = setInterval(schedulePushState, STATE_PUSH_FALLBACK_INTERVAL_MS);
+  pushStateNow();
+  ensureTimers();
 };
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {

@@ -2,31 +2,65 @@ import {
   DANMAKUS_SITE_ORIGIN,
   type ChannelDetailResponse,
   type ExtensionMessage,
+  type ExtensionRecorderConfig,
+  type ExtensionRecorderState,
   type LiveDanmakusPageV3,
   type UserBootstrapResponseV3,
   type UserHistoryResponseV3,
 } from './types';
-import { decodeDanmakuFrameV3, filterInteractiveDanmakus } from './decoder';
+import { decodeDanmakuFrameV3, filterInteractiveDanmakus, normalizeTimestampMs } from './decoder';
+
+export async function sendRuntimeMessage<T extends { ok: boolean; error?: string }>(
+  message: ExtensionMessage,
+  fallbackError = '扩展后台通信失败',
+): Promise<T> {
+  const response = (await chrome.runtime.sendMessage(message)) as T | undefined;
+  if (!response?.ok) {
+    throw new Error(response?.error || fallbackError);
+  }
+  return response;
+}
+
+export async function getRecorderStateFromBackground(): Promise<{
+  config: ExtensionRecorderConfig;
+  state: ExtensionRecorderState;
+}> {
+  return sendRuntimeMessage<{
+    ok: boolean;
+    config: ExtensionRecorderConfig;
+    state: ExtensionRecorderState;
+    error?: string;
+  }>({ type: 'GET_RECORDER_STATE' }, '获取录制状态失败');
+}
+
+export async function updateRecorderConfigInBackground(
+  patch: Partial<ExtensionRecorderConfig>,
+): Promise<{
+  config: ExtensionRecorderConfig;
+  state: ExtensionRecorderState;
+}> {
+  return sendRuntimeMessage<{
+    ok: boolean;
+    config: ExtensionRecorderConfig;
+    state: ExtensionRecorderState;
+    error?: string;
+  }>({ type: 'UPDATE_RECORDER_CONFIG', patch }, '更新录制配置失败');
+}
 
 async function sendBgApiRequest<T>(
   path: string,
   options?: { method?: string; body?: unknown; useToken?: boolean },
 ): Promise<T> {
-  const message: ExtensionMessage = {
-    type: 'API_REQUEST',
-    path,
-    method: options?.method ?? 'GET',
-    body: options?.body,
-    useToken: options?.useToken ?? true,
-  };
-  const response = (await chrome.runtime.sendMessage(message)) as {
-    ok: boolean;
-    data?: T;
-    error?: string;
-  };
-  if (!response?.ok) {
-    throw new Error(response?.error || '请求 Danmakus 接口失败');
-  }
+  const response = await sendRuntimeMessage<{ ok: boolean; data?: T; error?: string }>(
+    {
+      type: 'API_REQUEST',
+      path,
+      method: options?.method ?? 'GET',
+      body: options?.body,
+      useToken: options?.useToken ?? true,
+    },
+    '请求 Danmakus 接口失败',
+  );
   return response.data as T;
 }
 
@@ -124,11 +158,11 @@ export async function fetchLiveContextDanmakus(
     `/api/v3/lives/${encodeURIComponent(liveId)}/danmakus?includeEnter=false&offset=0&limit=2000`,
   );
   const all = filterInteractiveDanmakus(decodeDanmakuFrameV3(res.frame, liveId));
-  const normalizedCenter = centerTsMs < 10_000_000_000 ? centerTsMs * 1000 : centerTsMs;
+  const normalizedCenter = normalizeTimestampMs(centerTsMs);
   const minTs = normalizedCenter - windowSec * 1000;
   const maxTs = normalizedCenter + windowSec * 1000;
   return all.filter((item) => {
-    const t = item.sendDate < 10_000_000_000 ? item.sendDate * 1000 : item.sendDate;
+    const t = normalizeTimestampMs(item.sendDate);
     return t >= minTs && t <= maxTs;
   });
 }
@@ -144,13 +178,13 @@ export async function fetchChannelOverview(uid: number): Promise<ChannelDetailRe
 }
 
 export async function addChannelToAccountRecording(uid: number): Promise<void> {
-  const response = (await chrome.runtime.sendMessage({
-    type: 'ADD_RECORDING_CHANNEL',
-    uid,
-  } satisfies ExtensionMessage)) as { ok: boolean; error?: string };
-  if (!response?.ok) {
-    throw new Error(response?.error || '收录并添加录制失败');
-  }
+  await sendRuntimeMessage<{ ok: boolean; error?: string }>(
+    {
+      type: 'ADD_RECORDING_CHANNEL',
+      uid,
+    },
+    '收录并添加录制失败',
+  );
 }
 
 export function getChannelPageUrl(uid: number): string {

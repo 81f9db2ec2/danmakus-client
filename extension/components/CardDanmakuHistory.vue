@@ -11,18 +11,15 @@ import {
   type UserHistoryPage,
 } from '../utils/api';
 import type { CardSettings } from '../utils/card-settings';
+import { normalizeBiliImageUrl } from '../utils/decoder';
 import { DanmakuType } from '../utils/types';
 
 const props = defineProps<{ uid: number; settings: CardSettings }>();
 
 const logoUrl = chrome.runtime.getURL('icon/128.png');
 
-// 跟随 B 站自身主题变量，卡片在亮 / 暗色下都与原生内容一致
+// 亮/暗色语义变量由 ShadowHost 的 .dark 同步驱动，这里仅对齐 B 站字体栈
 const themeVars = {
-  '--foreground': 'var(--text1, #18191c)',
-  '--muted-foreground': 'var(--text3, #9499a0)',
-  '--primary': 'var(--brand_blue, #00aeec)',
-  '--border': 'var(--line_regular, #e3e5e7)',
   fontFamily: 'var(--bili-font-family, "PingFang SC", "HarmonyOS_Regular", "Microsoft YaHei", sans-serif)',
 };
 
@@ -144,7 +141,7 @@ watch(
           :class="channelUid === ch.uId ? 'border-primary text-primary' : 'text-muted-foreground hover:text-foreground'"
           @click="selectChannel(ch.uId)"
         >
-          <img v-if="ch.faceUrl" :src="`${ch.faceUrl}@32w_32h.webp`" alt="" referrerpolicy="no-referrer" class="h-4 w-4 rounded-full" />
+          <img v-if="ch.faceUrl" :src="normalizeBiliImageUrl(ch.faceUrl, '@32w_32h.webp')" alt="" referrerpolicy="no-referrer" class="h-4 w-4 rounded-full" />
           <span class="max-w-20 truncate">{{ ch.uName }}</span>
           <span class="opacity-70">{{ ch.count }}</span>
         </button>
