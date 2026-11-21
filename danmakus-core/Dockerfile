@@ -1,4 +1,4 @@
-FROM oven/bun:1 AS base
+FROM --platform=$BUILDPLATFORM oven/bun:1 AS base
 
 WORKDIR /app
 
@@ -9,9 +9,16 @@ RUN bun install --frozen-lockfile
 
 FROM base AS build
 
+ARG TARGETARCH
 COPY --from=install /app/node_modules ./node_modules
 COPY . .
-RUN bun build --compile --minify --target=bun-linux-$(bun -p process.arch)-musl ./src/cli/index.ts --outfile ./dist/danmakus
+RUN target_arch="${TARGETARCH:-$(uname -m)}" && \
+    case "$target_arch" in \
+      amd64|x86_64) bun_arch=x64 ;; \
+      arm64|aarch64) bun_arch=arm64 ;; \
+      *) echo "Unsupported target architecture: $target_arch" >&2; exit 1 ;; \
+    esac && \
+    bun build --compile --minify --target="bun-linux-${bun_arch}-musl" ./src/cli/index.ts --outfile ./dist/danmakus
 
 FROM alpine:3.20 AS release
 

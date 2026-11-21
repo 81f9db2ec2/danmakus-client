@@ -1,6 +1,10 @@
 name: publish-danmakus-core-docker
 
 on:
+  pull_request:
+    paths:
+      - 'danmakus-core/**'
+      - '.github/workflows/publish-danmakus-core-docker.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -58,9 +62,11 @@ jobs:
             exit 1
           fi
 
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
-          echo "publish_mode=$publish_mode" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "latest=$latest"
+            echo "publish_mode=$publish_mode"
+          } >> "$GITHUB_OUTPUT"
 
       - name: set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -87,20 +93,21 @@ jobs:
             type=sha,prefix=sha-,format=short,enable=${{ steps.vars.outputs.publish_mode == 'edge' }}
 
       - name: login to ghcr
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build and publish image
+      - name: build multi-platform image
         uses: docker/build-push-action@v6
         with:
           context: ./danmakus-core
           file: ./danmakus-core/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
