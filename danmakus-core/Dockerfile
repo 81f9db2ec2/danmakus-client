@@ -11,7 +11,7 @@ FROM base AS build
 
 COPY --from=install /app/node_modules ./node_modules
 COPY . .
-RUN bun build --compile --minify --target=bun-linux-x64-musl ./src/cli/index.ts --outfile ./dist/danmakus
+RUN bun build --compile --minify --target=bun-linux-$(bun -p process.arch)-musl ./src/cli/index.ts --outfile ./dist/danmakus
 
 FROM alpine:3.20 AS release
 
